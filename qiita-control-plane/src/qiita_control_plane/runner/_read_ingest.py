@@ -18,7 +18,7 @@ from qiita_common.parquet import validate_parquet_path
 import qiita_control_plane.runner as _runner_pkg
 
 from ..auth.tickets import sign_action, sign_ticket
-from ..miint import connect_with_miint
+from ..miint import connect_with_miint_staged
 from ..repositories.block import fetch_mask_sample_state
 from ._upload import _submission_bad_input, _submission_dp_fetch_failure
 
@@ -359,7 +359,7 @@ def _stream_masked_reads_to_fastq(data_plane_url: str, ticket_bytes: bytes, dest
     read_opts = flight.FlightCallOptions(
         read_options=ipc.IpcReadOptions(ensure_alignment=ipc.Alignment.DataTypeSpecific)
     )
-    with flight.FlightClient(data_plane_url) as client, connect_with_miint() as con:
+    with flight.FlightClient(data_plane_url) as client, connect_with_miint_staged() as con:
         reader = client.do_get(flight.Ticket(ticket_bytes), read_opts).to_reader()
         con.register("masked", reader)
         # Single-end long reads: sequence2/qual2 are NULL, so FORMAT FASTQ writes a
