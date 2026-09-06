@@ -536,8 +536,11 @@ class GenomeMapEntry(BaseModel):
 
 class GenomeMapResponse(BaseModel):
     """Returned by GET /reference/{reference_idx}/genome-map: the whole
-    reference's feature_idx → genome lookup, the translation the client-side
-    feature-table recipe joins its alignment rows against.
+    reference's feature_idx → genome lookup, rolling alignment rows up to genomes.
+
+    The same rows are served uncapped at `GET .../genome-map/parquet`, which is
+    what a caller refused by the 413 below should call instead — and what the
+    client-side feature-table recipe reads.
 
     One entry per (feature, genome) pair, ordered by (feature_idx, genome_idx). A
     feature shared across genomes (a plasmid) contributes one entry per genome, so
@@ -549,7 +552,8 @@ class GenomeMapResponse(BaseModel):
     short lookup table yields a WRONG feature table rather than a partial one. A
     200 is always the complete map, so the field could only ever be False — and a
     boolean that never varies is one a caller checks instead of the status
-    code."""
+    code. The Parquet form has no cap at all: `routes/_helpers.GENOME_MAP_HARD_CAP`
+    bounds this representation, not the data."""
 
     reference_idx: Annotated[int, Field(gt=0)]
     entries: list[GenomeMapEntry]
@@ -572,6 +576,7 @@ class AssemblyGenomeMapResponse(BaseModel):
     each prep_sample's reads to both genomes.
 
     Refuses over its cap the way its reference twin does, for the same reason, and
+    has the same uncapped Parquet sibling at `.../genome-map/parquet`, and
     carries no `truncated` for the same reason. 404s a run that never assembled —
     an unknown prep_sample, an unknown processing_idx, and a real pair that
     assembled nothing are one answer, matching the assembly DoGet routes."""

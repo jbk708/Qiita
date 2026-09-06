@@ -85,10 +85,15 @@ ALIGNMENT_NOT_FOUND_DETAIL = "alignment not found"
 # Hard cap on a genome map, and the one place in the codebase where exceeding a cap
 # is a refusal rather than a truncation — see `get_reference_genome_map`. Sized from
 # a response-body budget rather than by borrowing another route's number: an entry
-# serializes to roughly 90 bytes of JSON, so this is a ~22 MB worst case, large but
-# deliverable in one body and far above any genome-bearing reference we roll up
-# today. The map that first trips it is the signal to build the streamed form, not
-# to raise this.
+# serializes to roughly 90 bytes of JSON, so this is a ~22 MB worst case — large
+# but deliverable in one body.
+#
+# **It does not bound the data, and both genome-bearing references on the deploy
+# are past it** (421,717 and 392,122 pairs). Raising it is not the answer: the
+# uncapped Parquet form is (`GET .../genome-map/parquet`, both maps), and
+# `actions.library._genome_map_parquet_body` carries why that form can drop the
+# cap where this one cannot. This number therefore stays where it is, bounding the
+# JSON representation alone.
 #
 # Shared by the reference map and the assembly-run map, which are the same read over
 # two feature spaces: two numbers here would let one route refuse what the other

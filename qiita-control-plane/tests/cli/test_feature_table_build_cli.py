@@ -29,6 +29,8 @@ from qiita_control_plane.cli.user import feature_table as ftc
 from qiita_control_plane.cli.user._helpers import _UNSET
 from qiita_control_plane.miint import connect_with_miint
 
+from .conftest import genome_map_table
+
 # One 1000 bp genome fully covered in sample 1, and one 10 000 bp genome each sample
 # covers 0.6% of — extending halves, so 1.2% pooled. At a 1% threshold that genome
 # survives pooled and fails per-sample, which is the only asymmetry the two scopes
@@ -38,6 +40,7 @@ _MAP_ENTRIES = [
     {"feature_idx": 20, "genome_idx": 200, "source": "refseq", "source_id": "GCF_200"},
 ]
 _LENGTHS = [(10, 1000), (20, 10000)]
+
 # (prep_sample_idx, sequence_idx, feature_idx, flags, position, stop_position, cigar)
 _ALIGNMENT = [
     (1, 1, 10, 0, 0, 500, "500="),
@@ -276,7 +279,7 @@ def _patched(
     monkeypatch.setattr(
         ftc,
         "_fetch_genome_map",
-        lambda *a, **k: _MAP_ENTRIES if map_entries is None else map_entries,
+        lambda *a, **k: genome_map_table(_MAP_ENTRIES if map_entries is None else map_entries),
     )
 
     def _exclusion(*args, **kwargs):
@@ -1500,7 +1503,7 @@ def _patched_combined(monkeypatch, *, denovo_map=None, denovo_alignment=None):
                 request=httpx.Request("GET", "http://cp"),
                 response=httpx.Response(404),
             )
-        return the_map[prep_sample_idx]
+        return genome_map_table(the_map[prep_sample_idx])
 
     monkeypatch.setattr(ftc, "_fetch_assembly_genome_map", _assembly_map)
 

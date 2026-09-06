@@ -21,7 +21,7 @@ from typing import Annotated
 import asyncpg
 import httpx
 import pyarrow.flight as _flight
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import Field
 from qiita_common.api_paths import (
     PATH_REFERENCE_BY_IDX,
@@ -30,6 +30,7 @@ from qiita_common.api_paths import (
     PATH_REFERENCE_EXCLUSION_BY_IDX,
     PATH_REFERENCE_EXCLUSION_SYNC,
     PATH_REFERENCE_GENOME_MAP,
+    PATH_REFERENCE_GENOME_MAP_PARQUET,
     PATH_REFERENCE_GENOME_MEMBER,
     PATH_REFERENCE_INDEX,
     PATH_REFERENCE_PREFIX,
@@ -63,8 +64,13 @@ from qiita_common.models import (
     ReferenceStatusUpdate,
     WorkTicketState,
 )
+from qiita_common.parquet import PARQUET_MEDIA_TYPE, PARQUET_RESPONSES
 
-from ..actions.library import delete_reference_data, sync_reference_exclusion_data
+from ..actions.library import (
+    delete_reference_data,
+    genome_map_parquet,
+    sync_reference_exclusion_data,
+)
 from ..actions.reference import (
     REFERENCE_RETURNING,
     IllegalStatusTransition,
@@ -393,6 +399,34 @@ async def get_reference_genome_map(
         entries=[GenomeMapEntry.model_validate(dict(r)) for r in rows],
         count=len(rows),
     )
+
+
+@router.get(
+    PATH_REFERENCE_GENOME_MAP_PARQUET,
+    response_class=Response,
+    responses=PARQUET_RESPONSES,
+)
+async def get_reference_genome_map_parquet(
+    reference_idx: Annotated[int, Field(gt=0)],
+    pool: asyncpg.Pool = Depends(get_db_pool),
+    _scope: Principal = Depends(require_scope(Scope.REFERENCE_READ)),
+) -> Response:
+    """The same map as the JSON route above, as Parquet, with no cap.
+
+    Same rows, same four columns, same order — `GENOME_MAP_ROWS_SQL` is shared
+    text, not a second query, so the two forms and `export_member_genome`'s
+    compute-side Parquet cannot disagree about which features have genomes.
+
+    No cap and no `truncated`; `actions.library._genome_map_parquet_body` carries
+    why this form can drop what the JSON route needs.
+
+    404s an unknown reference; a reference with no genome-bearing features is a 200
+    with a zero-row Parquet — a valid file with the right schema, not an empty
+    body, which is what `read_parquet` needs on a 16S reference. Same "empty is a
+    meaningful clean state" posture the JSON route takes."""
+    await require_reference_exists(pool, reference_idx)
+    body = await genome_map_parquet(pool, reference_idx)
+    return Response(content=body, media_type=PARQUET_MEDIA_TYPE)
 
 
 @router.get(PATH_REFERENCE_BY_IDX)
