@@ -12,7 +12,7 @@ from qiita_common.api_paths import (
     compute_reads_staging_path,
 )
 from qiita_common.backend_failure import StepNoData
-from qiita_common.parquet import validate_parquet_path
+from qiita_common.parquet import PARQUET_COMPRESSION_INTERMEDIATE, validate_parquet_path
 
 import qiita_control_plane.runner as _runner_pkg
 
@@ -97,7 +97,7 @@ def _do_get_reference_sequences_roster(
     # sequence_hash) — the shard build reads `feature_idx` to scope its own chunk
     # stream and `sequence_length_bp` for plan() sizing.
     roster = table.select(["feature_idx", "sequence_length_bp"])
-    pq.write_table(roster, str(out_path), compression="snappy")
+    pq.write_table(roster, str(out_path), compression=PARQUET_COMPRESSION_INTERMEDIATE)
     return roster.num_rows
 
 

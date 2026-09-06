@@ -76,6 +76,11 @@ _TRIPLES: list[tuple[str, str, str]] = [
         "PATH_REFERENCE_PREFIX",
         "PATH_REFERENCE_GENOME_MAP",
     ),
+    (
+        "URL_REFERENCE_GENOME_MAP_PARQUET",
+        "PATH_REFERENCE_PREFIX",
+        "PATH_REFERENCE_GENOME_MAP_PARQUET",
+    ),
     # /host-filter-profile
     (
         "URL_HOST_FILTER_PROFILE_LIST",
@@ -381,6 +386,11 @@ _TRIPLES: list[tuple[str, str, str]] = [
     ("URL_ASSEMBLY_DOGET", "PATH_ASSEMBLY_PREFIX", "PATH_ASSEMBLY_DOGET"),
     ("URL_ASSEMBLY_RUN_DOGET", "PATH_ASSEMBLY_PREFIX", "PATH_ASSEMBLY_RUN_DOGET"),
     ("URL_ASSEMBLY_GENOME_MAP", "PATH_ASSEMBLY_PREFIX", "PATH_ASSEMBLY_GENOME_MAP"),
+    (
+        "URL_ASSEMBLY_GENOME_MAP_PARQUET",
+        "PATH_ASSEMBLY_PREFIX",
+        "PATH_ASSEMBLY_GENOME_MAP_PARQUET",
+    ),
     # /mask-definition
     (
         "URL_MASK_DEFINITION_BY_IDX",

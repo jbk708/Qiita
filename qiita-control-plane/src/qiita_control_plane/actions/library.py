@@ -49,13 +49,20 @@ from qiita_common.models import (
     ReferenceStatus,
     read_mask_reason_sql_list,
 )
-from qiita_common.parquet import PARQUET_OPTS, validate_parquet_path
+from qiita_common.parquet import (
+    PARQUET_COMPRESSION,
+    PARQUET_COMPRESSION_INTERMEDIATE,
+    PARQUET_OPTS,
+    ROW_GROUP_SIZE_BYTES,
+    validate_parquet_path,
+)
 from qiita_common.taxonomy import TAXONOMY_SOURCE_TABLE, genome_lineage_select_sql
 
 from ..auth.tickets import run_signed_flight_call, sign_action, sign_ticket
 from ..miint import duckdb_connect
 from ..repositories.assembly import (
     ASSEMBLY_GENOME_MAP_PAIRS_SQL,
+    ASSEMBLY_GENOME_MAP_ROWS_SQL,
     assembly_genome_source_id,
     insert_assembly_membership_rows,
     upsert_assembly_sample_completed,
@@ -74,7 +81,11 @@ from ..repositories.block import (
     upsert_mask_sample_completed,
 )
 from ..repositories.reference_exclusion import resolve_excluded_features
-from ..repositories.reference_membership import GENOME_MAP_PAIRS_SQL, count_reference_shards
+from ..repositories.reference_membership import (
+    GENOME_MAP_PAIRS_SQL,
+    GENOME_MAP_ROWS_SQL,
+    count_reference_shards,
+)
 from ..shard_planner import _SHARD_COUNT, LineageItem, tile_by_lineage
 from .reference import IllegalStatusTransition, transition_reference_status
 
@@ -1207,7 +1218,9 @@ def _do_get_reference_taxonomy(data_plane_url: str, ticket_bytes: bytes, out_pat
     (a reference with no taxonomy loaded → every genome sorts as unclassified)."""
     with _flight.FlightClient(data_plane_url) as client:
         reader = client.do_get(_flight.Ticket(ticket_bytes)).to_reader()
-        writer = pq.ParquetWriter(str(out_path), reader.schema, compression="snappy")
+        writer = pq.ParquetWriter(
+            str(out_path), reader.schema, compression=PARQUET_COMPRESSION_INTERMEDIATE
+        )
         try:
             for batch in reader:
                 writer.write_batch(batch)
@@ -1222,31 +1235,71 @@ async def _export_query_to_parquet(
     sql: str,
     params: tuple,
     schema: pa.Schema,
-    out_path: Path,
+    sink: Path | pa.NativeFile,
+    compression: str = PARQUET_COMPRESSION_INTERMEDIATE,
 ) -> None:
-    """Stream a query's rows to a Parquet at `out_path` in `_CHUNK_SIZE` batches.
+    """Stream a query's rows to a Parquet at `sink` in `_CHUNK_SIZE` batches.
 
     A server-side cursor inside one transaction, never `fetch()`-all: a GG2-scale
-    reference has millions of members, and the point of this shape is that neither
-    Postgres nor this process ever holds the whole result.
+    reference has millions of members, and the point of this shape is that this
+    process never holds the whole ROW SET. A `Path` sink also never holds the whole
+    output; an in-memory sink holds the encoded body by construction, which is the
+    trade its callers make deliberately.
 
     `schema` names the columns AND their order — each batch is read by name out of
     the records, so the query's own column order does not have to match. Creating the
     writer up front is what makes an EMPTY result still produce a valid, correctly
     typed Parquet rather than a zero-byte file `read_parquet` chokes on; every caller
     below depends on that.
+
+    Cursor batches are buffered to `ROW_GROUP_SIZE_BYTES` before a row group is
+    written, rather than one row group per fetch. The admin masked-read export
+    buffers for the same reason and says so at length. **It is a trade, not a free
+    win**, measured through this function on two genome maps (buffered vs one row
+    group per fetch):
+
+    * 392,122 pairs — 3.48 MB body / ~100 MB peak, against 4.87 MB / ~40 MB.
+      60 MB of Arrow to save 1.4 MB of wire.
+    * 10,000,000 pairs — 80.6 MB body / ~379 MB peak, against 124.2 MB / ~324 MB.
+      55 MB of Arrow to save 43.6 MB of wire.
+
+    The memory cost is capped by the threshold while the wire saving keeps
+    scaling, which is why the larger map is where this pays and the smaller one is
+    where it is close to a wash.
+
+    `sink` is a filesystem path for the workspace Parquets a compute job reads, or
+    an in-memory `pa.BufferOutputStream` for the ones served as a REST body — one
+    cursor loop for both, so the file a job consumes and the body a client consumes
+    cannot be built two different ways. `compression` defaults to the intermediate
+    codec, the right trade for a file read once by the next pipeline phase; the wire
+    bodies pass the other one. `qiita_common.parquet` argues that split, once.
     """
-    writer = pq.ParquetWriter(str(out_path), schema, compression="snappy")
+    writer = pq.ParquetWriter(
+        str(sink) if isinstance(sink, Path) else sink, schema, compression=compression
+    )
     try:
+        buffered: list[pa.Table] = []
+        buffered_bytes = 0
+
+        def flush() -> None:
+            nonlocal buffered, buffered_bytes
+            if buffered:
+                writer.write_table(pa.concat_tables(buffered))
+                buffered = []
+                buffered_bytes = 0
+
         async with pool.acquire() as conn, conn.transaction():
             cursor = await conn.cursor(sql, *params)
             while batch := await cursor.fetch(_CHUNK_SIZE):
-                writer.write_table(
-                    pa.table(
-                        {name: [r[name] for r in batch] for name in schema.names},
-                        schema=schema,
-                    )
+                table = pa.table(
+                    {name: [r[name] for r in batch] for name in schema.names},
+                    schema=schema,
                 )
+                buffered.append(table)
+                buffered_bytes += table.nbytes
+                if buffered_bytes >= ROW_GROUP_SIZE_BYTES:
+                    flush()
+        flush()
     finally:
         writer.close()
 
@@ -1269,7 +1322,86 @@ async def export_member_genome(pool: asyncpg.Pool, reference_idx: int, out_path:
         sql="SELECT rm.feature_idx, fg.genome_idx" + GENOME_MAP_PAIRS_SQL,
         params=(reference_idx,),
         schema=pa.schema([("feature_idx", pa.int64()), ("genome_idx", pa.int64())]),
-        out_path=out_path,
+        sink=out_path,
+    )
+
+
+# The genome map's Parquet schema — the four columns `GenomeMapEntry` carries.
+# Both map routes serve it, so a consumer that handles one handles the other.
+# Column ORDER here is what the file gets; `_export_query_to_parquet` reads each
+# batch by name, so it does not have to match the SELECT list.
+#
+# Here rather than beside `PARQUET_MEDIA_TYPE` in qiita-common, which is where the
+# rest of the shared Parquet vocabulary lives: pyarrow is not a qiita-common
+# dependency, and nothing on the client side needs the schema — the CLI reads the
+# body with `read_table` and names the columns it joins on. Moving it there buys a
+# home at the cost of pyarrow at import time in both services.
+GENOME_MAP_PARQUET_SCHEMA = pa.schema(
+    [
+        ("feature_idx", pa.int64()),
+        ("genome_idx", pa.int64()),
+        ("source", pa.string()),
+        ("source_id", pa.string()),
+    ]
+)
+
+
+async def _genome_map_parquet_body(pool: asyncpg.Pool, *, sql: str, params: tuple) -> bytes:
+    """One genome map, whichever one, as a Parquet body — the shared half of the
+    two public builders below, which differ only in the query they run.
+
+    **Why this form has no cap, stated here because this is where it is decided.**
+    The JSON routes refuse above `GENOME_MAP_HARD_CAP` (`routes/_helpers.py`)
+    because a lookup table short by a row yields a WRONG feature table, and a
+    short JSON list is indistinguishable from a complete one. Parquet keeps its
+    footer at the tail, so a body cut short fails to parse instead of reading back
+    as a shorter map. Completeness stops being a promise a caller has to check.
+
+    **Built whole rather than streamed from the cursor**, and the pool connection
+    is released before any byte is sent: a streamed body would hold that
+    connection for the length of the client's download, in the process that serves
+    every other route, and `httpx` has no total-request timeout for a client to
+    bound it with (`cli/_common.fetch_binary` carries what the client does
+    instead).
+
+    zstd rather than the snappy the workspace exports use: this crosses a network
+    rather than a filesystem. On the same 392,122-pair map `_export_query_to_parquet`
+    records its figures for, snappy is 2.1x the wire bytes.
+    """
+    sink = pa.BufferOutputStream()
+    await _export_query_to_parquet(
+        pool,
+        sql=sql,
+        params=params,
+        schema=GENOME_MAP_PARQUET_SCHEMA,
+        sink=sink,
+        compression=PARQUET_COMPRESSION,
+    )
+    return sink.getvalue().to_pybytes()
+
+
+async def genome_map_parquet(pool: asyncpg.Pool, reference_idx: int) -> bytes:
+    """The whole reference's genome map as a Parquet body, uncapped.
+
+    `GENOME_MAP_ROWS_SQL` verbatim — the same rows, columns and order the capped
+    JSON route serves, minus its LIMIT.
+    """
+    return await _genome_map_parquet_body(pool, sql=GENOME_MAP_ROWS_SQL, params=(reference_idx,))
+
+
+async def assembly_genome_map_parquet(
+    pool: asyncpg.Pool, *, prep_sample_idx: int, processing_idx: int
+) -> bytes:
+    """One assembly run's contig → genome map as a Parquet body, uncapped.
+
+    Run-scoped where the reference form is whole-reference, so `prep_sample_idx`
+    is in the path and NOT in the rows; a caller assembling a cohort re-attaches
+    it, which `AssemblyGenomeMapResponse` explains for the JSON form.
+    """
+    return await _genome_map_parquet_body(
+        pool,
+        sql=ASSEMBLY_GENOME_MAP_ROWS_SQL,
+        params=([prep_sample_idx], processing_idx),
     )
 
 
@@ -1318,7 +1450,7 @@ async def export_assembly_member_genome(
                 ("genome_idx", pa.int64()),
             ]
         ),
-        out_path=out_path,
+        sink=out_path,
     )
 
 
@@ -2169,7 +2301,7 @@ async def sync_reference_exclusion_data(
         # Schema created up front so an empty blocklist still writes a valid,
         # correctly-typed Parquet (mirrors export_member_genome).
         schema = pa.schema([("feature_idx", pa.int64())])
-        writer = pq.ParquetWriter(str(dest), schema, compression="snappy")
+        writer = pq.ParquetWriter(str(dest), schema, compression=PARQUET_COMPRESSION_INTERMEDIATE)
         try:
             for start in range(0, len(feature_idxs), _CHUNK_SIZE):
                 chunk = feature_idxs[start : start + _CHUNK_SIZE]

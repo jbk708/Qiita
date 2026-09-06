@@ -489,6 +489,19 @@ ASSEMBLY_GENOME_MAP_PAIRS_SQL = _ASSEMBLY_GENOME_MAP_FROM + _ASSEMBLY_GENOME_MAP
 # cannot differ.
 _ASSEMBLY_GENOME_SOURCE_JOIN = " JOIN qiita.genome g ON g.genome_idx = am.genome_idx"
 
+# The four-column, ordered row set BOTH map forms serve — the capped JSON read
+# (`fetch_assembly_genome_map`, which appends its LIMIT as `$3`) and the uncapped
+# Parquet body (`actions.library.assembly_genome_map_parquet`, which binds no
+# further placeholder). The reference twin `GENOME_MAP_ROWS_SQL` carries why the
+# text is shared rather than copied.
+ASSEMBLY_GENOME_MAP_ROWS_SQL = (
+    "SELECT DISTINCT am.feature_idx, am.genome_idx, g.source, g.source_id"
+    + _ASSEMBLY_GENOME_MAP_FROM
+    + _ASSEMBLY_GENOME_SOURCE_JOIN
+    + _ASSEMBLY_GENOME_MAP_WHERE
+    + " ORDER BY am.feature_idx, am.genome_idx"
+)
+
 
 async def fetch_assembly_genome_subject(
     db: asyncpg.Pool | asyncpg.Connection,
@@ -547,11 +560,7 @@ async def fetch_assembly_genome_map(
     keeps both pairs, which `analytic.reconcile.denovo_map_table_sql` explains.
     """
     return await db.fetch(
-        "SELECT DISTINCT am.feature_idx, am.genome_idx, g.source, g.source_id"
-        + _ASSEMBLY_GENOME_MAP_FROM
-        + _ASSEMBLY_GENOME_SOURCE_JOIN
-        + _ASSEMBLY_GENOME_MAP_WHERE
-        + " ORDER BY am.feature_idx, am.genome_idx LIMIT $3",
+        ASSEMBLY_GENOME_MAP_ROWS_SQL + " LIMIT $3",
         [prep_sample_idx],
         processing_idx,
         limit,

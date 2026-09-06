@@ -79,6 +79,12 @@ PATH_REFERENCE_GENOME_MEMBER = "/{reference_idx}/genome/{genome_idx}/member"
 # listing of genomes — it is the join table a client rolls alignment rows up
 # through. Param path, 2 segments, no literal shadow.
 PATH_REFERENCE_GENOME_MAP = "/{reference_idx}/genome-map"
+# The same rows as GENOME_MAP, as a Parquet body, with no cap. A sub-resource
+# segment rather than an Accept header on the path above: the two forms differ in
+# more than encoding — this one has no size ceiling and therefore no 413 — and one
+# path with one behaviour is what the api_paths triple can express. Param path,
+# 3 segments, no literal shadow.
+PATH_REFERENCE_GENOME_MAP_PARQUET = "/{reference_idx}/genome-map/parquet"
 
 URL_REFERENCE_PREFIX = f"{API_PREFIX}{PATH_REFERENCE_PREFIX}"
 URL_REFERENCE_BY_IDX = f"{URL_REFERENCE_PREFIX}{PATH_REFERENCE_BY_IDX}"
@@ -91,6 +97,7 @@ URL_REFERENCE_EXCLUSION_SYNC = f"{URL_REFERENCE_PREFIX}{PATH_REFERENCE_EXCLUSION
 URL_REFERENCE_EXCLUSION_BY_IDX = f"{URL_REFERENCE_PREFIX}{PATH_REFERENCE_EXCLUSION_BY_IDX}"
 URL_REFERENCE_GENOME_MEMBER = f"{URL_REFERENCE_PREFIX}{PATH_REFERENCE_GENOME_MEMBER}"
 URL_REFERENCE_GENOME_MAP = f"{URL_REFERENCE_PREFIX}{PATH_REFERENCE_GENOME_MAP}"
+URL_REFERENCE_GENOME_MAP_PARQUET = f"{URL_REFERENCE_PREFIX}{PATH_REFERENCE_GENOME_MAP_PARQUET}"
 
 # =============================================================================
 # /host-filter-profile/*
@@ -548,11 +555,15 @@ PATH_ASSEMBLY_PREFIX = "/assembly"
 PATH_ASSEMBLY_DOGET = "/ticket/doget"
 PATH_ASSEMBLY_RUN_DOGET = "/{prep_sample_idx}/{processing_idx}/ticket/doget"
 PATH_ASSEMBLY_GENOME_MAP = "/{prep_sample_idx}/{processing_idx}/genome-map"
+# The Parquet form, uncapped — the de novo twin of
+# PATH_REFERENCE_GENOME_MAP_PARQUET, which carries why it is a segment.
+PATH_ASSEMBLY_GENOME_MAP_PARQUET = "/{prep_sample_idx}/{processing_idx}/genome-map/parquet"
 
 URL_ASSEMBLY_PREFIX = f"{API_PREFIX}{PATH_ASSEMBLY_PREFIX}"
 URL_ASSEMBLY_DOGET = f"{URL_ASSEMBLY_PREFIX}{PATH_ASSEMBLY_DOGET}"
 URL_ASSEMBLY_RUN_DOGET = f"{URL_ASSEMBLY_PREFIX}{PATH_ASSEMBLY_RUN_DOGET}"
 URL_ASSEMBLY_GENOME_MAP = f"{URL_ASSEMBLY_PREFIX}{PATH_ASSEMBLY_GENOME_MAP}"
+URL_ASSEMBLY_GENOME_MAP_PARQUET = f"{URL_ASSEMBLY_PREFIX}{PATH_ASSEMBLY_GENOME_MAP_PARQUET}"
 
 
 # =============================================================================

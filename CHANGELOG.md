@@ -21,6 +21,28 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Added
 
+- **The genome map is served as Parquet from a sibling route, so a large reference
+  is no longer unbuildable (#550).** `GET /reference/{idx}/genome-map` caps at 250,000
+  entries and 413s above it; both genome-bearing references on the deploy are past
+  that (421,717 and 392,122 pairs), so the client-side `feature-table build` recipe
+  could not obtain the lookup it joins every downstream step against. Adds
+  `GET /reference/{idx}/genome-map/parquet` and the de novo twin
+  `GET /assembly/{prep_sample_idx}/{processing_idx}/genome-map/parquet`, both uncapped,
+  both projecting shared SQL text so the compute-side Parquet, the JSON map and the
+  count cannot disagree about which features have genomes. The JSON routes, their cap
+  and their 413 are unchanged, and the cap is not raised — the Parquet form needs none,
+  for the reason `actions.library._genome_map_parquet_body` gives. Measured on 392,122
+  pairs at the deploy's shape: ~3.5 MB of Parquet at ~100 MB peak RSS, against ~290 MB
+  for the JSON route's capped fetch, which then 413s — the JSON figure is fixed by the
+  cap and the Parquet one grows with the reference, so that comparison reverses on a
+  large enough map (`docs/architecture/flight.md` carries both measured points). Arrow
+  IPC was measured and rejected. The CLI reads the new form, bounding the transfer with
+  an observed-rate floor rather than a fixed timeout.
+  `docs/architecture/flight.md` carries the three-class rule for when a control-plane
+  read may ship a columnar body at all. `docs/auth.md` gains the `### Assembly` endpoint
+  section it never had — all four routes, plus the run-state `404` / `409` gate the three
+  run-scoped ones share.
+
 - **One genome per assembled subject is now a database constraint
   (#534).** `qiita.assembly_membership.genome_idx` is minted
   per `(prep_sample_idx, processing_idx, kind, bin_id)` and stamped onto every contig
@@ -3447,6 +3469,15 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   command prints it.
 
 ### Changed
+
+- **The Python Parquet writers that spelled their codec inline now name the shared
+  constant (#550).** `PARQUET_COMPRESSION` / `PARQUET_COMPRESSION_INTERMEDIATE` were
+  added so the DuckDB `COPY` strings could interpolate rather than repeat a literal,
+  which left six `"zstd"` / `"snappy"` literals across `actions/library.py`,
+  `cli/admin/masked_export.py`, `cli/user/reference.py` and `runner/_read_ingest.py`.
+  Same codecs, no behaviour change, and no Parquet codec is now spelled inline in the
+  Python that writes Parquet. (The `FORMAT FASTQ` / `FASTA` / `BIOM` writers still name
+  `'gzip'` in their DuckDB `COPY` strings; those are a different question.)
 
 - **A run pre-flight is no longer modified by reading it.** kl-run-preflight's
   file-opening entry point applied pending schema patches to the file it opened, so a

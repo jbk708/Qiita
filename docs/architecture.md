@@ -51,7 +51,7 @@ Three-level identity model, taxonomy, phylogeny, exclusion, aligner indices, hos
 
 ### [Arrow Flight Surface](architecture/flight.md)
 
-DoGet/DoPut/DoAction, compression, column projection, which mints are REST rather than Flight.
+DoGet/DoPut/DoAction, compression, column projection, which mints are REST rather than Flight, and when a control-plane read may ship a columnar body.
 
 - [Client Interfaces (Unresolved)](architecture/flight.md#client-interfaces-unresolved)
 - [Arrow Flight Operations (no custom .proto needed)](architecture/flight.md#arrow-flight-operations-no-custom-proto-needed)
