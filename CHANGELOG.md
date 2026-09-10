@@ -3470,6 +3470,20 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **`long-read-assembly/1.0.1` resource baselines are sized from a full 235-ticket
+  myloasm cohort, and `binning.sh` derives metaWRAP's `-m` from the allocation (#557).**
+  `bin_refine` mem_gb 32 → 12 and walltime PT4H → PT2H30M (peak 5.95 GiB, longest run
+  1:09:33); `checkm` walltime PT4H → PT3H (longest run 1:36:41); `binning` mem_gb 100 →
+  80 (peak 56.16 GiB) and walltime PT8H → PT12H (longest run 7:44:43, 97% of the PT8H it
+  replaces); the `assemble` step's myloasm profile walltime PT16H → PT5H (longest run
+  2:29:24). CPU counts, `assemble`'s and `checkm`'s memory, and the hifiasm_meta profile are
+  unchanged. On a standard node `binning` and `bin_refine` stay cpu-bound after their
+  memory cuts, so neither admits more runs of itself; each releases node memory to other
+  steps. `binning.sh` passes metaWRAP `-m` as the step's `MEM_MB` less 10 GB rather than a
+  literal, so a per-run `--mem-gb` or an OOM escalation raises the `-m` metaWRAP is given
+  along with the allocation. 1.0.0 shares the binning image; at its 100 GB baseline it is
+  `-m 90`.
+
 - **The Python Parquet writers that spelled their codec inline now name the shared
   constant (#550).** `PARQUET_COMPRESSION` / `PARQUET_COMPRESSION_INTERMEDIATE` were
   added so the DuckDB `COPY` strings could interpolate rather than repeat a literal,
