@@ -2126,7 +2126,7 @@ async def register_files(
     replaced = result_body.get("replaced") or {}
     if replaced:
         _log.info(
-            "register_files superseded rows on the load's replace key (work_ticket_idx=%s): %s",
+            "register_files replaced rows an earlier load wrote (work_ticket_idx=%s): %s",
             work_ticket_idx,
             replaced,
         )

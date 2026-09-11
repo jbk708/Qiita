@@ -335,7 +335,7 @@ def test_duckdb_memory_limit_tracks_the_slurm_cgroup(fake_mint, monkeypatch, tmp
 
 def test_execute_refuses_a_range_minted_by_a_different_ticket(monkeypatch, tmp_path):
     """A range minted by ANOTHER work_ticket must NOT be reused — the sample's reads
-    are already registered under that ticket.
+    are already registered, and reusing the range would register them a second time.
 
     This is the guard that makes the 409-reuse safe. The submit-time
     disallow-without-delete gate only blocks NON-terminal tickets, so a COMPLETED
@@ -376,8 +376,8 @@ def test_execute_refuses_a_range_minted_by_a_different_ticket(monkeypatch, tmp_p
 
 def test_execute_refuses_a_range_with_unknown_provenance(monkeypatch, tmp_path):
     """A NULL minted_by (a range predating the column, or one the backfill could not
-    attribute) is treated as NOT-mine: fail closed. A range we cannot prove is ours
-    may belong to reads that are already in the lake."""
+    attribute) is treated as NOT-mine: fail closed. Reusing a range we cannot prove
+    is ours risks duplicating reads that are already in the lake."""
 
     async def _conflict(*, http, prep_sample_idx, count, work_ticket_idx):
         raise SequenceRangeAlreadyExists(prep_sample_idx, count)
@@ -451,13 +451,13 @@ def test_execute_refuses_a_range_whose_ticket_is_no_longer_in_flight(
 
     # The refusal must name a recovery the CP will actually ACCEPT. `/run` takes a
     # ticket in PENDING or FAILED only, so `failed` gets the redrive and every other
-    # terminal state gets the runbook; pointing `completed` or `no_data` at
+    # terminal state gets delete-then-resubmit; pointing `completed` or `no_data` at
     # `ticket run` would send the operator to a 409.
     if terminal_state == WorkTicketState.FAILED.value:
         assert f"qiita ticket run {1}" in ei.value.reason
-        assert sequence_range_retry.REINGEST_RUNBOOK not in ei.value.reason
+        assert "DELETE the prep_sample" not in ei.value.reason
     else:
-        assert sequence_range_retry.REINGEST_RUNBOOK in ei.value.reason
+        assert "DELETE the prep_sample" in ei.value.reason
         assert "ticket run" not in ei.value.reason
 
 
@@ -543,7 +543,7 @@ def test_execute_refuses_when_the_minter_state_is_unknown(monkeypatch, tmp_path)
 
     assert ei.value.kind is FailureKind.UNKNOWN_PERMANENT
     assert "no longer in flight" in ei.value.reason
-    # No ticket row to redrive — `/run` would 404, so the reason names the runbook.
-    assert sequence_range_retry.REINGEST_RUNBOOK in ei.value.reason
+    # No ticket row to redrive — `/run` would 404. Delete-first is the only recovery.
+    assert "DELETE the prep_sample" in ei.value.reason
     assert "ticket run" not in ei.value.reason
     assert not (tmp_path / "ws" / "read").exists()

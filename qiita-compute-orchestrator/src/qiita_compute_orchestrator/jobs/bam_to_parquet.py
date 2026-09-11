@@ -355,7 +355,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
         # reuses it IF this ticket minted it (a prior crashed attempt of this step),
         # so an OOM-escalated retry completes instead of dying on the one-shot mint
         # contract. A range minted by a DIFFERENT ticket means the reads are already
-        # loaded, and it refuses before this job writes anything.
+        # loaded, and it refuses — reuse would register them twice.
         async with make_cp_client() as http:
             sequence_idx_start = await mint_or_reuse_sequence_range(
                 http,

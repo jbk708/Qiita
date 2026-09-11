@@ -313,13 +313,15 @@ class WorkTicketCreateRequest(BaseModel):
     to wet_lab_admin / system_admin and bounded by the action's ceiling.
 
     `force` re-submits a sequenced_pool action even when a COMPLETED ticket
-    already exists for the same `(pool, action, version)`, which is refused by
-    default (`routes/work_ticket.py::_check_disallow_without_delete`). It is
-    privileged regardless of scope: setting `force=true` requires wet_lab_admin /
-    system_admin (403 otherwise) for ANY action. It only *changes submission
-    behavior* for the sequenced_pool COMPLETED gate, though — for other scopes, or
-    when no COMPLETED ticket exists, an authorized `force=true` is simply a no-op.
-    It never relaxes the in-flight gate (a PENDING/QUEUED/PROCESSING ticket still
+    already exists for the same `(pool, action, version)`. Default-refused
+    because a re-run re-registers the pool's reads into the lake (DuckLake has
+    no uniqueness — duplicate rows result); the intended recovery for a stored
+    result is `delete-sequenced-pool` then resubmit. It is privileged regardless
+    of scope: setting `force=true` requires wet_lab_admin / system_admin (403
+    otherwise) for ANY action. It only *changes submission behavior* for the
+    sequenced_pool COMPLETED gate, though — for other scopes, or when no
+    COMPLETED ticket exists, an authorized `force=true` is simply a no-op. It
+    never relaxes the in-flight gate (a PENDING/QUEUED/PROCESSING ticket still
     blocks)."""
 
     action_id: str = Field(min_length=1, max_length=MAX_NAME_LENGTH)

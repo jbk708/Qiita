@@ -1,7 +1,9 @@
 # PacBio ingest (runbook)
 
 **For:** whoever is ingesting a PacBio run (`qiita submit-pacbio-ingest`). Read it
-before the first ingest on a new deploy. Not needed for Illumina.
+before the first ingest on a new deploy — three of its behaviours surprise people, and
+one of them (reads duplicated in the lake) is expensive to undo.
+Not needed for Illumina.
 
 Auth and the general CLI flow are **not** repeated here — see
 [`user-cli-quickstart.md`](user-cli-quickstart.md), whose *Headless / remote hosts
@@ -58,18 +60,11 @@ qiita --base-url https://qiita-miint.ucsd.edu/ submit-pacbio-ingest \
   matter what the sheet filename suggests. Look the idx up on your deploy rather than
   copying a number (`qiita prep-protocol list`); on `qiita-miint` it is **3**, and the
   amplicon protocol you must *not* pick is 5.
-- **Retry by re-running the identical command.** Run and pool are find-or-create, and the
-  roster is create-missing. A prep_sample with a ticket still in flight comes back
-  `skipped`; every other prep_sample gets a new bam-to-parquet ticket. That ticket fails
-  at the mint if an earlier ticket minted the prep_sample's range: its reads are loaded
-  ([Re-ingesting reads that are already loaded](fastq-to-parquet-retry-recovery.md#re-ingesting-reads-that-are-already-loaded)),
-  or the earlier ticket failed after minting and is re-driven with `qiita ticket run <idx>`
-  instead. Pool identity is the SHA-256 of the uploaded pre-flight bytes, so a retry has
-  to submit the same file content — different bytes mint a second pool instead of
-  converging.
-- **`--force` does not change what is submitted.** A completed ticket does not block a
-  prep_sample's submission, so the command submits the same tickets with or without it,
-  and `--force` still requires wet_lab_admin or system_admin.
+- **Retry by re-running the identical command.** Run and pool are find-or-create, the
+  roster is create-missing, and already-ingested samples come back `skipped`. Pool
+  identity is the SHA-256 of the uploaded pre-flight bytes, so a retry has to submit the
+  same file content — different bytes mint a second pool instead of converging.
+- **Never use `--force` to retry.** It re-ingests, duplicating the reads in the lake.
 
 ## `pool-completion` does not report on ingest
 

@@ -2176,8 +2176,7 @@ fn lake_count(conn: &Connection, sql: &str) -> i64 {
 ///
 /// `register_one_parquet` stages into a fresh tempdir on every call, which is
 /// what a ticket's re-run hands `register_files`: a different staging dir under
-/// the same ticket, so `lake_dest_filename` mints a different name and
-/// `move_file` has nothing to refuse.
+/// the same ticket.
 #[test]
 #[serial_test::serial]
 #[cfg(feature = "integration")]
@@ -2263,10 +2262,17 @@ fn stage_read_files(
 }
 
 #[test]
-fn staged_read_prep_samples_names_each_files_prep_sample() {
+fn staged_read_prep_samples_collects_every_staged_read_prep_sample() {
+    let spanning = format!(
+        "{} UNION ALL {}",
+        read_rows_sql(33, 300, 2),
+        read_rows_sql(44, 400, 2)
+    );
     let (staging, mut files) = stage_read_files(&[
         ("a", read_rows_sql(11, 100, 3)),
         ("b", read_rows_sql(22, 200, 2)),
+        ("spanning", spanning),
+        ("empty", read_rows_sql(55, 500, 0)),
     ]);
     // Other tables in the same registration are not read.
     files.insert("read_mask.parquet".to_string(), "read_mask".to_string());
@@ -2274,103 +2280,30 @@ fn staged_read_prep_samples_names_each_files_prep_sample() {
     let prep_samples = staged_read_prep_samples(&conn, staging.path(), &files).unwrap();
     assert_eq!(
         prep_samples,
-        BTreeMap::from([
-            ("read/a.parquet".to_string(), 11),
-            ("read/b.parquet".to_string(), 22),
-        ])
+        std::collections::BTreeSet::from([11, 22, 33, 44])
     );
 }
 
 #[test]
-fn staged_read_prep_samples_refuses_a_file_spanning_prep_samples() {
-    let both = format!(
-        "{} UNION ALL {}",
-        read_rows_sql(11, 100, 2),
-        read_rows_sql(22, 200, 2)
-    );
-    let (staging, files) = stage_read_files(&[("both", both)]);
-    let conn = Connection::open_in_memory().unwrap();
-    let err = staged_read_prep_samples(&conn, staging.path(), &files)
-        .expect_err("a read file spanning two prep_samples is refused");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err}");
-    assert!(err.message().contains("read/both.parquet"), "{err}");
-}
-
-#[test]
-fn staged_read_prep_samples_refuses_an_empty_file() {
-    let (staging, files) = stage_read_files(&[("empty", read_rows_sql(11, 100, 0))]);
-    let conn = Connection::open_in_memory().unwrap();
-    let err = staged_read_prep_samples(&conn, staging.path(), &files)
-        .expect_err("an empty read file is refused");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err}");
-    assert!(err.message().contains("read/empty.parquet"), "{err}");
-}
-
-#[test]
-fn foreign_read_refusal_gives_the_count_and_runbook_before_a_capped_list() {
-    let listed = REFUSED_READ_PREP_SAMPLES_LISTED as i64;
-    let lake_read: BTreeMap<i64, std::collections::BTreeSet<Option<String>>> = (0..listed + 2)
-        .map(|i| {
-            let file = format!("/lake/read/wt8-0a1b2c3d4e5f-p{i}.parquet");
-            (100 + i, std::collections::BTreeSet::from([Some(file)]))
-        })
-        .collect();
-    let err =
-        foreign_read_refusal(7, &lake_read).expect("reads work_ticket 8 registered are refused");
-    let message = err.message();
-    assert_eq!(err.code(), tonic::Code::AlreadyExists, "{err}");
-    assert!(
-        message.contains(&format!("for {} prep_sample(s)", listed + 2)),
-        "{message}"
-    );
-    let runbook = message
-        .find("docs/runbooks/fastq-to-parquet-retry-recovery.md")
-        .expect(message);
-    let first = message.find("prep_sample 100 (").expect(message);
-    assert!(
-        runbook < first,
-        "the runbook comes before the list: {message}"
-    );
-    assert!(
-        message.contains(&format!("prep_sample {} (", 100 + listed - 1)),
-        "{message}"
-    );
-    assert!(
-        !message.contains(&format!("prep_sample {} (", 100 + listed)),
-        "{message}"
-    );
-    assert!(message.ends_with("; and 2 more"), "{message}");
-}
-
-#[test]
-fn foreign_read_refusal_names_every_owner_of_a_prep_sample() {
-    let own = Some("/lake/read/wt7-0a1b2c3d4e5f-a.parquet".to_string());
-    let only_own = BTreeMap::from([(1, std::collections::BTreeSet::from([own.clone()]))]);
-    assert!(
-        foreign_read_refusal(7, &only_own).is_none(),
-        "this ticket's own files are not refused"
-    );
-
-    let mixed = BTreeMap::from([(
+fn staged_read_prep_samples_refuses_a_null_prep_sample_idx() {
+    let null_row = read_rows_sql(0, 1, 1).replacen(
+        "0::BIGINT AS prep_sample_idx",
+        "NULL::BIGINT AS prep_sample_idx",
         1,
-        std::collections::BTreeSet::from([
-            own,
-            Some("/lake/read/part_00000.parquet".to_string()),
-            None,
-        ]),
-    )]);
-    let err = foreign_read_refusal(7, &mixed).expect("rows no ticket registered are refused");
-    assert!(
-        err.message().ends_with(
-            "prep_sample 1 (registered by a file with no ticket in its name, \
-             a row with no file name, work_ticket 7)"
-        ),
-        "{err}"
     );
+    assert!(
+        null_row.contains("NULL::BIGINT AS prep_sample_idx"),
+        "{null_row}"
+    );
+    let (staging, files) = stage_read_files(&[("null", null_row)]);
+    let conn = Connection::open_in_memory().unwrap();
+    let err = staged_read_prep_samples(&conn, staging.path(), &files)
+        .expect_err("a NULL prep_sample_idx is refused");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err}");
+    assert!(err.message().contains("read/null.parquet"), "{err}");
 }
 
-/// Register `stage_read_files`' output as ONE call. Returns the result unwrapped
-/// so a test can assert on a refusal.
+/// Register `stage_read_files`' output as ONE call.
 #[cfg(feature = "integration")]
 fn register_read_files(
     connstr: &str,
@@ -2386,28 +2319,6 @@ fn register_read_files(
         work_ticket_idx: ticket,
     };
     register_files(connstr, data_path, std::path::Path::new("/"), &payload)
-}
-
-/// Lake files one ticket has placed under `table`'s directory. A table directory
-/// that does not exist yet holds none; a missing data path, or any other failure
-/// to list, panics, so a "nothing moved" check cannot pass by reading nothing.
-#[cfg(feature = "integration")]
-fn lake_files_for_ticket(data_path: &str, table: &str, ticket: i64) -> usize {
-    assert!(
-        std::path::Path::new(data_path).is_dir(),
-        "lake data path {data_path} is not a directory"
-    );
-    let dir = std::path::Path::new(data_path).join(table);
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
-        Err(e) => panic!("cannot list {}: {e}", dir.display()),
-    };
-    let prefix = format!("{LAKE_FILE_TICKET_PREFIX}{ticket}-");
-    entries
-        .map(|entry| entry.unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display())))
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
-        .count()
 }
 
 /// A registration carrying one prep_sample this ticket registered before and one
@@ -2478,23 +2389,24 @@ fn register_files_decides_per_read_prep_sample() {
     let _ = reader.execute_batch(&clear);
 }
 
-/// Reads another ticket registered are never replaced. The whole call is refused
-/// before anything moves, so a new prep_sample travelling with the held one is not
-/// registered either.
+/// Reads another ticket registered are left as they are: a registration of the
+/// same prep_sample by a different ticket adds its rows and replaces none.
 #[test]
 #[serial_test::serial]
 #[cfg(feature = "integration")]
-fn register_files_refuses_reads_another_ticket_registered() {
+fn register_files_leaves_reads_another_ticket_registered() {
     let connstr = delete_test_catalog_connstr();
     let data_path = delete_test_data_path();
 
     let held: i64 = 972_561;
-    let new: i64 = 972_562;
     let owner: i64 = 972_400_000 + std::process::id() as i64;
     let other = owner + 1;
-    let clear = format!("DELETE FROM qiita_lake.read WHERE prep_sample_idx IN ({held}, {new})");
-    let count = |prep_sample: i64| {
-        format!("SELECT count(*) FROM qiita_lake.read WHERE prep_sample_idx = {prep_sample}")
+    let clear = format!("DELETE FROM qiita_lake.read WHERE prep_sample_idx = {held}");
+    let rows_of = |ticket: i64| {
+        format!(
+            "SELECT count(*) FROM qiita_lake.read WHERE prep_sample_idx = {held} \
+             AND filename LIKE '%{LAKE_FILE_TICKET_PREFIX}{ticket}-%'"
+        )
     };
 
     {
@@ -2511,89 +2423,108 @@ fn register_files_refuses_reads_another_ticket_registered() {
         owner,
     )
     .unwrap();
-    let other_files_before = lake_files_for_ticket(&data_path, "read", other);
-    let err = register_read_files(
+    let registration = register_read_files(
         &connstr,
         &data_path,
-        &[
-            ("held", read_rows_sql(held, 6000, 3)),
-            ("new", read_rows_sql(new, 7000, 2)),
-        ],
+        &[("held", read_rows_sql(held, 6000, 3))],
         other,
     )
-    .expect_err("reads another ticket registered are refused");
+    .unwrap();
 
-    assert_eq!(err.code(), tonic::Code::AlreadyExists, "{err}");
-    assert!(
-        err.message().contains(&format!("prep_sample {held}")),
-        "{err}"
-    );
-    assert!(
-        err.message().contains(&format!("work_ticket {owner}")),
-        "{err}"
-    );
     assert_eq!(
-        lake_files_for_ticket(&data_path, "read", other),
-        other_files_before,
-        "nothing moved"
+        registration.replaced.get("read"),
+        None,
+        "another ticket's rows are not replaced"
     );
     let reader = Connection::open_in_memory().unwrap();
     ducklake::connect_ducklake(&reader, &connstr, &data_path).unwrap();
     assert_eq!(
-        lake_count(&reader, &count(held)),
+        lake_count(&reader, &rows_of(owner)),
         3,
         "the owner's rows are untouched"
     );
     assert_eq!(
-        lake_count(&reader, &count(new)),
-        0,
-        "the refused call registers nothing"
+        lake_count(&reader, &rows_of(other)),
+        3,
+        "the other ticket's rows are registered"
     );
 
     let _ = reader.execute_batch(&clear);
 }
 
-/// A `read` file holding more than one prep_sample is refused before anything
-/// moves, since replace-or-refuse is decided per prep_sample, file by file.
+/// A `read` file may hold more than one prep_sample. The same ticket
+/// re-registering it replaces the rows of each; re-registering one of them
+/// replaces only that one's rows.
 #[test]
 #[serial_test::serial]
 #[cfg(feature = "integration")]
-fn register_files_refuses_a_read_file_spanning_prep_samples() {
+fn register_files_replaces_a_tickets_rows_from_a_file_spanning_prep_samples() {
     let connstr = delete_test_catalog_connstr();
     let data_path = delete_test_data_path();
 
-    let (first, second): (i64, i64) = (972_559, 972_560);
-    let ticket: i64 = 972_300_000 + std::process::id() as i64;
-    let both_count = format!(
-        "SELECT count(*) FROM qiita_lake.read WHERE prep_sample_idx IN ({first}, {second})"
+    let first: i64 = 972_565;
+    let second: i64 = 972_566;
+    let ticket: i64 = 972_600_000 + std::process::id() as i64;
+    let clear = format!("DELETE FROM qiita_lake.read WHERE prep_sample_idx IN ({first}, {second})");
+    let count = |prep_sample: i64| {
+        format!("SELECT count(*) FROM qiita_lake.read WHERE prep_sample_idx = {prep_sample}")
+    };
+    let spanning = format!(
+        "{} UNION ALL {}",
+        read_rows_sql(first, 8000, 2),
+        read_rows_sql(second, 9000, 3)
     );
+
     {
         let conn = Connection::open_in_memory().unwrap();
         ducklake::connect_ducklake(&conn, &connstr, &data_path).unwrap();
         ducklake::ensure_read_tables(&conn).unwrap();
-        conn.execute_batch(&format!(
-            "DELETE FROM qiita_lake.read WHERE prep_sample_idx IN ({first}, {second})"
-        ))
-        .unwrap();
+        conn.execute_batch(&clear).unwrap();
     }
 
-    let both = format!(
-        "{} UNION ALL {}",
-        read_rows_sql(first, 4000, 2),
-        read_rows_sql(second, 5000, 2)
-    );
-    let files_before = lake_files_for_ticket(&data_path, "read", ticket);
-    let err = register_read_files(&connstr, &data_path, &[("both", both)], ticket)
-        .expect_err("a read file spanning two prep_samples is refused");
-    assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err}");
+    register_read_files(
+        &connstr,
+        &data_path,
+        &[("spanning", spanning.clone())],
+        ticket,
+    )
+    .unwrap();
+    let registration =
+        register_read_files(&connstr, &data_path, &[("spanning", spanning)], ticket).unwrap();
     assert_eq!(
-        lake_files_for_ticket(&data_path, "read", ticket),
-        files_before,
-        "nothing moved"
+        registration.replaced.get("read"),
+        Some(&5),
+        "both prep_samples' rows are replaced"
     );
+
+    // Re-registering only the first leaves the second's rows in the file they share.
+    let registration = register_read_files(
+        &connstr,
+        &data_path,
+        &[("first", read_rows_sql(first, 8000, 2))],
+        ticket,
+    )
+    .unwrap();
+    assert_eq!(
+        registration.replaced.get("read"),
+        Some(&2),
+        "only the first prep_sample's rows are replaced"
+    );
+
     let reader = Connection::open_in_memory().unwrap();
     ducklake::connect_ducklake(&reader, &connstr, &data_path).unwrap();
-    assert_eq!(lake_count(&reader, &both_count), 0, "nothing registered");
+    assert_eq!(
+        lake_count(&reader, &count(first)),
+        2,
+        "one copy of the first"
+    );
+    assert_eq!(
+        lake_count(&reader, &count(second)),
+        3,
+        "the second keeps its rows"
+    );
+
+    let _ = reader.execute_batch(&clear);
 }
 
 /// A second registration of one `(prep_sample_idx, processing_idx)`
