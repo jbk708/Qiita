@@ -31,27 +31,7 @@ _None yet._
 
 ### 5. Verify
 
-- `long-read-assembly` 1.0.1's in-place resource edit reached `qiita.action`. `PT2H30M` exists only in the new `bin_refine` baseline and `sync` replaces the whole `steps` array, so this one token proves the edit landed (#557):
-  ```bash
-  sudo -u qiita-api bash -c 'set -a; . /etc/qiita/control-plane.env; set +a
-  psql "$DATABASE_URL" -Atc "SELECT steps::text LIKE '\''%PT2H30M%'\'' FROM qiita.action WHERE action_id = '\''long-read-assembly'\'' AND version = '\''1.0.1'\'';"'
-  ```
-  Expect `t`. `f` means the row still holds the pre-edit steps; **empty output** means no `long-read-assembly` 1.0.1 row synced at all.
-- `align` 1.0.0's in-place memory-ceiling edit reached `qiita.action` (#560):
-  ```bash
-  sudo -u qiita-api bash -c 'set -a; . /etc/qiita/control-plane.env; set +a
-  psql "$DATABASE_URL" -Atc "SELECT mem_ceiling_gb FROM qiita.action WHERE action_id = '\''align'\'' AND version = '\''1.0.0'\'';"'
-  ```
-  Expect `128`. `64` means the row still holds the pre-edit ceiling; **empty output** means no `align` 1.0.0 row synced at all.
-- The rebuilt binning image derives metaWRAP's `-m` from the allocation. Anchored at start-of-line so a comment mentioning it cannot satisfy it (#557):
-  ```bash
-  derived=$(sudo grep '^PATH_DERIVED=' /etc/qiita/compute-orchestrator.env | tail -1 | cut -d= -f2-)
-  cd /tmp && sudo -u qiita-orch apptainer exec --no-home \
-    "$derived/images/long-read-assembly-binning-1.0.0.sif" \
-    bash -c 'grep -q "^METAWRAP_MEM_GB=.*MEM_MB" /opt/qiita/binning.sh' \
-    && echo BINNING_MEM_OK
-  ```
-  Expect `BINNING_MEM_OK`; without it, the image did not open or does not carry the derived `-m`.
+_None yet._
 
 ### 6. After the deploy verifies green
 
@@ -59,8 +39,7 @@ _None yet._
 
 ### Notes (no host action)
 
-- **Edited in place** and re-synced into `qiita.action` by `qiita-admin actions sync` inside `activate.sh` — no new action, no migration: `long-read-assembly` 1.0.1's resource baselines for `bin_refine`, `binning`, `checkm` and the myloasm `assemble` profile (#557); `align` 1.0.0's `action_ceiling.mem_gb`, 64 → 128, with `align_sharded`'s 64 GB baseline unchanged (#560).
-- Every workflow SIF auto-rebuilds on deploy: `workflows/_shared/_lib.sh` changed (a comment), and both build-input hashes in `deploy/_common.sh` cover all of `_shared/`. The binning image's rebuild also picks up `binning.sh`'s allocation-derived metaWRAP `-m`; that image is shared with 1.0.0, whose 100 GB baseline still yields `-m 90` (#557).
+_None yet._
 
 ## Deployed history
 
