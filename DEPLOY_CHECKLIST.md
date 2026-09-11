@@ -31,15 +31,7 @@ _None yet._
 
 ### 5. Verify
 
-- **Re-run the two long-read-assembly tickets that failed at `binning` on MaxBin2's
-  "cannot be binned" verdict** (work_tickets 9142 and 9157, prep_samples 30593 and 30608).
-  The deploy rebuilds the binning image with the new `binning.sh`; `ticket run` resets a
-  FAILED ticket and re-dispatches it. Each should end `completed`, with its contigs
-  registered and no MAGs: (#561)
-  ```bash
-  qiita ticket run 9142
-  qiita ticket run 9157
-  ```
+_None yet._
 
 ### 6. After the deploy verifies green
 
