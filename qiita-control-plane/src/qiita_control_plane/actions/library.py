@@ -1423,8 +1423,7 @@ async def export_assembly_member_genome(
     wrong without it.
 
     DISTINCT for the reason `fetch_assembly_genome_map` is, and with the same limit:
-    it collapses exact repeats, not a contig that legitimately belongs to two genomes
-    of one run.
+    it collapses exact repeats, not a contig that belongs to two genomes of one run.
 
     The row set is `ASSEMBLY_GENOME_MAP_PAIRS_SQL`, shared verbatim with the REST map
     the client-side recipe reads, so the two drivers cannot disagree about which
