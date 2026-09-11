@@ -37,6 +37,12 @@ _None yet._
   psql "$DATABASE_URL" -Atc "SELECT steps::text LIKE '\''%PT2H30M%'\'' FROM qiita.action WHERE action_id = '\''long-read-assembly'\'' AND version = '\''1.0.1'\'';"'
   ```
   Expect `t`. `f` means the row still holds the pre-edit steps; **empty output** means no `long-read-assembly` 1.0.1 row synced at all.
+- `align` 1.0.0's in-place memory-ceiling edit reached `qiita.action` (#560):
+  ```bash
+  sudo -u qiita-api bash -c 'set -a; . /etc/qiita/control-plane.env; set +a
+  psql "$DATABASE_URL" -Atc "SELECT mem_ceiling_gb FROM qiita.action WHERE action_id = '\''align'\'' AND version = '\''1.0.0'\'';"'
+  ```
+  Expect `128`. `64` means the row still holds the pre-edit ceiling; **empty output** means no `align` 1.0.0 row synced at all.
 - The rebuilt binning image derives metaWRAP's `-m` from the allocation. Anchored at start-of-line so a comment mentioning it cannot satisfy it (#557):
   ```bash
   derived=$(sudo grep '^PATH_DERIVED=' /etc/qiita/compute-orchestrator.env | tail -1 | cut -d= -f2-)
@@ -53,7 +59,7 @@ _None yet._
 
 ### Notes (no host action)
 
-- `long-read-assembly` 1.0.1 is **edited in place** — resource baselines for `bin_refine`, `binning`, `checkm` and the myloasm `assemble` profile — and re-synced into `qiita.action` by `qiita-admin actions sync` inside `activate.sh`. No new action, no migration (#557).
+- **Edited in place** and re-synced into `qiita.action` by `qiita-admin actions sync` inside `activate.sh` — no new action, no migration: `long-read-assembly` 1.0.1's resource baselines for `bin_refine`, `binning`, `checkm` and the myloasm `assemble` profile (#557); `align` 1.0.0's `action_ceiling.mem_gb`, 64 → 128, with `align_sharded`'s 64 GB baseline unchanged (#560).
 - Every workflow SIF auto-rebuilds on deploy: `workflows/_shared/_lib.sh` changed (a comment), and both build-input hashes in `deploy/_common.sh` cover all of `_shared/`. The binning image's rebuild also picks up `binning.sh`'s allocation-derived metaWRAP `-m`; that image is shared with 1.0.0, whose 100 GB baseline still yields `-m 90` (#557).
 
 ## Deployed history

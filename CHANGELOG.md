@@ -3469,6 +3469,12 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **`align/1.0.0`'s memory ceiling is 128 GB, above the `align_sharded` step's
+  unchanged 64 GB baseline (#560).** With the ceiling equal to the baseline, OOM
+  escalation had no larger size to grow to, so the step's first OOM failed its ticket
+  permanently. The first OOM now retries at 128 GB; an OOM at 128 GB still fails the
+  ticket. `align_sharded` defines no `plan()`, so ordinary tickets still request 64 GB.
+
 - **`analytic/reconcile.py`'s de novo map docstrings cite `qiita.assembly_membership`
   on the deploy instead of an unprobed assembler behaviour (#558).**
   `denovo_map_table_sql` no longer says an assembler can emit one sequence as both a
