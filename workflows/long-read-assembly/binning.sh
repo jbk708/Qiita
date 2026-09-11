@@ -198,11 +198,23 @@ fi
 # bin dirs exist. Only a hard metaWRAP crash should fail the step, so we let its
 # real exit code through except for the empty-result case metaWRAP signals with a
 # clean run and no bins.
-# -m 90 (not 100): the step's SLURM allocation is 100 GB (baseline_resources), so
-# cap metaWRAP below it to leave ~10 GB headroom for its Python/aligner runtime
-# (else it can OOM-kill at the cgroup boundary).
+# metaWRAP's -m (GB) is MEM_MB (see _lib.sh) less METAWRAP_HEADROOM_GB, the part of
+# the allocation left out of -m. Re-run on one completed ticket's inputs at -m 4, 70
+# and 90, and on another's at -m 70, this step gave MaxBin2 and CONCOCT bins identical
+# to production's at -m 90; MetaBAT2's differed even between two runs at -m 90. With
+# 10 GB of headroom, long-read-assembly 1.0.0's 100 GB baseline, which runs this
+# script too, gets -m 90. A MEM_MB that leaves -m under 1, _lib.sh's fallback among
+# them, is refused rather than passed to metaWRAP.
+METAWRAP_HEADROOM_GB=10
+METAWRAP_MEM_GB=$(( MEM_MB / 1024 - METAWRAP_HEADROOM_GB ))
+if (( METAWRAP_MEM_GB < 1 )); then
+    echo "binning: MEM_MB=${MEM_MB} leaves no memory for metaWRAP's -m after" >&2
+    echo "         ${METAWRAP_HEADROOM_GB} GB of headroom. The SLURM payload sets QIITA_MEM_MB;" >&2
+    echo "         to run outside it, export QIITA_MEM_MB as the memory available in MB." >&2
+    exit 78
+fi
 micromamba run -n metawrap metawrap binning \
-    -a "${ORDERED_NOLCG}" -o "${OUT}" -t "${THREADS}" -m 90 -l 16000 \
+    -a "${ORDERED_NOLCG}" -o "${OUT}" -t "${THREADS}" -m "${METAWRAP_MEM_GB}" -l 16000 \
     --single-end --metabat2 --maxbin2 --concoct --universal "${READS_FQ}"
 
 qiita_finish bins_dir=bins
