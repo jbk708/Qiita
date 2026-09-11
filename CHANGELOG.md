@@ -1721,6 +1721,14 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **long-read-assembly: binning no longer fails when MetaBAT2 forms no bins and MaxBin2 declines the assembly (#561).**
+  metaWRAP exits non-zero when any binner fails, and MaxBin2 fails on an assembly whose
+  contigs carry too few marker genes, so a prep_sample with such an assembly failed the
+  `binning` step and its contigs were never registered. `binning.sh` now copies metaWRAP's
+  stdout and, when it shows that MetaBAT2 formed no bins and MaxBin2 found the dataset
+  cannot be binned, finishes the step with no bins for `bin_refine`. Any other metaWRAP
+  failure still fails the step, now with a line on stderr naming metaWRAP, so the ticket's
+  stored failure reason says which tool failed and where its messages are.
 - **A work ticket that registers the same reads twice no longer stores them twice (#559).**
   A ticket re-runs a step in a new `attempt-N` directory, so a second `register_files` for
   the same reads arrived from a new staging dir, got a new lake filename, and was appended
