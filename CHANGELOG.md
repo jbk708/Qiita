@@ -67,9 +67,8 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   kind, bin_id)` — the subject CheckM scored, with no `feature_idx` — and a feature
   table is keyed `genome_idx`, which exists only on the Postgres
   `qiita.assembly_membership`. Joining the streamed rows through `feature_idx` instead
-  gives a wrong answer rather than a slower one: an assembler can emit one sequence as
-  both a circular LCG and a member of a refined bin, so one contig carries two genomes
-  of one run and the contig-keyed map cannot say which subject a score belongs to.
+  would give a wrong answer rather than a slower one wherever one contig carries two
+  genomes of one run: the contig-keyed map cannot say which subject a score belongs to.
 
   So the bridge is read from Postgres and the join happens control-plane side, at
   submit. `bin_quality` joins `ALLOWED_TABLES`, refused by `build_bin_quality_query`
@@ -3469,6 +3468,20 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   command prints it.
 
 ### Changed
+
+- **`analytic/reconcile.py`'s de novo map docstrings cite `qiita.assembly_membership`
+  on the deploy instead of an unprobed assembler behaviour (#558).**
+  `denovo_map_table_sql` no longer says an assembler can emit one sequence as both a
+  circular LCG and a refined bin's member; on 2026-09-10 the table held one row per
+  (prep_sample, assembly run, contig) triple, so no contig sat under two subjects of
+  one prep_sample's run, though 364 of that table's 400 (prep_sample, assembly run)
+  pairs held LCG rows and MAG rows — evidence the case does not arise in practice, not
+  a proof it cannot. Its one-run scoping paragraph and `denovo_map_join` gain that
+  date's repeat figures: 866,345 triples beyond one per (prep_sample, contig) pair,
+  and 77 contigs under two or more prep_samples of one run.
+  `export_assembly_member_genome`'s docstring drops "legitimately", and the
+  `bin_quality` entry under Added no longer states the assembler behaviour.
+  Comment-only.
 
 - **`long-read-assembly/1.0.1` resource baselines are sized from its three cohorts of
   runs, and `binning.sh` derives metaWRAP's `-m` from the allocation (#557).**
