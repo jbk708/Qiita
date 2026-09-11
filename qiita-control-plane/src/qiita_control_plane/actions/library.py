@@ -2100,11 +2100,11 @@ async def register_files(
     basenames across loads, so the bare name would collide with an
     already-registered file in the same per-table dir.
 
-    Some tables are REPLACED on their key rather than appended to (the data
-    plane's `REPLACE_KEY_TABLES`), so a load can supersede rows an earlier one
-    wrote. Those per-table counts come back in `replaced` — non-zero entries
-    only, the data plane drops the rest — and logging them here is what records
-    the delete.
+    Some registrations REPLACE rows an earlier load wrote rather than appending
+    (the data plane's `REPLACE_KEY_TABLES`, and `read` re-registered by the same
+    ticket — see the data plane's `register_files`). Those per-table counts come back in
+    `replaced` — non-zero entries only, the data plane drops the rest — and
+    logging them here is what records the delete.
 
     Raises pyarrow.flight.FlightError on transport / data-plane failure.
     """

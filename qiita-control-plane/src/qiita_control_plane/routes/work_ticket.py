@@ -309,17 +309,14 @@ async def _check_disallow_without_delete(
     force: bool = False,
 ) -> None:
     """409 if any existing ticket for this `(scope_target, action_id,
-    action_version)` triple is in a non-terminal state. For most scopes
-    COMPLETED tickets are tolerated here; resubmission is gated elsewhere
-    until the result is DELETEd.
+    action_version)` triple is in a non-terminal state. For most scopes a
+    COMPLETED ticket does not block here; any check on re-producing a result
+    sits outside this function (docs/architecture/cross-cutting.md).
 
-    The `sequenced_pool` scope is the exception: a COMPLETED ticket means the
-    pool's reads are already registered in the lake, and DuckLake has no
-    uniqueness — a naive re-run double-registers them. There is no
-    result-deletion gate for a pool (the result is lake rows, not a single
-    minted row), so this check itself refuses a re-submit over a COMPLETED pool
-    ticket unless `force=True` (gated to wet_lab_admin+ at the route). The
-    intended non-force recovery is `delete-sequenced-pool` then resubmit.
+    The `sequenced_pool` scope is the exception: this check also refuses a
+    re-submit over a COMPLETED pool ticket unless `force=True` (gated to
+    wet_lab_admin+ at the route). The comment on that check says why;
+    docs/runbooks/fastq-to-parquet-retry-recovery.md has the recovery.
 
     Best-effort fast path. The atomic gate is the unique partial indexes
     `work_ticket_one_in_flight_per_{reference,study_prep,prep_sample,sequenced_pool}`;
@@ -414,8 +411,9 @@ async def _check_disallow_without_delete(
         )
 
     # Sequenced-pool only: refuse a re-submit over an already-COMPLETED pool
-    # ticket unless forced. The pool's reads are registered in the lake; a
-    # re-run re-registers them (DuckLake has no uniqueness → duplicate rows).
+    # ticket unless forced. The pool's reads are registered in the lake, so a
+    # re-run would redo the work and then be refused at registration (the data
+    # plane's `register_files`).
     if scope_target["kind"] == ScopeTargetKind.SEQUENCED_POOL.value and not force:
         completed = await pool.fetchval(
             "SELECT work_ticket_idx FROM qiita.work_ticket"
@@ -434,9 +432,9 @@ async def _check_disallow_without_delete(
                 detail={
                     "reason": (
                         "a COMPLETED ticket already exists for this (sequenced_pool, "
-                        "action); re-running re-registers the pool's reads into the "
-                        "lake. Delete the pool (delete-sequenced-pool) and resubmit, "
-                        "or pass force=true (wet_lab_admin+) to intentionally re-run."
+                        "action); its reads are already loaded, and a re-run's "
+                        "registration of them is refused. See "
+                        "docs/runbooks/fastq-to-parquet-retry-recovery.md."
                     ),
                     "blocking_work_ticket_idx": completed,
                 },
@@ -772,9 +770,9 @@ async def submit_work_ticket(
     _check_audience(principal, action["audience"])
     _check_scopes(principal, action["scopes"])
 
-    # force bypasses the COMPLETED-pool resubmit gate (a re-run re-registers the
-    # pool's reads — a data-integrity foot-gun), so it is privileged regardless
-    # of the action's own audience, like resource_override below.
+    # force bypasses the COMPLETED-pool resubmit gate
+    # (`_check_disallow_without_delete`), so it is privileged regardless of the
+    # action's own audience, like resource_override below.
     if body.force and not principal.has_role_at_least(SystemRole.WET_LAB_ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

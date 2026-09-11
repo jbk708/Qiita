@@ -330,19 +330,17 @@ def _handle_submit_pacbio_ingest(args: argparse.Namespace, parser: argparse.Argu
     5. Fan out one `bam-to-parquet` ticket per sample (scope prep_sample,
        action_context {bam_path, expect_unaligned: true}). Per-sample resilient:
        one sample's ticket failure is recorded and the fan-out continues. A 409
-       (sample already COMPLETED under disallow-without-delete, or already
-       in-flight) is recorded as SKIPPED — the convergence signal, not a failure —
-       so re-running to retry a failed sample never reports the finished ones as
-       failures. The command exits non-zero only if a real (non-409) failure
+       (the sample already has a ticket in flight) is recorded as SKIPPED, not a
+       failure. The command exits non-zero only if a real (non-409) failure
        occurred (mirrors submit-host-filter-pool).
 
-    Convergent retry: find-or-create on the run + pool, create-missing on the
-    roster (step 4), and the 409-as-skip fan-out (step 5) together mean re-running
-    the identical gesture after a partial failure reuses everything already made,
-    skips the already-done samples (exit 0), and only re-submits the still-missing
-    / previously-FAILED ones (the route resets a FAILED ticket). --force is the
-    separate, deliberate re-ingest path (it re-registers reads → lake duplicates),
-    NOT the retry route. All calls share one PAT.
+    Retry: find-or-create on the run + pool and create-missing on the roster
+    (step 4) mean re-running the identical gesture after a partial failure reuses
+    everything already made. The fan-out posts every sample again, and the route
+    inserts a new ticket for each one not in flight, completed or failed alike,
+    with or without --force; a prep_sample whose range an earlier ticket minted is
+    then refused at the mint (see docs/runbooks/fastq-to-parquet-retry-recovery.md).
+    All calls share one PAT.
     """
     # The path is checked SERVER-side (POST /run-folder/inspect, below), not
     # here: it names the folder as the CLUSTER sees it, and a check against this
@@ -416,15 +414,10 @@ def _handle_submit_pacbio_ingest(args: argparse.Namespace, parser: argparse.Argu
         # resilient: a single ticket's failure is recorded and the loop CONTINUES,
         # so one bad sample never strands the rest (mirrors submit-host-filter-pool).
         #
-        # A 409 is NOT a failure — it is the convergence signal: a sample already
-        # COMPLETED (disallow-without-delete) or already in-flight
-        # (PENDING/QUEUED/PROCESSING) rejects a duplicate submit with 409. That is
-        # exactly "already done / already running", so we record it as SKIPPED and
-        # do NOT count it toward the non-zero exit — re-running the gesture to
-        # retry a failed sample must not report the finished ones as failures.
-        # (A FAILED sample's ticket is reset by the route and re-submitted 201,
-        # so it converges without a skip. --force is the separate, deliberate
-        # re-ingest path and intentionally NOT the recovery route here.)
+        # A 409 is NOT a failure: the sample already has a ticket in flight
+        # (PENDING/QUEUED/PROCESSING), so we record it as SKIPPED and do NOT count
+        # it toward the non-zero exit. Every other sample gets a new ticket (the
+        # docstring's Retry paragraph).
         failures: list[dict] = []
         skipped: list[dict] = []
         for entry in per_sample:
@@ -447,8 +440,7 @@ def _handle_submit_pacbio_ingest(args: argparse.Namespace, parser: argparse.Argu
                 )
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 409:
-                    # Already ingested (COMPLETED) or already in-flight — converged,
-                    # not failed. Skip without contributing to the non-zero exit.
+                    # Already in flight. Skip without contributing to the non-zero exit.
                     skipped.append(
                         {
                             "pacbio_sample_idx": entry["pacbio_sample_idx"],

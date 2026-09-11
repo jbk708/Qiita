@@ -1323,8 +1323,9 @@ async def test_submit_sequenced_pool_completed_blocks_without_force(
     wt_client, postgres_pool, admin_token, sequenced_pool_action, sequenced_pool_for_wt, ingest_dir
 ):
     """A re-submit over an already-COMPLETED pool ticket is refused (409)
-    without force — a re-run would re-register the pool's reads into the lake.
-    The 409 names the blocking COMPLETED ticket and points at the override."""
+    without force — the pool's reads are already loaded, and a re-run's
+    registration of them would be refused. The 409 names the blocking COMPLETED
+    ticket and points at the retry-recovery runbook."""
     token, admin_idx = admin_token
     action_id, version = sequenced_pool_action
     run_idx, pool_idx = sequenced_pool_for_wt
@@ -1353,7 +1354,7 @@ async def test_submit_sequenced_pool_completed_blocks_without_force(
     detail = resp.json()["detail"]
     assert detail["blocking_work_ticket_idx"] == completed_idx
     assert "COMPLETED" in detail["reason"]
-    assert "force" in detail["reason"]
+    assert "docs/runbooks/fastq-to-parquet-retry-recovery.md" in detail["reason"]
 
 
 async def test_submit_sequenced_pool_completed_force_allows(
@@ -1424,6 +1425,53 @@ async def test_submit_force_noop_on_non_pool_scope(
     )
     assert resp.status_code == 202, resp.text
     wt_client._created_tickets.append(resp.json()["work_ticket_idx"])
+
+
+@pytest.mark.parametrize(
+    ("existing_state", "expected_status"),
+    [(WorkTicketState.COMPLETED, 202), (WorkTicketState.PROCESSING, 409)],
+)
+async def test_submit_prep_sample_scope_over_a_completed_ticket(
+    wt_client,
+    postgres_pool,
+    admin_token,
+    prep_sample_action,
+    prep_sample_idx,
+    existing_state,
+    expected_status,
+):
+    """Without force, a prep_sample-scoped re-submit is refused only while the
+    earlier ticket is in flight; one whose earlier ticket COMPLETED is accepted.
+    The completed-ticket gate exists for sequenced_pool scope alone, so a second
+    load of a prep_sample's reads is refused later, at the mint or at
+    registration. The PROCESSING row is the control that the gate is live."""
+    token, admin_idx = admin_token
+    action_id, version = prep_sample_action
+    await postgres_pool.execute(
+        "INSERT INTO qiita.work_ticket"
+        " (action_id, action_version, originator_principal_idx,"
+        "  scope_target_kind, prep_sample_idx, state)"
+        " VALUES ($1, $2, $3, 'prep_sample', $4, $5::qiita.work_ticket_state)",
+        action_id,
+        version,
+        admin_idx,
+        prep_sample_idx,
+        existing_state.value,
+    )
+
+    resp = await wt_client.post(
+        URL_WORK_TICKET_PREFIX,
+        json={
+            "action_id": action_id,
+            "action_version": version,
+            "scope_target": {"kind": "prep_sample", "prep_sample_idx": prep_sample_idx},
+            "action_context": {},
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == expected_status, resp.text
+    if resp.status_code == 202:
+        wt_client._created_tickets.append(resp.json()["work_ticket_idx"])
 
 
 async def test_submit_sequenced_pool_unique_index_catches_select_race(

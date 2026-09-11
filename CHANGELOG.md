@@ -1721,6 +1721,21 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **A work ticket that registers the same reads twice no longer stores them twice (#559).**
+  A ticket re-runs a step in a new `attempt-N` directory, so a second `register_files` for
+  the same reads arrived from a new staging dir, got a new lake filename, and was appended
+  to `read`: 5 rows became 10 in the reproducing test. `register_files` now reads each
+  staged `read` file's prep_sample before moving anything and checks which ticket's files
+  hold that prep_sample in the lake. A prep_sample the same ticket registered before has
+  its rows replaced, reported in `replaced`; a prep_sample another ticket registered
+  refuses the whole call with `AlreadyExists`, so a forced re-run over a completed pool
+  now fails at registration instead of storing the pool's reads again. A `read` file must
+  hold exactly one prep_sample. The messages, CLI help and runbooks that said a forced re-run
+  duplicates reads now say what refuses it and point at one section,
+  [Re-ingesting reads that are already loaded](docs/runbooks/fastq-to-parquet-retry-recovery.md#re-ingesting-reads-that-are-already-loaded).
+  The PacBio runbook and `submit-pacbio-ingest --force` help no longer say a re-run skips
+  completed prep_samples or that `--force` changes what is submitted: a completed ticket
+  does not block a prep_sample's submission, so the new ticket is refused at the mint.
 - **Three cross-references named things that do not exist (#538).**
   `build_minimap2_index`'s module docstring said its two modes mirror `build_rype_index`,
   which is whole-reference only and has no shard mode; the comment above its shard `plan()`

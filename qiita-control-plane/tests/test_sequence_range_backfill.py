@@ -4,9 +4,8 @@ that MINTED it — and to nothing else.
 The guard this feeds (`mint_or_reuse_sequence_range`) reuses an orphaned range only
 when it was minted by the SAME work_ticket. So a mis-attribution is not a cosmetic
 bug: stamping a range with a ticket that merely COLLIDED with it (mint → 409 →
-FAILED) makes that ticket "recognise" the range as its own on a later `ticket run`,
-reuse it, and register the sample's reads a SECOND time. DuckLake has no uniqueness,
-so the duplication is silent and permanent.
+FAILED) makes that ticket "recognise" the range as its own on a later `ticket run`
+and reuse it, where the mint should refuse it.
 
 The tell is TIME: a range a ticket minted is created AFTER the ticket. A range the
 ticket collided with predates it. These tests pin that, by re-running the migration's
@@ -216,7 +215,7 @@ async def test_backfill_refuses_a_ticket_that_only_collided_with_the_range(sampl
     later submitted a per-sample loader for it; that ticket minted → 409 → FAILED. It
     is now the ONLY per-sample loader ticket, so a naive "exactly one loader" backfill
     would stamp the range with it — and a later `ticket run` would then reuse the
-    range and duplicate every read.
+    range instead of being refused at the mint.
 
     The range PREDATES the ticket, so it must stay unattributed.
     """
@@ -242,7 +241,7 @@ async def test_backfill_refuses_a_ticket_that_only_collided_with_the_range(sampl
     )
     assert owner is None, (
         "a ticket that only COLLIDED with the range must not be recorded as its minter "
-        "— reusing the range on its retry would duplicate the sample's reads"
+        "— its retry would reuse the range instead of being refused at the mint"
     )
 
 
@@ -278,7 +277,7 @@ async def test_backfill_refuses_when_a_pool_ingest_also_could_have_minted(sample
     created BEFORE that — so the range postdates the stray ticket, and a count that
     only looked at per-sample loaders would see exactly one candidate and credit it.
     A later `ticket run` on that stray ticket would then "recognise" the range as its
-    own, reuse it, and register the sample's reads a SECOND time.
+    own and reuse it.
 
     Both shapes are candidates, so the count is 2 → ambiguous → NULL → fails closed.
     """

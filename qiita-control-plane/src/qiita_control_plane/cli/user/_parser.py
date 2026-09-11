@@ -1488,11 +1488,9 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Re-submit even when a COMPLETED bcl-convert ticket already exists"
-            " for this pool. Without it the submission is refused, because a"
-            " re-run re-registers the pool's reads into the lake (duplicate"
-            " rows — DuckLake has no uniqueness). Requires wet_lab_admin or"
-            " system_admin. The non-force recovery is delete-sequenced-pool"
-            " then resubmit."
+            " for this pool. Requires wet_lab_admin or system_admin. Reads a"
+            " completed ticket already loaded are not loaded again: see"
+            " docs/runbooks/fastq-to-parquet-retry-recovery.md."
         ),
     )
     p_submit_bcl.set_defaults(handler=_handle_submit_bcl_convert)
@@ -1648,9 +1646,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help=(
-            "Re-submit each sample's bam-to-parquet ticket even when a COMPLETED"
-            " one already exists (a re-run re-registers reads into the lake —"
-            " DuckLake has no uniqueness). Requires wet_lab_admin or system_admin."
+            "Set force on each bam-to-parquet ticket. Requires wet_lab_admin or"
+            " system_admin. It does not change what is submitted, since a COMPLETED"
+            " ticket does not block a prep_sample's submission, and it does not"
+            " re-ingest reads already loaded: see"
+            " docs/runbooks/fastq-to-parquet-retry-recovery.md."
         ),
     )
     p_submit_pacbio.set_defaults(handler=_handle_submit_pacbio_ingest)

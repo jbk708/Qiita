@@ -62,12 +62,13 @@ CP_RETRY_BACKOFF_BASE_S = 0.5
 # The states a minting ticket may be in for its range to be REUSABLE: an ALLOWLIST,
 # derived from the canonical split so it cannot drift into a hand-maintained copy of
 # it. Reuse is legitimate only while the minting ticket is still IN FLIGHT — a job
-# reaching the mint under a ticket that has already terminated is a stale attempt, and
-# reusing a range whose reads are registered duplicates them in DuckLake, which has no
-# uniqueness and no way to notice afterwards. A denylist ("everything except
-# completed") would let a work_ticket_state added later fall through to the permissive
-# path by default; with a silent failure mode, the default must be refusal.
+# reaching the mint under a ticket that has already terminated is a stale attempt. A
+# denylist ("everything except completed") would let a work_ticket_state added later
+# fall through to the permissive path by default, so the default is refusal.
 _REUSABLE_MINTER_STATES: frozenset[str] = frozenset(NON_TERMINAL_WORK_TICKET_STATES)
+
+# Where a refusal sends the operator when a reads job meets reads already loaded.
+REINGEST_RUNBOOK = "docs/runbooks/fastq-to-parquet-retry-recovery.md"
 
 
 def _is_transient_status(status: int) -> bool:
@@ -182,10 +183,9 @@ async def mint_or_reuse_sequence_range(
         the lake, the range is orphaned, reuse is correct and is what makes the
         step idempotent across runner retries;
       - a DIFFERENT ticket minted it → the sample's reads ARE already registered,
-        and reusing the range would register them a second time. DuckLake has no
-        uniqueness, so that duplication is silent and permanent.
+        under that ticket.
 
-    Nothing else in the system can separate them. The submit-time
+    Nothing else at the mint can separate them. The submit-time
     disallow-without-delete gate only blocks NON-terminal tickets, so a COMPLETED
     sample can be resubmitted; and the job's output lives in a per-ticket workspace
     it cannot see across tickets. So the range itself records its minting ticket
@@ -241,10 +241,8 @@ async def mint_or_reuse_sequence_range(
             ) from exc
         if existing.minted_by_work_ticket_idx != work_ticket_idx:
             # A DIFFERENT ticket minted this range (or its provenance is unknown —
-            # NULL, which we read as not-mine). Either way the sample's reads are
-            # already registered in the lake, so reusing the range would register
-            # them a second time. DuckLake has no uniqueness: the duplication would
-            # be silent. Refuse, and tell the operator the one thing that fixes it.
+            # NULL, which we read as not-mine). Either way, treat the prep_sample's
+            # reads as already registered and refuse before this job writes anything.
             owner = existing.minted_by_work_ticket_idx
             owner_detail = f"work_ticket {owner}" if owner is not None else "an unknown work_ticket"
             raise BackendFailure(
@@ -254,10 +252,7 @@ async def mint_or_reuse_sequence_range(
                 reason=(
                     f"prep_sample {prep_sample_idx} already has a sequence_range minted "
                     f"by {owner_detail}, not by this one (work_ticket {work_ticket_idx}) — "
-                    "its reads are already loaded, and re-ingesting would duplicate them "
-                    "(DuckLake has no uniqueness). To re-ingest deliberately, DELETE the "
-                    "prep_sample (its sequence_range goes with it via ON DELETE CASCADE; "
-                    "for a whole pool, `qiita delete-sequenced-pool`) and resubmit"
+                    f"its reads are already loaded. See {REINGEST_RUNBOOK}"
                 ),
             ) from exc
         if existing.minted_by_work_ticket_state not in _REUSABLE_MINTER_STATES:
@@ -280,11 +275,7 @@ async def mint_or_reuse_sequence_range(
                 )
             else:
                 # COMPLETED (reads registered), or a state with no in-place redrive.
-                recovery = (
-                    "there is no in-place recovery from this state — to re-ingest, "
-                    "DELETE the prep_sample (its sequence_range goes with it) and "
-                    "resubmit"
-                )
+                recovery = f"there is no in-place recovery from this state; see {REINGEST_RUNBOOK}"
             raise BackendFailure(
                 kind=FailureKind.UNKNOWN_PERMANENT,
                 stage=WorkTicketFailureStage.STEP_RUN,
@@ -293,7 +284,7 @@ async def mint_or_reuse_sequence_range(
                     f"prep_sample {prep_sample_idx}'s sequence_range was minted by "
                     f"work_ticket {work_ticket_idx}, which is no longer in flight "
                     f"(state={state!r}) — this attempt is stale. Refusing to re-write "
-                    f"the range, which could duplicate the sample's reads. {recovery}"
+                    f"the range. {recovery}"
                 ),
             ) from exc
         recovered_count = existing.sequence_idx_stop - existing.sequence_idx_start + 1
@@ -312,7 +303,7 @@ async def mint_or_reuse_sequence_range(
                     f"{recovered_count} indices "
                     f"({existing.sequence_idx_start}..{existing.sequence_idx_stop}) but its "
                     f"input now has {count} reads — the range must match the prior mint "
-                    "count exactly; delete the prep_sample to re-mint"
+                    f"count exactly; see {REINGEST_RUNBOOK}"
                 ),
             ) from exc
         return existing.sequence_idx_start

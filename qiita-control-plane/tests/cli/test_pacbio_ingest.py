@@ -306,7 +306,7 @@ def _stub_submit_flow(
     sample is created; pre-populated = a retry that reuses them). Each dict needs
     `sequenced_pool_item_id` + `prep_sample_idx`. `fail_ticket_when(body)` forces
     that ticket POST to 500 (real failure); `conflict_ticket_when(body)` forces it
-    to 409 (already-done / in-flight → skip). sequenced-sample POSTs get a unique
+    to 409 (in flight → skip). sequenced-sample POSTs get a unique
     prep_sample_idx per call."""
     captured["requests"] = []
     counter = {"sample": 0}
@@ -634,10 +634,10 @@ def test_submit_pacbio_ingest_reused_sample_biosample_mismatch_fails(
 def test_submit_pacbio_ingest_409_ticket_is_skip_not_failure(
     monkeypatch, tmp_path, build_case5_preflight
 ):
-    """A real re-submit: the samples exist AND their ingest tickets already
-    COMPLETED (or are in-flight), so the work-ticket POSTs 409. Those are the
-    convergence signal, not failures — the command records them as skipped and
-    exits 0 (the operator must be able to tell already-done from a real failure)."""
+    """A real re-submit: the samples exist AND their ingest tickets are in flight,
+    so the work-ticket POSTs 409. Those are not failures — the command records them
+    as skipped and exits 0 (the operator must be able to tell a sample still running
+    from a real failure)."""
     db = build_case5_preflight()
     run = tmp_path / "run"
     for bc in ("bc3011", "bc0112", "bc9992"):
@@ -656,7 +656,7 @@ def test_submit_pacbio_ingest_409_ticket_is_skip_not_failure(
         monkeypatch, captured, existing_samples=existing, conflict_ticket_when=lambda body: True
     )
     rc = main(_submit_args(run, db))
-    assert rc == 0  # all-already-done converges to success, not a failure exit
+    assert rc == 0  # all in flight is success, not a failure exit
 
 
 def test_read_preflight_rows_rejects_non_pacbio_sheet(build_case5_preflight):
