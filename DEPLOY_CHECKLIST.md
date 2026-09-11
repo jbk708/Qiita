@@ -54,7 +54,7 @@ _None yet._
 ### Notes (no host action)
 
 - `long-read-assembly` 1.0.1 is **edited in place** — resource baselines for `bin_refine`, `binning`, `checkm` and the myloasm `assemble` profile — and re-synced into `qiita.action` by `qiita-admin actions sync` inside `activate.sh`. No new action, no migration (#557).
-- The `long-read-assembly` binning SIF auto-rebuilds on deploy to pick up `binning.sh`'s allocation-derived metaWRAP `-m` (`binning.sh` is in its `HASH_INPUTS`). The image is shared with 1.0.0, whose 100 GB baseline still yields `-m 90` (#557).
+- Every workflow SIF auto-rebuilds on deploy: `workflows/_shared/_lib.sh` changed (a comment), and both build-input hashes in `deploy/_common.sh` cover all of `_shared/`. The binning image's rebuild also picks up `binning.sh`'s allocation-derived metaWRAP `-m`; that image is shared with 1.0.0, whose 100 GB baseline still yields `-m 90` (#557).
 
 ## Deployed history
 

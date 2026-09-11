@@ -213,21 +213,31 @@ steps:
     # scale behind that peak was not recorded and its sacct rows are gone, so it
     # cannot be re-sized against more precisely than this.
     #
-    # myloasm 128. The 2026-09-08 to 09-09 cohort (qiita partition) — 235 myloasm runs,
-    # all at 128, every one a first attempt, MaxRSS off the `.batch` row — peaked at
-    # 104.26 with p50 51.29, so 128 is 1.23x its max with 23.74 GiB of margin, and no
-    # run reached the allocation. It does not raise this step's own concurrency
-    # (cpu:32 already caps that at two per node); what it does is stop holding 122 GiB
-    # per myloasm ticket that nothing on the node can use.
+    # This step's myloasm paragraphs and the binning, bin_refine and checkm comments
+    # cite three cohorts, by job start, all on the qiita partition: 2026-09-02 to 09-03
+    # (the window of the table above, which was taken before its last runs finished and
+    # counts retries), 2026-09-04 to 09-05 and 2026-09-08 to 09-09. Those figures count
+    # COMPLETED first attempts, MaxRSS off each job's `.batch` row, as p50 / p90 / max.
+    # In the first cohort, ticket-wide overrides put 15 tickets at 384 (14) or 103 (1),
+    # and their assemble, binning, bin_refine and checkm jobs ran at that allocation.
+    #
+    # myloasm 128. The 2026-09-08 to 09-09 cohort's 235 myloasm runs, all at 128,
+    # peaked at 104.26 with p50 51.29, so 128 is 1.23x its max with 23.74 GiB of margin,
+    # and no run reached the allocation. The 2026-09-04 to 09-05 cohort's 56, also at
+    # 128, peaked at 87.77. 128 does not raise this step's own concurrency (cpu:32
+    # already caps that at two per node); what it does is stop holding 122 GiB per
+    # myloasm ticket that nothing on the node can use.
     #
     # Escalation doubles and clamps to `action_ceiling.mem_gb`: 250 -> 500 is one
     # rung, 128 -> 256 -> 500 is two. Against a ticket-wide `max_retries` a shorter
     # ladder is both one less rung to climb and one less retry spent climbing it,
     # which is the cost myloasm takes on for the smaller reservation.
     #
-    # walltime is per-assembler too. myloasm PT5H: the 2026-09-08 to 09-09 cohort's
-    # longest run is 2:29:24 (p50 1:00:19, p90 1:32:48), 2.0x. hifiasm_meta keeps
-    # PT16H; that cohort has no hifiasm_meta runs to size it from.
+    # walltime is per-assembler too. myloasm PT15H is 2.1x its longest run in any
+    # cohort, 7:05:35 in 2026-09-04 to 09-05 (p50 1:05:45, p90 2:43:43); the other two
+    # cohorts' longest were 1:05:34 (2026-09-02 to 09-03) and 2:29:24 (2026-09-08 to
+    # 09-09, p50 1:00:19, p90 1:32:48). hifiasm_meta keeps PT16H, 1.68x its longest,
+    # 9:31:47 at 384 in 2026-09-02 to 09-03; the later cohorts ran no hifiasm_meta.
     baseline_resources:
       from_step_output: run_config
       profiles:
@@ -238,7 +248,7 @@ steps:
         '{"assembler": "myloasm"}':
           cpu: 32
           mem_gb: 128
-          walltime: PT5H
+          walltime: PT15H
 
   # Align the masked HiFi reads back to the noLCG contigs with miint's embedded
   # minimap2 (`map-hifi`), emitting the coordinate-sorted BAM the binning step
@@ -300,12 +310,20 @@ steps:
     entrypoint: /opt/qiita/binning.sh
     inputs: [genomes_dir, masked_reads_fastq, coverage_bam]
     outputs: [bins_dir]
-    # From the 2026-09-08 to 09-09 cohort (see the assemble step): 233 completed runs,
-    # MaxRSS p50/p90/max 26.75 / 36.37 / 56.16 GiB, elapsed 1:31:58 / 3:17:20 / 7:44:43.
-    # The other two FAILED after 3 s at under 0.6 GiB, on a binner's cannot-be-binned
-    # verdict rather than a limit.
-    # mem_gb 80 is 1.42x the peak; metaWRAP's `-m` derives from it in binning.sh, which
-    # carries the headroom it leaves. walltime PT12H is 1.55x the longest run.
+    # MaxRSS and elapsed by cohort (see the assemble step), at 100 GB apart from the
+    # first cohort's overridden tickets.
+    #
+    #   cohort                 n    MaxRSS GiB                elapsed
+    #   2026-09-02 to 09-03    52   31.75 / 41.73 / 65.53    2:07:49 / 3:59:49 / 5:11:47
+    #   2026-09-04 to 09-05    56   27.97 / 46.53 / 82.77    1:28:23 / 4:13:24 / 6:24:14
+    #   2026-09-08 to 09-09   233   26.75 / 36.37 / 56.16    1:31:58 / 3:17:20 / 7:44:43
+    #
+    # The last cohort's other two runs FAILED after 3 s at under 0.6 GiB, on a binner's
+    # cannot-be-binned verdict rather than a limit. mem_gb 80 is 1.42x the last cohort's
+    # peak and below the 82.77 GiB peak of 2026-09-04 to 09-05; a run that OOMs at 80
+    # escalates as `action_ceiling` sets out. metaWRAP's `-m` derives from mem_gb in
+    # binning.sh, which carries the headroom it leaves. walltime PT12H is 1.55x the
+    # longest run.
     baseline_resources:
       cpu: 16
       mem_gb: 80
@@ -319,9 +337,15 @@ steps:
     entrypoint: /opt/qiita/bin_refine.sh
     inputs: [genomes_dir, bins_dir]
     outputs: [refined_bins_dir]
-    # From the 2026-09-08 to 09-09 cohort (see the assemble step): 233 runs, MaxRSS
-    # p50/p90/max 3.82 / 4.89 / 5.95 GiB, elapsed 0:25:37 / 0:39:31 / 1:09:33. mem_gb 12
-    # is 2.02x the peak and walltime PT2H30M 2.16x the longest run.
+    # MaxRSS and elapsed by cohort (see the assemble step), at 32 GB apart from the
+    # first cohort's overridden tickets.
+    #
+    #   cohort                 n    MaxRSS GiB             elapsed
+    #   2026-09-02 to 09-03    52   4.70 / 5.44 / 6.78    0:38:52 / 0:54:53 / 1:12:17
+    #   2026-09-04 to 09-05    56   3.79 / 5.16 / 5.75    0:24:12 / 0:41:14 / 0:47:46
+    #   2026-09-08 to 09-09   233   3.82 / 4.89 / 5.95    0:25:37 / 0:39:31 / 1:09:33
+    #
+    # mem_gb 12 is 1.77x the highest peak and walltime PT2H30M 2.08x the longest run.
     baseline_resources:
       cpu: 8
       mem_gb: 12
@@ -405,9 +429,12 @@ steps:
     # opposite reason: there the question was the shape of a distribution, not headroom
     # over a peak.)
     #
-    # walltime PT3H. The longest run in either cohort is the 445-subject 1:36:41 above,
-    # 1.86x. The 233 runs of the 2026-09-08 to 09-09 cohort (see the assemble step)
-    # peaked at 1:32:12 and 37.64 GiB; memory is sized from the 38.88 GiB peak above.
+    # walltime PT3H, 1.46x the longest run in any cohort (see the assemble step):
+    # 2:03:10, of 52 in 2026-09-02 to 09-03, which include the nine above. The
+    # 2026-09-04 to 09-05 cohort (56) peaked at 1:20:00 and 37.54 GiB, and the
+    # 2026-09-08 to 09-09 cohort (233) at 1:32:12 and 37.64 GiB. A run that times out
+    # escalates as `action_ceiling` sets out. Memory is sized from the 38.88 GiB peak
+    # above, also the highest of the first cohort's 52.
     baseline_resources:
       cpu: 8
       mem_gb: 48

@@ -199,9 +199,12 @@ fi
 # real exit code through except for the empty-result case metaWRAP signals with a
 # clean run and no bins.
 # metaWRAP's -m (GB) is MEM_MB (see _lib.sh) less METAWRAP_HEADROOM_GB, the part of
-# the allocation left out of -m. _lib.sh's MEM_MB fallback, for a run with no
-# allocation forwarded, is below that headroom, so this refuses rather than passing
-# metaWRAP a -m under 1 GB.
+# the allocation left out of -m. Re-run on one completed ticket's inputs at -m 4, 70
+# and 90, and on another's at -m 70, this step gave MaxBin2 and CONCOCT bins identical
+# to production's at -m 90; MetaBAT2's differed even between two runs at -m 90. With
+# 10 GB of headroom, long-read-assembly 1.0.0's 100 GB baseline, which runs this
+# script too, gets -m 90. A MEM_MB that leaves -m under 1, _lib.sh's fallback among
+# them, is refused rather than passed to metaWRAP.
 METAWRAP_HEADROOM_GB=10
 METAWRAP_MEM_GB=$(( MEM_MB / 1024 - METAWRAP_HEADROOM_GB ))
 if (( METAWRAP_MEM_GB < 1 )); then

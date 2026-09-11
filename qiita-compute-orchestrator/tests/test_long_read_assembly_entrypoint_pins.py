@@ -4,9 +4,9 @@ Most of the file is about `binning.sh` and the coverage BAM (below), but it also
 pins `bin_refine.sh`'s `--write_bins` flag, `checkm.sh`'s TMPDIR shortening for the
 AF_UNIX socket, the genomes_dir basenames the entrypoints write and read against
 their Python constants, and the version constraints in `binning.def` /
-`bin_refine.def` that each entrypoint's behaviour depends on. All of it but the two
-tests that run `binning.sh`'s `-m` derivation is the same kind of assertion: read the
-shipped file, check the command it pins is still there and still shaped correctly.
+`bin_refine.def` that each entrypoint's behaviour depends on. All of it but the tests
+that run `binning.sh`'s `-m` derivation is the same kind of assertion: read the shipped
+file, check the command it pins is still there and still shaped correctly.
 
 The coverage BAM: how `binning.sh` puts it where metaWRAP will read it.
 
@@ -38,10 +38,10 @@ succeed. They need no binary and run everywhere, including CI and a stock dev bo
 Correct-operation evidence is elsewhere: the behavioural test above, the consumer
 measurements in `docs/duckdb-miint.md`, and the deploy verify step.
 
-The exception is the arithmetic and refusal tests of `binning.sh`'s `-m` derivation:
-shell arithmetic and a guard with no binary behind them, so they take those lines from
-the shipped file and run them under bash, after sourcing `_lib.sh` where its fallback
-is what is being tested.
+The exception is the tests that run `binning.sh`'s `-m` derivation under bash: shell
+arithmetic and a guard with no binary behind them, so they take those lines from the
+shipped file and run them at fixed allocations, at each workflow version's binning
+baseline, and after sourcing `_lib.sh` where its fallback is what is being tested.
 """
 
 from __future__ import annotations
@@ -52,6 +52,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 from qiita_common.assembly_constants import (
     CONTIG_ATTRIBUTE_COLUMNS,
     CONTIG_ATTRIBUTES_FILE,
@@ -626,6 +627,34 @@ def test_metawrap_memory_cap_arithmetic(mem_mb: int, expected_m: str) -> None:
     result = _run_metawrap_mem_derivation(f"MEM_MB={mem_mb}")
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected_m
+
+
+def test_metawrap_memory_cap_fits_every_binning_baseline() -> None:
+    """Every workflow version whose binning step runs binning.sh gives metaWRAP a `-m` of
+    at least 1 at its baseline, forwarded as `slurm/payload.py` forwards it (mem_gb * 1024
+    MB), rather than the guard's exit 78 on every ticket."""
+    baselines = []
+    for path in sorted(_WORKFLOW_DIR.glob("*.yaml")):
+        for step in yaml.safe_load(path.read_text()).get("steps", []):
+            is_binning = step.get("step") == "binning"
+            runs_binning_sh = step.get("entrypoint") == "/opt/qiita/binning.sh"
+            if not (is_binning or runs_binning_sh):
+                continue
+            assert is_binning and runs_binning_sh, (
+                path.name,
+                step.get("step"),
+                step.get("entrypoint"),
+            )
+            resources = step["baseline_resources"]
+            profiles = (resources.get("profiles") or {}).values()
+            for mem_gb in [resources.get("mem_gb"), *(p.get("mem_gb") for p in profiles)]:
+                if mem_gb is not None:
+                    baselines.append((path.name, mem_gb))
+    assert baselines, f"no binning.sh step with a mem_gb under {_WORKFLOW_DIR}"
+    for yaml_name, mem_gb in baselines:
+        result = _run_metawrap_mem_derivation(f"MEM_MB={mem_gb * 1024}")
+        assert result.returncode == 0, (yaml_name, mem_gb, result.stderr)
+        assert int(result.stdout.strip()) >= 1, (yaml_name, mem_gb, result.stdout)
 
 
 def test_metawrap_memory_cap_refuses_the_lib_sh_fallback(tmp_path: Path) -> None:
