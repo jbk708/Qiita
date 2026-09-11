@@ -78,12 +78,12 @@ def denovo_map_join(alias: str) -> str:
     — which is the drift it exists to prevent.
 
     Dropping the term is not a bind error, which is why it is shared at all: two
-    cohort samples that assemble byte-identical contigs share one content-addressed
+    cohort prep_samples that assemble byte-identical contigs share one content-addressed
     `feature_idx` under two genomes, so the contig-only join returns both rows and
-    credits half of one sample's read to the other sample's genome. On the deploy
-    2026-09-10, 77 of the 9,670,147 distinct contigs in `qiita.assembly_membership`
-    sat under two or more prep_samples of one of its 4 assembly runs — 108
-    (prep_sample, run, contig) triples beyond one per (run, contig).
+    credits half of one prep_sample's read to the other prep_sample's genome. On the
+    deploy 2026-09-10, 77 of the 9,670,147 distinct contigs in
+    `qiita.assembly_membership` sat under two or more prep_samples of one of its 4
+    assembly runs — 108 (prep_sample, run, contig) triples beyond one per (run, contig).
     """
     return f" AND {alias}.prep_sample_idx = m.prep_sample_idx"
 
@@ -96,12 +96,12 @@ def denovo_map_table_sql(source: str) -> str:
     plus the sample key that makes this map a different join from the reference one.
 
     **`source` must already be scoped to ONE assembly run.** A contig assembled by two
-    runs of the same sample is one `feature_idx` under two genomes — one per run, which
-    is what an assembly identity per run means — so an unscoped map double-counts a
-    sample against itself the same way the unscoped join double-counts it against its
-    neighbours. On the deploy 2026-09-10, `qiita.assembly_membership` held 10,536,595
-    distinct (prep_sample, run, contig) triples over 322 prep_samples and 4 runs,
-    866,345 more than their (prep_sample, contig) pairs.
+    runs of the same prep_sample is one `feature_idx` under two genomes — one per run,
+    which is what an assembly identity per run means — so an unscoped map double-counts
+    a prep_sample against itself the same way the unscoped join double-counts it against
+    its neighbours. On the deploy 2026-09-10, `qiita.assembly_membership` held
+    10,536,595 distinct (prep_sample, run, contig) triples over 322 prep_samples and 4
+    runs, 866,345 more than their (prep_sample, contig) pairs.
 
     DISTINCT collapses only EXACT `(sample, contig, genome)` repeats. The membership
     key carries `(kind, bin_id)`, so two rows can share a contig; they are deduped
