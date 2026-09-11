@@ -1721,6 +1721,13 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **A work ticket that registers the same reads twice no longer stores them twice (#559).**
+  A ticket re-runs a step in a new `attempt-N` directory, so a second `register_files` for
+  the same reads arrived from a new staging dir, got a new lake filename, and was appended
+  to `read`: 5 rows became 10 in the reproducing test. `register_files` now reads which
+  prep_samples the staged `read` files hold and, in the registration transaction, deletes
+  the rows the same ticket registered for them before; the count comes back in `replaced`.
+  Rows other tickets registered are not touched.
 - **Three cross-references named things that do not exist (#538).**
   `build_minimap2_index`'s module docstring said its two modes mirror `build_rype_index`,
   which is whole-reference only and has no shard mode; the comment above its shard `plan()`
