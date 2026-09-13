@@ -21,6 +21,36 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Added
 
+- **`estimate-feature-table` gates the de novo arm on CheckM completeness /
+  contamination (#N).** Two new optional `action_context` keys, `min_completeness` and
+  `max_contamination`, defaulting to MIMAG's medium-quality-draft bound (50 / 10) — the
+  `galah --min-completeness / --max-contamination` pair. The scores were already staged
+  into the job and read by nothing; they now filter the de novo feature->genome map, and
+  because every other de novo relation reaches its genomes through that map, one term
+  carries the gate into the precedence DELETE, the per-genome length denominators, the
+  coverage survivor set and woltka's input at once. Nothing is deleted from Postgres or
+  the lake: the bound is a term in the `SELECT` that stages the map, expressed as a
+  semi-join so a genome carrying two quality rows cannot fan the map out. Applies to
+  MAG and LCG only, the two kinds the map admits; reference genomes carry no CheckM row
+  and are not gated.
+
+  Unlike the coverage filter, the gate runs BEFORE precedence, so a read whose only de
+  novo placement was on an excluded genome keeps its reference placement instead of
+  being lost from both arms. An unscored genome does not pass: the predicate is the
+  positive form, because a caller told every genome cleared `min_completeness` must not
+  be handed one nobody measured. That state is not reachable for a run that completed —
+  `checkm.sh` scores a class exactly when `assembly_hash` writes that class's membership
+  rows, it exits non-zero when genomes are present and the CheckM DB is not, and
+  `_lib.sh`'s `set -euo pipefail` fails the step on a half-written lineage/qa pair — so
+  three docstrings claiming an unscored MAG or LCG was "a normal outcome" were wrong and
+  are corrected.
+
+  The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated:
+  `bin_quality` is absent from the human-callable mint's table allowlist, so the scores
+  are unreachable with a PAT. Its manifest now records `genome_quality_gate: null` so a
+  client-built combined table is distinguishable from a server-built one rather than
+  silently differing.
+
 - **The genome map is served as Parquet from a sibling route, so a large reference
   is no longer unbuildable (#550).** `GET /reference/{idx}/genome-map` caps at 250,000
   entries and 413s above it; both genome-bearing references on the deploy are past

@@ -19,6 +19,14 @@ description: >
   `qiita.genome` space, so the result is one table over both. Absent that key the
   behaviour is byte-identical to the reference-only form above.
 
+  The de novo arm's genomes are GATED on their CheckM scores — `min_completeness` /
+  `max_contamination`, the MIMAG medium-quality-draft pair. The gate filters the map
+  the whole arm reads its genomes through, so an excluded genome reaches neither the
+  counts nor the coverage denominator, and the reads it held keep their reference
+  placement instead of being lost from both arms. Nothing is removed from Postgres or
+  the lake: the bound is a term in the SELECT that stages the map. Reference genomes
+  carry no CheckM score and are not gated.
+
   Compute-on-demand by design: the table is deterministic but cohort-dependent
   (coverage pools over the sample set), so persisting would mean one artifact per
   sample-subset x threshold. No processing_idx / identity is minted, no DuckLake
@@ -35,7 +43,8 @@ description: >
   prep_sample not `completed` in `alignment_sample`). The de novo arm adds two more
   resolver-staged Parquets, one of them joining a lake read to a Postgres one.
   `reference_idx` is the reference-scope scalar the framework injects into the job
-  (SCOPE_SCALARS_BY_KIND[reference]); only `coverage_threshold` rides `params:`.
+  (SCOPE_SCALARS_BY_KIND[reference]); `coverage_threshold` and the two quality bounds
+  ride `params:`.
 
 # reference:read — this action only READS reference metadata + the (host-depleted,
 # derived) alignment table to compute a transient table; it writes no reference
@@ -87,6 +96,29 @@ context_schema:
       type: number
       minimum: 0
       maximum: 1
+    # The de novo arm's quality gate, on CheckM's percentage scale — the
+    # `galah --min-completeness / --max-contamination` pair. Both optional; an omitted
+    # key resolves to the job's `Inputs` default, which is the ONE place the literal
+    # lives (`qiita_common.analytic.DEFAULT_MIN_COMPLETENESS` /
+    # `DEFAULT_MAX_CONTAMINATION`). Deliberately no `default:` here: this action mints
+    # no identity and hashes no params, so nothing CP-side needs the value, and a
+    # second copy is the drift `runner._processing._mint_processing_idx` describes.
+    #
+    # A genome outside either bound is not STAGED into the de novo map, so it reaches
+    # neither the counts nor the coverage denominator — and the reads it held keep
+    # their reference placement rather than being lost from both arms. Nothing is
+    # deleted anywhere; the filter is a term in the staging SELECT.
+    #
+    # Ignored by a reference-only ticket: a reference genome has no CheckM score.
+    # `max_contamination` has no upper bound for the reason
+    # `analytic.validate_quality_gate` gives.
+    min_completeness:
+      type: number
+      minimum: 0
+      maximum: 100
+    max_contamination:
+      type: number
+      minimum: 0
 
 steps:
   # The single native step. `genome_map_path` (the reference's feature->genome
@@ -110,9 +142,13 @@ steps:
     # without the quality rather than treating a whole run as unscored.
     optional_inputs: [denovo_genome_map_path, denovo_genome_quality_path]
     # `denovo_processing_idx` is resolver-bound, not caller-supplied, and absent
-    # for a reference-only ticket — an unbound params key is skipped.
+    # for a reference-only ticket — an unbound params key is skipped. The two quality
+    # bounds are caller-supplied and optional; skipped the same way, which is how they
+    # reach the job's `Inputs` default.
     params: {coverage_threshold: coverage_threshold,
-             denovo_processing_idx: denovo_processing_idx}
+             denovo_processing_idx: denovo_processing_idx,
+             min_completeness: min_completeness,
+             max_contamination: max_contamination}
     outputs: [ogu_table]
     baseline_resources:
       cpu: 4

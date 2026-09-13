@@ -1221,6 +1221,8 @@ def test_load_actions_loads_on_disk_estimate_feature_table_yaml():
     assert step.params == {
         "coverage_threshold": "coverage_threshold",
         "denovo_processing_idx": "denovo_processing_idx",
+        "min_completeness": "min_completeness",
+        "max_contamination": "max_contamination",
     }
     assert step.outputs == ["ogu_table"]
     # reference_idx is framework-injected (REFERENCE scope scalar); binding it via
@@ -1232,6 +1234,19 @@ def test_load_actions_loads_on_disk_estimate_feature_table_yaml():
     # The de novo arm is opt-in: a reference-only ticket names no assembly.
     assert "denovo_alignment_idx" not in required
     assert "denovo_alignment_idx" in eft.context_schema["properties"]
+
+    # The quality gate is optional and carries NO schema `default:` — the literal lives
+    # at the job's `Inputs` (the `rype_w` shape), and a second copy here is what
+    # `runner._processing._mint_processing_idx` describes drifting. An omitted key is
+    # skipped by the params binding, which is how the job's default is reached.
+    properties = eft.context_schema["properties"]
+    for knob in ("min_completeness", "max_contamination"):
+        assert knob not in required, knob
+        assert knob in properties, knob
+        assert "default" not in properties[knob], knob
+    assert properties["min_completeness"]["maximum"] == 100
+    # No upper bound on contamination: `analytic.validate_quality_gate` says why.
+    assert "maximum" not in properties["max_contamination"]
 
 
 def test_load_actions_handles_two_versions_of_same_action(tmp_path):

@@ -98,6 +98,8 @@ from .ogu import (
     woltka_ogu_select_sql,
 )
 from .reconcile import (
+    DEFAULT_MAX_CONTAMINATION,
+    DEFAULT_MIN_COMPLETENESS,
     denovo_alignment_statements,
     denovo_contig_lengths_insert_sql,
     denovo_contig_lengths_table_sql,
@@ -105,8 +107,10 @@ from .reconcile import (
     denovo_genome_lengths_insert_sql,
     denovo_genome_quality_table_sql,
     denovo_map_join,
+    denovo_map_statements,
     denovo_map_table_sql,
     denovo_ogu_input_select_sql,
+    validate_quality_gate,
 )
 from .relations import (
     ALIGNMENT_TABLE,
@@ -183,6 +187,8 @@ __all__ = [
     "CIRCULAR_MIN_COVERAGE",
     "CIRCULAR_MIN_IDENTITY",
     "COVERAGE_ALIGNMENTS_VIEW",
+    "DEFAULT_MAX_CONTAMINATION",
+    "DEFAULT_MIN_COMPLETENESS",
     "DENOVO_ALIGNMENT_TABLE",
     "DENOVO_CONTIG_LENGTHS_TABLE",
     "DENOVO_COVERAGE_ALIGNMENTS_VIEW",
@@ -244,6 +250,7 @@ __all__ = [
     "denovo_coverage_alignments_view_sql",
     "denovo_genome_lengths_insert_sql",
     "denovo_genome_quality_table_sql",
+    "denovo_map_statements",
     "denovo_map_table_sql",
     "denovo_ogu_input_select_sql",
     "drop_circular_inputs_statements",
@@ -286,5 +293,6 @@ __all__ = [
     "taxonomy_table_sql",
     "tree_copy_sql",
     "tree_diagnostics_sql",
+    "validate_quality_gate",
     "woltka_ogu_select_sql",
 ]

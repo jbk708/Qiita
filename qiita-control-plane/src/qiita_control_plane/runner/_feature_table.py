@@ -256,12 +256,24 @@ def _write_denovo_genome_quality(
     nothing declares is one nothing cleans up.
 
     **LEFT from the subject side.** A genome with no quality row keeps its row with
-    NULL scores. `bin_quality` is written empty-with-schema when CheckM scored
-    nothing — no refined bin, none circular, or no CheckM DB — and `_write_bin_quality`
-    skips a class whose tool output is absent, so a MAG or LCG subject with no quality
-    row is a normal outcome. (The residue length cut is NOT one of the causes here:
-    the driving side admits MAG and LCG only.) An inner join would drop those genomes
-    and leave this file disagreeing with the map it must match.
+    NULL scores, so this file always matches the map it is read beside; an inner join
+    would drop such a genome here and leave the two disagreeing.
+
+    For a MAG or LCG of a run that COMPLETED there is no such genome. `checkm.sh`
+    scores a class exactly when `assembly_hash` writes that class's membership rows —
+    both read the same refined-bins dir and the same `circular.fa` — so a class with
+    no scores has no subjects either; it exits non-zero when genomes are present and
+    the CheckM reference DB is not; and `workflows/_shared/_lib.sh`'s
+    `set -euo pipefail` fails the step on a half-written lineage/qa pair rather than
+    letting one reach the lake. `_validate_denovo_arm` then refuses any prep_sample
+    not `completed`. (The residue length cut is not a cause here either: the driving
+    side admits MAG and LCG only, and the cut applies to UNBINNED.)
+
+    The join stays LEFT regardless, because that keeps what to DO about an unscored
+    genome at the one site that decides it —
+    `qiita_common.analytic.reconcile._quality_gate_predicate`, which excludes it —
+    rather than making the decision here by dropping the row before anything can see
+    it.
 
     **The join carries `prep_sample_idx` because `bin_id` is only unique within a
     prep_sample.** It is a refined bin's FASTA stem for a MAG and the assembler's
