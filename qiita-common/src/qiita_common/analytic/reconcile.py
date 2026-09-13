@@ -148,9 +148,9 @@ def denovo_genome_quality_table_sql(source: str) -> str:
 
     **The scores pass through untouched, and a NULL is not a zero.** The resolver
     LEFT-joins, so a genome CheckM did not score arrives with both scores NULL and
-    keeps them. `_quality_gate_predicate` is the one consumer that reads these
-    columns and it states what it does with an unscored genome, and why the assembly
-    pipeline does not produce one for a run that completed.
+    keeps them. `_quality_gate_predicate` is the one consumer that reads these columns
+    and states what it does with such a genome; the resolver refuses the submission
+    before the gate ever sees one.
 
     **`source` must already be scoped to ONE assembly run**, for the reason
     `denovo_map_table_sql` gives: a subject key is per-run, and a contig assembled

@@ -72,14 +72,14 @@ _None yet._
 - **Assembly runs that predate circular-genome scoring can no longer be a de novo arm.**
   A combined-table submit naming one is refused with the prep_samples and counts, because
   its LCG subjects have no `bin_quality` row and the gate cannot judge them. Unlike
-  `genome_idx`, a CheckM score cannot be backfilled — the run must be re-assembled under
-  a workflow version that scores circular genomes. Expect this for runs completed before
-  the 2026-09-02 deploy. Nothing to do at deploy time; it surfaces as a failed ticket
-  with an explanatory message. (#N)
+  `genome_idx`, a CheckM score cannot be backfilled — the run must be assembled again
+  (a re-submit runs the only enabled `long-read-assembly` version, which scores circular
+  genomes). Expect this for runs completed before the 2026-09-02 deploy. Nothing to do at
+  deploy time; it surfaces as a failed ticket with an explanatory message. (#N)
 - The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated, and
   is unaffected by any of the above: `bin_quality` is un-mintable over HTTP, so a PAT
   cannot reach the scores. A client-built combined table therefore still includes every
-  assembled genome, and is not refused for an unscored run. (#N)
+  MAG/LCG genome the map admits, and is not refused for an unscored run. (#N)
 
 ## Deployed history
 

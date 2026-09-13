@@ -20,7 +20,7 @@ description: >
   behaviour is byte-identical to the reference-only form above.
 
   The de novo arm's genomes are gated on their CheckM completeness / contamination
-  (`min_completeness` / `max_contamination`). The gate filters the map
+  (`min_completeness` / `max_contamination`, both optional). The gate filters the map
   the whole arm reads its genomes through; `analytic.denovo_map_statements` carries what
   that reaches and what becomes of an excluded genome's reads. A run with any unscored
   MAG/LCG subject is refused at submit rather than gated

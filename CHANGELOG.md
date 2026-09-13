@@ -48,8 +48,8 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   complete genome without reporting it.
 
   The client-side `qiita feature-table build --denovo-alignment-idx` is not gated:
-  `bin_quality` is absent from the human-callable mint's table allowlist, so a PAT cannot
-  reach the scores. The `analytic` package docstring records that divergence.
+  `bin_quality` is un-mintable over HTTP, so a PAT cannot reach the scores. The
+  `analytic` package docstring records that divergence.
 
 - **The genome map is served as Parquet from a sibling route, so a large reference
   is no longer unbuildable (#550).** `GET /reference/{idx}/genome-map` caps at 250,000

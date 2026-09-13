@@ -245,9 +245,11 @@ def _do_get_bin_quality(data_plane_url: str, ticket_bytes: bytes) -> pa.Table:
 def _write_denovo_genome_quality(
     subjects: list[asyncpg.Record], quality: pa.Table, out_path: Path
 ) -> dict[int, int]:
-    """Join the streamed quality rows onto the run's subject->genome bridge and write
-    `(prep_sample_idx, genome_idx)` plus `BIN_QUALITY_SCORE_COLUMNS` to `out_path`,
-    one row per subject the bridge names.
+    """Join the streamed quality rows onto the run's subject->genome bridge, returning
+    the per-prep_sample count of subjects the join left unscored — and writing
+    `(prep_sample_idx, genome_idx)` plus `BIN_QUALITY_SCORE_COLUMNS` to `out_path`, one
+    row per subject the bridge names, only when that count is empty. A non-empty return
+    means no file was written.
 
     Both sides are already in memory and neither is bound to a step, so they are
     registered as Arrow relations on one connection rather than staged as files: an
@@ -256,7 +258,7 @@ def _write_denovo_genome_quality(
     nothing declares is one nothing cleans up.
 
     **LEFT from the subject side, and the count of what it left NULL is what this
-    returns.** The join is what makes an unscored subject VISIBLE: an inner join would
+    returns.** The join is what makes an unscored subject visible at all: an inner join would
     drop it, leaving nothing to count and nothing to refuse. On an empty count the same
     join is the file, so every genome the map admits has a row there too. The caller
     turns a non-empty count into a refusal — `_stage_denovo_genome_quality` carries why —
@@ -301,9 +303,8 @@ def _write_denovo_genome_quality(
         con.execute("SET preserve_insertion_order=false")
         con.register("assembly_subject", subject_table)
         con.register("bin_quality_stream", quality)
-        # The join is staged ONCE and both readers below select from it, so the count
-        # cannot come to describe a different row set than the file — a predicate added
-        # to one of two copies of this join would diverge silently.
+        # Staged once, and both readers below select from it, so the count and the file
+        # describe the same rows by construction.
         con.execute(
             f"CREATE TEMP VIEW subject_quality AS"
             f" SELECT s.prep_sample_idx, s.genome_idx, {scores}"
@@ -317,9 +318,9 @@ def _write_denovo_genome_quality(
                 f" WHERE {missing} GROUP BY prep_sample_idx"
             ).fetchall()
         }
-        # Counted BEFORE the write, and the write skipped on a non-empty count: the
+        # Counted before the write, and the write skipped on a non-empty count: the
         # caller turns that into a refusal, and a refused submission must not leave a
-        # Parquet behind that nothing declares and nothing cleans up.
+        # Parquet behind that no binding points at and nothing cleans up.
         if unscored:
             return unscored
         success = False
@@ -412,9 +413,8 @@ async def _stage_denovo_genome_quality(
             f"{len(unscored)} prep_sample(s) of assembly run {processing_idx} have "
             f"MAG/LCG subjects with no usable CheckM score, so a "
             f"completeness/contamination gate would drop those genomes without "
-            f"reporting them. A score cannot be backfilled the way genome_idx was; if "
-            f"the run predates circular-genome scoring it has to be assembled again "
-            f"under a version that scores them before it can be a de novo arm: {listed}"
+            f"reporting them. A score cannot be backfilled the way genome_idx was: the "
+            f"run has to be assembled again before it can be a de novo arm: {listed}"
         )
     return quality_path
 
