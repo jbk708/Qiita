@@ -255,11 +255,12 @@ def _write_denovo_genome_quality(
     statements later is a shared-filesystem dependency bought for nothing, and a file
     nothing declares is one nothing cleans up.
 
-    **LEFT from the subject side, and the count of what it left NULL is returned.** A
-    genome with no quality row keeps its row with NULL scores, so this file always
-    matches the map it is read beside; an inner join would drop such a genome here and
-    leave the two disagreeing about which genomes the run has. The caller refuses the
-    submission on a non-empty count — `_stage_denovo_genome_quality` carries why.
+    **LEFT from the subject side, and the count of what it left NULL is what this
+    returns.** The join is what makes an unscored subject VISIBLE: an inner join would
+    drop it, leaving nothing to count and nothing to refuse. On an empty count the same
+    join is the file, so every genome the map admits has a row there too. The caller
+    turns a non-empty count into a refusal — `_stage_denovo_genome_quality` carries why —
+    and no file is written in that case.
 
     **The join carries `prep_sample_idx` because `bin_id` is only unique within a
     prep_sample.** It is a refined bin's FASTA stem for a MAG and the assembler's
@@ -282,7 +283,7 @@ def _write_denovo_genome_quality(
     """
     scores = ", ".join(f"q.{c}" for c in BIN_QUALITY_SCORE_COLUMNS)
     on = " AND ".join(f"q.{c} = s.{c}" for c in BIN_QUALITY_SUBJECT_KEY)
-    missing = " OR ".join(f"q.{c} IS NULL" for c in BIN_QUALITY_SCORE_COLUMNS)
+    missing = " OR ".join(f"{c} IS NULL" for c in BIN_QUALITY_SCORE_COLUMNS)
     out_sql = validate_parquet_path(out_path)
     # Both the ON clause above and this relation's key columns come from the one
     # constant: a member added to it must appear on both sides of the join, and
@@ -294,41 +295,46 @@ def _write_denovo_genome_quality(
             for col in _SUBJECT_COLUMNS
         }
     )
-    success = False
-    try:
-        with duckdb_connect() as con:
-            # `PARQUET_OPTS_INTERMEDIATE` requires this (its own comment says why);
-            # safe here because nothing reads this file in row order.
-            con.execute("SET preserve_insertion_order=false")
-            con.register("assembly_subject", subject_table)
-            con.register("bin_quality_stream", quality)
+    with duckdb_connect() as con:
+        # `PARQUET_OPTS_INTERMEDIATE` requires this (its own comment says why);
+        # safe here because nothing reads this file in row order.
+        con.execute("SET preserve_insertion_order=false")
+        con.register("assembly_subject", subject_table)
+        con.register("bin_quality_stream", quality)
+        # The join is staged ONCE and both readers below select from it, so the count
+        # cannot come to describe a different row set than the file — a predicate added
+        # to one of two copies of this join would diverge silently.
+        con.execute(
+            f"CREATE TEMP VIEW subject_quality AS"
+            f" SELECT s.prep_sample_idx, s.genome_idx, {scores}"
+            f" FROM assembly_subject s"
+            f" LEFT JOIN bin_quality_stream q ON {on}"
+        )
+        unscored = {
+            row[0]: row[1]
+            for row in con.execute(
+                f"SELECT prep_sample_idx, count(*) FROM subject_quality"
+                f" WHERE {missing} GROUP BY prep_sample_idx"
+            ).fetchall()
+        }
+        # Counted BEFORE the write, and the write skipped on a non-empty count: the
+        # caller turns that into a refusal, and a refused submission must not leave a
+        # Parquet behind that nothing declares and nothing cleans up.
+        if unscored:
+            return unscored
+        success = False
+        try:
             con.execute(
-                f"COPY (SELECT s.prep_sample_idx, s.genome_idx, {scores}"
-                f" FROM assembly_subject s"
-                f" LEFT JOIN bin_quality_stream q ON {on})"
-                f" TO '{out_sql}' ({PARQUET_OPTS_INTERMEDIATE})"
+                f"COPY (SELECT * FROM subject_quality) TO '{out_sql}' ({PARQUET_OPTS_INTERMEDIATE})"
             )
-            # Counted on the same connection as the write, from the same two
-            # relations, so the number describes the file that was just written
-            # rather than a second read that could see something else.
-            unscored = {
-                row[0]: row[1]
-                for row in con.execute(
-                    f"SELECT s.prep_sample_idx, count(*)"
-                    f" FROM assembly_subject s"
-                    f" LEFT JOIN bin_quality_stream q ON {on}"
-                    f" WHERE {missing}"
-                    f" GROUP BY s.prep_sample_idx"
-                ).fetchall()
-            }
-        success = True
-    finally:
-        # A half-written file left where the binding would have pointed, for the
-        # reason `_resolve_qc_adapters` unlinks its own: the next resume rebinds this
-        # path without rewriting it.
-        if not success:
-            out_path.unlink(missing_ok=True)
-    return unscored
+            success = True
+        finally:
+            # A half-written file left where the binding would have pointed, for the
+            # reason `_resolve_qc_adapters` unlinks its own: the next resume rebinds
+            # this path without rewriting it.
+            if not success:
+                out_path.unlink(missing_ok=True)
+    return {}
 
 
 async def _stage_denovo_genome_quality(
@@ -390,26 +396,25 @@ async def _stage_denovo_genome_quality(
     quality_path = workspace / "denovo_genome_quality.parquet"
     unscored = _write_denovo_genome_quality(subjects, quality, quality_path)
     # Refused rather than staged, for the reason the unminted-genome check above it
-    # gives: the gate's predicate is the positive form, so an unscored genome is
-    # excluded at every bound including the most permissive one, and the omission
-    # shows up as a class quietly missing from the table rather than as an error.
+    # gives: the gate's predicate is the positive form, so a genome with no usable
+    # score is excluded at every bound including the most permissive one, and the
+    # omission shows up as a class quietly missing from the table rather than as an
+    # error.
     #
     # This is reachable, not defensive. `checkm.sh` scored only the refined bins until
     # the 2026-09-01 change that added the circular arm, while `assembly_hash` has
     # written LCG membership rows since 2026-07-07 — so every run completed between
     # those dates has LCG subjects with no `bin_quality` row, and the genome-mint
-    # backfill stamps them regardless of kind or score. CheckM scores cannot be
-    # backfilled the way `genome_idx` was: the run has to be assembled again, which is
-    # what `long-read-assembly` 1.0.1 is the version for.
+    # backfill stamps them regardless of kind or score.
     if unscored:
         listed = sorted(unscored.items())[:_MAX_REPORTED]
         raise _submission_bad_input(
             f"{len(unscored)} prep_sample(s) of assembly run {processing_idx} have "
-            f"MAG/LCG subjects with no CheckM score, so a completeness/contamination "
-            f"gate would drop those genomes without reporting them. The run has to be "
-            f"re-assembled under a workflow version that scores circular genomes "
-            f"before it can be used as a de novo arm; unlike genome_idx, a missing "
-            f"score cannot be backfilled without re-running CheckM: {listed}"
+            f"MAG/LCG subjects with no usable CheckM score, so a "
+            f"completeness/contamination gate would drop those genomes without "
+            f"reporting them. A score cannot be backfilled the way genome_idx was; if "
+            f"the run predates circular-genome scoring it has to be assembled again "
+            f"under a version that scores them before it can be a de novo arm: {listed}"
         )
     return quality_path
 

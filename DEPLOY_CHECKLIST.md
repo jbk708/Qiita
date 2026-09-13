@@ -76,10 +76,10 @@ _None yet._
   a workflow version that scores circular genomes. Expect this for runs completed before
   the 2026-09-02 deploy. Nothing to do at deploy time; it surfaces as a failed ticket
   with an explanatory message. (#N)
-- The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated —
-  `bin_quality` is not on the human-callable DoGet allowlist, so a PAT cannot reach the
-  scores. Its manifest records `genome_quality_gate: null` so a client-built combined
-  table stays distinguishable from a server-built one. (#N)
+- The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated, and
+  is unaffected by any of the above: `bin_quality` is un-mintable over HTTP, so a PAT
+  cannot reach the scores. A client-built combined table therefore still includes every
+  assembled genome, and is not refused for an unscored run. (#N)
 
 ## Deployed history
 

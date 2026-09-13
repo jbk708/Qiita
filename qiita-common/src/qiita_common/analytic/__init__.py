@@ -8,9 +8,9 @@ analytic — where the inputs come from, how the result is written — so the SQ
 here and the streaming and I/O stay with each caller.
 
 They disagree about the analytic in exactly one place, and it is a reachability limit
-rather than a choice: `denovo_map_statements` gates the de novo arm on CheckM scores
-and the client cannot reach `bin_quality` (`routes/assembly.py` allowlists the two
-tables a PAT may mint for), so a client-built combined table calls
+rather than a choice: `denovo_map_statements` gates the de novo arm on CheckM scores and
+the client cannot reach `bin_quality` — no route signs a ticket for it, which the
+exclusion in `routes/reference.py` states — so a client-built combined table calls
 `denovo_map_table_sql` ungated.
 
 **Plain SQL text, so nothing here needs a connection of its own.** Callers execute

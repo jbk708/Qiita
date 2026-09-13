@@ -1245,7 +1245,7 @@ def test_load_actions_loads_on_disk_estimate_feature_table_yaml():
         assert knob in properties, knob
         assert "default" not in properties[knob], knob
     assert properties["min_completeness"]["maximum"] == 100
-    # No upper bound on contamination: `analytic.validate_quality_gate` says why.
+    # No upper bound on contamination: `analytic.reconcile._validate_quality_gate` says why.
     assert "maximum" not in properties["max_contamination"]
 
 

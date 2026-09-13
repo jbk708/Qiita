@@ -588,7 +588,7 @@ async def test_an_unscored_subject_refuses_the_submission(postgres_pool, tmp_pat
                 signing_key=_STUB_SIGNING_KEY,
             )
         message = str(exc.value)
-        assert "no CheckM score" in message
+        assert "no usable CheckM score" in message
         # The unscored sample is named; the scored one is not the complaint.
         unscored_sample = s["prep_sample_idxs"][1]
         assert str(unscored_sample) in message
@@ -601,12 +601,17 @@ async def test_a_run_that_scored_nothing_refuses_the_submission(
     postgres_pool, tmp_path, bin_quality
 ):
     """The whole-run form: an empty `bin_quality` is a success upstream, and the run is
-    still unusable as a de novo arm because nothing in it can be judged."""
+    still unusable as a de novo arm because nothing in it can be judged.
+
+    Also pins that the refusal leaves NO quality Parquet behind. The count runs before
+    the write for exactly this reason: a file in the workspace that no binding points at
+    is one nothing cleans up, and a retried submit would refuse again and leave another.
+    """
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
     assert bin_quality["rows"] == []
     try:
-        with pytest.raises(BackendFailure, match="no CheckM score"):
+        with pytest.raises(BackendFailure, match="no usable CheckM score"):
             await _resolve_feature_table_bindings(
                 postgres_pool,
                 action_context=_context(s, d),
@@ -615,6 +620,7 @@ async def test_a_run_that_scored_nothing_refuses_the_submission(
                 data_plane_url=_STUB_DP_URL,
                 signing_key=_STUB_SIGNING_KEY,
             )
+        assert not (tmp_path / "denovo_genome_quality.parquet").exists()
     finally:
         await _cleanup_denovo(postgres_pool, d)
         await _cleanup(postgres_pool, s)
