@@ -31,7 +31,17 @@ _None yet._
 
 ### 5. Verify
 
-_None yet._
+- `align` 1.0.0's in-place walltime-ceiling edit reached `qiita.action` (#563):
+  ```bash
+  sudo -u qiita-api bash -c 'set -a; . /etc/qiita/control-plane.env; set +a
+  psql "$DATABASE_URL" -Atc "SELECT walltime_ceiling FROM qiita.action WHERE action_id = '\''align'\'' AND version = '\''1.0.0'\'';"'
+  ```
+  Expect `16:00:00`. `08:00:00` means the row still holds the pre-edit ceiling; **empty output** means no `align` 1.0.0 row synced at all.
+- Redrive the close-reference blocks that failed at the old PT8H ceiling, each only if `qiita ticket status <idx>` still reads `failed` with "walltime escalation exhausted" (#563):
+  ```bash
+  for t in 9387 9411 9475 9476; do qiita ticket run "$t"; done
+  ```
+  Each first runs once more at its persisted PT8H floor, then escalates to PT16H on that timeout.
 
 ### 6. After the deploy verifies green
 
@@ -39,7 +49,7 @@ _None yet._
 
 ### Notes (no host action)
 
-_None yet._
+- **Edited in place** and re-synced into `qiita.action` by `qiita-admin actions sync` inside `activate.sh` — no new action, no migration: `align` 1.0.0's `action_ceiling.walltime`, PT8H → PT16H, with `align_sharded`'s PT4H baseline unchanged (#563).
 
 ## Deployed history
 
