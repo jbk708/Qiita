@@ -23,33 +23,33 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 - **`estimate-feature-table` gates the de novo arm on CheckM completeness /
   contamination (#N).** Two new optional `action_context` keys, `min_completeness` and
-  `max_contamination`, defaulting to MIMAG's medium-quality-draft bound (50 / 10) — the
-  `galah --min-completeness / --max-contamination` pair. The scores were already staged
-  into the job and read by nothing; they now filter the de novo feature->genome map, and
-  because every other de novo relation reaches its genomes through that map, one term
-  carries the gate into the precedence DELETE, the per-genome length denominators, the
-  coverage survivor set and woltka's input at once. Nothing is deleted from Postgres or
-  the lake: the bound is a term in the `SELECT` that stages the map, expressed as a
-  semi-join so a genome carrying two quality rows cannot fan the map out. Applies to
-  MAG and LCG only, the two kinds the map admits; reference genomes carry no CheckM row
-  and are not gated.
+  `max_contamination`, defaulting to 50 / 10. The gate filters the de novo
+  feature->genome map, and because every other de novo relation resolves its genomes
+  through that map, one term reaches the precedence DELETE, the per-genome length
+  denominators, the coverage survivor set and woltka's input. Nothing is removed from
+  Postgres or the lake: the bound is a term in the `SELECT` that stages the map, as a
+  semi-join so a genome carrying two quality rows cannot fan the map out. MAG and LCG
+  only, the two kinds the map admits; reference genomes carry no CheckM score and are
+  not gated.
 
-  Unlike the coverage filter, the gate runs BEFORE precedence, so a read whose only de
-  novo placement was on an excluded genome keeps its reference placement instead of
-  being lost from both arms. An unscored genome does not pass: the predicate is the
-  positive form, because a caller told every genome cleared `min_completeness` must not
-  be handed one nobody measured. That state is not reachable for a run that completed —
-  `checkm.sh` scores a class exactly when `assembly_hash` writes that class's membership
-  rows, it exits non-zero when genomes are present and the CheckM DB is not, and
-  `_lib.sh`'s `set -euo pipefail` fails the step on a half-written lineage/qa pair — so
-  three docstrings claiming an unscored MAG or LCG was "a normal outcome" were wrong and
-  are corrected.
+  Unlike the coverage filter, the gate runs before precedence, so a read whose only de
+  novo placement was on an excluded genome keeps its reference placement instead of being
+  lost from both arms.
 
-  The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated:
-  `bin_quality` is absent from the human-callable mint's table allowlist, so the scores
-  are unreachable with a PAT. Its manifest now records `genome_quality_gate: null` so a
-  client-built combined table is distinguishable from a server-built one rather than
-  silently differing.
+  **A run with any unscored MAG or LCG subject is refused at submit** rather than gated,
+  because the predicate is the positive form and excludes a NULL at every bound. Such
+  runs exist: `checkm.sh` scored only the refined bins until circular genomes were added
+  to it, while `assembly_hash` has written LCG membership rows since two months earlier,
+  so every run completed between those changes has LCG subjects with no `bin_quality`
+  row — and the genome-mint backfill stamps them regardless of score, which is what makes
+  them reachable as a de novo arm. A missing score cannot be backfilled the way
+  `genome_idx` was; the run has to be assembled again under a version that scores
+  circular genomes. Without the refusal the gate would drop the class most likely to be a
+  complete genome without reporting it.
+
+  The client-side `qiita feature-table build --denovo-alignment-idx` is not gated:
+  `bin_quality` is absent from the human-callable mint's table allowlist, so a PAT cannot
+  reach the scores. The `analytic` package docstring records that divergence.
 
 - **The genome map is served as Parquet from a sibling route, so a large reference
   is no longer unbuildable (#550).** `GET /reference/{idx}/genome-map` caps at 250,000

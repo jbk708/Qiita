@@ -292,15 +292,10 @@ does not publish (`_published_genome_idxs`).
 compute-orchestrator's `estimate_feature_table` job.** Two consumers run the same
 analytic and must not disagree about it; they differ only in where the inputs come from
 and how the result is written — which is why the package owns no connection and no
-streaming.
-
-They differ in **one** thing beyond that, and it is a reachability limit rather than a
-choice: the server-side job gates the de novo arm's genomes on their CheckM
-completeness / contamination (`analytic.denovo_map_statements`, defaulting to MIMAG's
-50 / 10) and this pipeline cannot, because `bin_quality` is absent from the
-human-callable mint's table allowlist (`routes/assembly.py` `ASSEMBLY_DOGET_TABLES`) and
-so is unreachable with a PAT. A client-built combined table is therefore ungated, and
-its manifest says so (`genome_quality_gate`) rather than leaving the two indistinguishable. Its docstrings are the single copy of *why* each step is shaped as it is;
+streaming. They differ in one thing beyond that — the de novo arm's CheckM quality
+gate, which the server-side job applies and this pipeline cannot reach the scores for;
+the `analytic` package docstring carries it. Its docstrings are the single copy of *why*
+each step is shaped as it is;
 this section is the map, not a second copy. What a reader of the pipeline needs to know is that six of
 its properties are load-bearing rather than stylistic, and each is enforced and
 explained at exactly one place:

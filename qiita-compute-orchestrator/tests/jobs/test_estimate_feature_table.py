@@ -569,8 +569,8 @@ def _write_denovo_quality_parquet(
     """The resolver-staged de novo quality: (prep_sample_idx, genome_idx,
     completeness, contamination), as `_write_denovo_genome_quality` writes it.
 
-    The scores are nullable, so the fixtures carry a NULL row: a genome CheckM did
-    not score is an ordinary state, not an edge case.
+    The scores are nullable and stay so here: the resolver refuses a run with an
+    unscored MAG/LCG subject, which is upstream of this shape rather than in it.
     """
     with duckdb.connect(":memory:") as conn:
         values = ", ".join(
@@ -667,10 +667,9 @@ def _run_combined(
         tmp_path / "dn_map.parquet",
         [(1, 50, 900), (2, 50, 901)] if denovo_map is None else denovo_map,
     )
-    # Both genomes scored and both clearing the DEFAULT bounds, which is the state a
-    # completed assembly run is in: `checkm.sh` scores a class exactly when
-    # `assembly_hash` writes that class's membership rows. So every combined test below
-    # runs through the real gate at the real thresholds.
+    # Both genomes scored and both clearing the default bounds, so every combined test
+    # below runs through the real gate at the real thresholds. A run holding an unscored
+    # subject never reaches the job — the resolver refuses it.
     denovo_quality_pq = _write_denovo_quality_parquet(
         tmp_path / "dn_quality.parquet",
         [(1, 900, 95.0, 1.0), (2, 901, 90.0, 2.0)] if quality is None else quality,
@@ -901,10 +900,10 @@ def test_a_denovo_map_without_its_run_fails_loudly(tmp_path, monkeypatch, thresh
 
 
 def test_the_gate_defaults_to_the_contract_layers_literals():
-    """The ONE place the default lives. An omitted `action_context` key is skipped by
-    the params binding (`runner._dispatch._bind_step_inputs`), so this default is what
-    a caller who names neither bound actually gets — and the workflow
-    `context_schema` deliberately carries no `default:` of its own to disagree with it.
+    """The one place the default lives. An omitted `action_context` key is skipped by the
+    params binding (`runner._dispatch._bind_step_inputs`), so this is what a caller who
+    names neither bound gets; the workflow `context_schema` declares no `default:` that
+    could disagree with it.
     """
     from qiita_compute_orchestrator.jobs import estimate_feature_table as m
 
@@ -924,9 +923,9 @@ def test_the_gate_defaults_to_the_contract_layers_literals():
     ],
 )
 def test_inputs_quality_gate_bounds(bad, tmp_path):
-    """Refused at the boundary, like `coverage_threshold`. A completeness above 100
-    excludes every assembled genome and a negative bound on either axis does the same,
-    so both are silent rather than loud out of range.
+    """Refused at the boundary, like `coverage_threshold`, and for that bound's reason:
+    a value outside [0, 100] is not a percentage. Out of range the failure is silent
+    either way — permissive below 0, empty above 100 — rather than an error.
     """
     from qiita_compute_orchestrator.jobs import estimate_feature_table as m
 
@@ -984,8 +983,8 @@ def test_an_unscored_genome_does_not_pass_the_gate(tmp_path, monkeypatch):
     predicate excludes a NULL rather than admitting it, because a caller told every
     genome cleared `min_completeness` must not be handed one nobody measured.
 
-    Not a state a completed assembly run reaches — see that function for why — which is
-    exactly why the behaviour is pinned rather than left to be discovered.
+    The resolver refuses such a run before the job runs, so this is the behaviour behind
+    that refusal rather than a path a submission reaches.
     """
     from qiita_compute_orchestrator.jobs import estimate_feature_table as m
 
@@ -999,9 +998,9 @@ def test_an_unscored_genome_does_not_pass_the_gate(tmp_path, monkeypatch):
 
 
 def test_a_permissive_gate_admits_a_poorly_scored_genome(tmp_path, monkeypatch):
-    """`min_completeness=0` with a large `max_contamination` is the ungated map — the
-    escape hatch, there being no nullable spelling for a scalar on the wire
-    (`runner._dispatch._bind_step_inputs` coerces through `str`)."""
+    """`min_completeness=0` with a large `max_contamination` admits every scored genome.
+    There is no nullable spelling for a scalar on the wire — `_bind_step_inputs` coerces
+    through `str` — so this is the most permissive gate available."""
     from qiita_compute_orchestrator.jobs import estimate_feature_table as m
 
     out, _captured = _run_combined(

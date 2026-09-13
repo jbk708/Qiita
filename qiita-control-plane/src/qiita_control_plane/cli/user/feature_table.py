@@ -785,15 +785,6 @@ def _manifest_denovo(
         "applied": applied_processing_idx is not None,
         "processing_idx": applied_processing_idx,
         "prep_samples_with_a_de_novo_arm": len(cohort),
-        # This arm is NOT gated on the assembled genomes' CheckM scores, where the
-        # server-side `estimate-feature-table` action gates its own on
-        # completeness/contamination. The client cannot: `bin_quality` is absent from
-        # the human-callable mint's allowlist (`routes/assembly.py`
-        # ASSEMBLY_DOGET_TABLES), so the scores are unreachable with a PAT. Recorded
-        # rather than omitted for this function's own reason — two builds whose de
-        # novo genomes were admitted under different rules must not write the same
-        # manifest.
-        "genome_quality_gate": None,
     }
 
 

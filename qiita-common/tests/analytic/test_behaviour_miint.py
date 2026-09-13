@@ -1849,8 +1849,8 @@ def test_the_gate_removes_nothing_from_the_quality_relation():
 
 
 def test_a_genome_exactly_on_each_bound_is_kept():
-    """Inclusive on both sides, matching MIMAG's own reading of the pair and
-    `test_a_genome_exactly_at_the_threshold_survives` for the coverage bound."""
+    """Inclusive on both sides, as `test_a_genome_exactly_at_the_threshold_survives`
+    pins for the coverage bound."""
     on_the_line = [
         (1, 900, ft.DEFAULT_MIN_COMPLETENESS, ft.DEFAULT_MAX_CONTAMINATION),
         (2, 901, 90.0, 2.0),
@@ -1860,10 +1860,11 @@ def test_a_genome_exactly_on_each_bound_is_kept():
 
 
 def test_a_permissive_gate_admits_every_scored_genome():
-    """`min_completeness=0` with a large `max_contamination` is what reproduces an
-    ungated map — the escape hatch `validate_quality_gate` describes, there being no
-    nullable spelling on the wire. Scored genomes only, which for a completed assembly
-    run is all of them."""
+    """`min_completeness=0` with a large `max_contamination` admits every SCORED genome.
+
+    Not an ungated map: the positive predicate excludes a NULL at every bound, which is
+    why an unscored subject is refused at submit instead
+    (`runner/_feature_table.py::_stage_denovo_genome_quality`)."""
     poor = [(1, 900, 0.5, 90.0), (2, 901, 0.5, 90.0)]
     values = _combined_table(quality=poor, min_completeness=0.0, max_contamination=1000.0)
     assert {(s, g) for s, g, _ in values} >= {(1, 900), (2, 901)}
@@ -1879,3 +1880,47 @@ def test_the_gate_does_not_judge_the_reference_arm():
     assert {(s, g) for s, g, _ in combined} == {(1, 100), (1, 200), (1, 300), (2, 100)}, (
         "every reference genome, including R300 with read 3 back on it"
     )
+
+
+@pytest.mark.parametrize(
+    ("min_completeness", "max_contamination"),
+    [(-0.1, 10.0), (100.1, 10.0), (50.0, -0.1)],
+)
+def test_the_gate_refuses_a_bound_that_is_not_a_percentage(min_completeness, max_contamination):
+    """The shared backstop, for the next consumer: each caller also validates at its own
+    boundary (the job's Pydantic `Field`), but out of range the failure is silent either
+    way — permissive below 0, empty above 100.
+    """
+    with pytest.raises(ValueError, match="percentage"):
+        ft.denovo_map_statements(
+            map_source="m",
+            quality_source="q",
+            min_completeness=min_completeness,
+            max_contamination=max_contamination,
+        )
+
+
+def test_the_gate_accepts_a_contamination_above_100():
+    """No ceiling on contamination: nothing here fixes one, and CheckM's range is not
+    something this repo has measured."""
+    assert ft.denovo_map_statements(
+        map_source="m", quality_source="q", min_completeness=50.0, max_contamination=1000.0
+    )[1][1] == [50.0, 1000.0]
+
+
+def test_the_gate_refuses_a_nan_bound():
+    """NaN reaches here. The route validates `action_context` against the action's
+    JSON Schema, and `{"type":"number","minimum":0,"maximum":100}` ACCEPTS NaN —
+    probed on the pinned jsonschema — because every comparison against it is false;
+    `json.loads` also accepts the non-standard `NaN` literal by default.
+
+    A NaN bound is not inert: `completeness >= NaN` is false for every row, so the de
+    novo arm empties and the table reads as reference-only. The `not 0 <= x <= 100`
+    spelling is what rejects it — the equivalent-looking `x < 0 or x > 100` would let it
+    through — which is why this is pinned rather than left to the shape of the
+    expression.
+    """
+    for bad in ({"min_completeness": float("nan")}, {"max_contamination": float("nan")}):
+        kwargs = {"min_completeness": 50.0, "max_contamination": 10.0} | bad
+        with pytest.raises(ValueError, match="percentage"):
+            ft.denovo_map_statements(map_source="m", quality_source="q", **kwargs)

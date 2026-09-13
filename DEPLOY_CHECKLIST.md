@@ -44,7 +44,7 @@ _None yet._
   Each first runs once more at its persisted PT8H floor, then escalates to PT16H on that timeout.
 - `estimate-feature-table` is edited IN PLACE at 1.0.0, so the generic `qiita.action`
   list cannot tell a fresh sync from a stale row — the version string is unchanged.
-  Assert the two new `context_schema` keys instead: (#feat/estimate-feature-table-quality-gate)
+  Assert the two new `context_schema` keys instead: (#N)
 
   ```bash
   psql "$DATABASE_URL" -tAc "SELECT context_schema->'properties' ? 'min_completeness' AND context_schema->'properties' ? 'max_contamination' FROM qiita.action WHERE action_id='estimate-feature-table' AND version='1.0.0'"
@@ -61,20 +61,25 @@ _None yet._
 
 - **Edited in place** and re-synced into `qiita.action` by `qiita-admin actions sync` inside `activate.sh` — no new action, no migration: `align` 1.0.0's `action_ceiling.walltime`, PT8H → PT16H, with `align_sharded`'s PT4H baseline unchanged (#563).
 - **Combined feature tables change by default.** `estimate-feature-table` now gates the
-  de novo arm's assembled genomes on their CheckM scores, at MIMAG's medium-quality
-  bound — completeness >= 50, contamination <= 10 — via two new optional
-  `action_context` keys (`min_completeness`, `max_contamination`). A ticket carrying
-  `denovo_alignment_idx` and naming neither key gets the gate, so a table rebuilt after
-  this deploy can hold fewer qiita genomes than the same request did before it. Reads on
-  an excluded genome keep their reference placement rather than dropping out, and
-  reference genomes are never gated. `min_completeness=0` with a large
-  `max_contamination` reproduces the old, ungated table. Reference-only tickets are
-  unaffected. No env var, host dir, scope or migration; the edited YAML re-syncs at
-  1.0.0 inside `activate.sh` (verify in bucket 5). (#feat/estimate-feature-table-quality-gate)
+  de novo arm's assembled genomes on CheckM completeness >= 50 / contamination <= 10, via
+  two new optional `action_context` keys (`min_completeness`, `max_contamination`). A
+  ticket carrying `denovo_alignment_idx` and naming neither key gets the gate, so a table
+  rebuilt after this deploy can hold fewer qiita genomes than the same request did
+  before it. Reads on an excluded genome keep their reference placement rather than
+  dropping out; reference genomes and reference-only tickets are unaffected. No env var,
+  host dir, scope or migration; the edited YAML re-syncs at 1.0.0 inside `activate.sh`
+  (verify in bucket 5). (#N)
+- **Assembly runs that predate circular-genome scoring can no longer be a de novo arm.**
+  A combined-table submit naming one is refused with the prep_samples and counts, because
+  its LCG subjects have no `bin_quality` row and the gate cannot judge them. Unlike
+  `genome_idx`, a CheckM score cannot be backfilled — the run must be re-assembled under
+  a workflow version that scores circular genomes. Expect this for runs completed before
+  the 2026-09-02 deploy. Nothing to do at deploy time; it surfaces as a failed ticket
+  with an explanatory message. (#N)
 - The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated —
   `bin_quality` is not on the human-callable DoGet allowlist, so a PAT cannot reach the
   scores. Its manifest records `genome_quality_gate: null` so a client-built combined
-  table stays distinguishable from a server-built one. (#feat/estimate-feature-table-quality-gate)
+  table stays distinguishable from a server-built one. (#N)
 
 ## Deployed history
 

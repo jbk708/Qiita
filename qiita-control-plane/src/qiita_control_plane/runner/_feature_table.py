@@ -244,7 +244,7 @@ def _do_get_bin_quality(data_plane_url: str, ticket_bytes: bytes) -> pa.Table:
 
 def _write_denovo_genome_quality(
     subjects: list[asyncpg.Record], quality: pa.Table, out_path: Path
-) -> None:
+) -> dict[int, int]:
     """Join the streamed quality rows onto the run's subject->genome bridge and write
     `(prep_sample_idx, genome_idx)` plus `BIN_QUALITY_SCORE_COLUMNS` to `out_path`,
     one row per subject the bridge names.
@@ -255,25 +255,11 @@ def _write_denovo_genome_quality(
     statements later is a shared-filesystem dependency bought for nothing, and a file
     nothing declares is one nothing cleans up.
 
-    **LEFT from the subject side.** A genome with no quality row keeps its row with
-    NULL scores, so this file always matches the map it is read beside; an inner join
-    would drop such a genome here and leave the two disagreeing.
-
-    For a MAG or LCG of a run that COMPLETED there is no such genome. `checkm.sh`
-    scores a class exactly when `assembly_hash` writes that class's membership rows —
-    both read the same refined-bins dir and the same `circular.fa` — so a class with
-    no scores has no subjects either; it exits non-zero when genomes are present and
-    the CheckM reference DB is not; and `workflows/_shared/_lib.sh`'s
-    `set -euo pipefail` fails the step on a half-written lineage/qa pair rather than
-    letting one reach the lake. `_validate_denovo_arm` then refuses any prep_sample
-    not `completed`. (The residue length cut is not a cause here either: the driving
-    side admits MAG and LCG only, and the cut applies to UNBINNED.)
-
-    The join stays LEFT regardless, because that keeps what to DO about an unscored
-    genome at the one site that decides it —
-    `qiita_common.analytic.reconcile._quality_gate_predicate`, which excludes it —
-    rather than making the decision here by dropping the row before anything can see
-    it.
+    **LEFT from the subject side, and the count of what it left NULL is returned.** A
+    genome with no quality row keeps its row with NULL scores, so this file always
+    matches the map it is read beside; an inner join would drop such a genome here and
+    leave the two disagreeing about which genomes the run has. The caller refuses the
+    submission on a non-empty count — `_stage_denovo_genome_quality` carries why.
 
     **The join carries `prep_sample_idx` because `bin_id` is only unique within a
     prep_sample.** It is a refined bin's FASTA stem for a MAG and the assembler's
@@ -296,6 +282,7 @@ def _write_denovo_genome_quality(
     """
     scores = ", ".join(f"q.{c}" for c in BIN_QUALITY_SCORE_COLUMNS)
     on = " AND ".join(f"q.{c} = s.{c}" for c in BIN_QUALITY_SUBJECT_KEY)
+    missing = " OR ".join(f"q.{c} IS NULL" for c in BIN_QUALITY_SCORE_COLUMNS)
     out_sql = validate_parquet_path(out_path)
     # Both the ON clause above and this relation's key columns come from the one
     # constant: a member added to it must appear on both sides of the join, and
@@ -321,6 +308,19 @@ def _write_denovo_genome_quality(
                 f" LEFT JOIN bin_quality_stream q ON {on})"
                 f" TO '{out_sql}' ({PARQUET_OPTS_INTERMEDIATE})"
             )
+            # Counted on the same connection as the write, from the same two
+            # relations, so the number describes the file that was just written
+            # rather than a second read that could see something else.
+            unscored = {
+                row[0]: row[1]
+                for row in con.execute(
+                    f"SELECT s.prep_sample_idx, count(*)"
+                    f" FROM assembly_subject s"
+                    f" LEFT JOIN bin_quality_stream q ON {on}"
+                    f" WHERE {missing}"
+                    f" GROUP BY s.prep_sample_idx"
+                ).fetchall()
+            }
         success = True
     finally:
         # A half-written file left where the binding would have pointed, for the
@@ -328,6 +328,7 @@ def _write_denovo_genome_quality(
         # path without rewriting it.
         if not success:
             out_path.unlink(missing_ok=True)
+    return unscored
 
 
 async def _stage_denovo_genome_quality(
@@ -387,7 +388,29 @@ async def _stage_denovo_genome_quality(
             exc,
         ) from exc
     quality_path = workspace / "denovo_genome_quality.parquet"
-    _write_denovo_genome_quality(subjects, quality, quality_path)
+    unscored = _write_denovo_genome_quality(subjects, quality, quality_path)
+    # Refused rather than staged, for the reason the unminted-genome check above it
+    # gives: the gate's predicate is the positive form, so an unscored genome is
+    # excluded at every bound including the most permissive one, and the omission
+    # shows up as a class quietly missing from the table rather than as an error.
+    #
+    # This is reachable, not defensive. `checkm.sh` scored only the refined bins until
+    # the 2026-09-01 change that added the circular arm, while `assembly_hash` has
+    # written LCG membership rows since 2026-07-07 — so every run completed between
+    # those dates has LCG subjects with no `bin_quality` row, and the genome-mint
+    # backfill stamps them regardless of kind or score. CheckM scores cannot be
+    # backfilled the way `genome_idx` was: the run has to be assembled again, which is
+    # what `long-read-assembly` 1.0.1 is the version for.
+    if unscored:
+        listed = sorted(unscored.items())[:_MAX_REPORTED]
+        raise _submission_bad_input(
+            f"{len(unscored)} prep_sample(s) of assembly run {processing_idx} have "
+            f"MAG/LCG subjects with no CheckM score, so a completeness/contamination "
+            f"gate would drop those genomes without reporting them. The run has to be "
+            f"re-assembled under a workflow version that scores circular genomes "
+            f"before it can be used as a de novo arm; unlike genome_idx, a missing "
+            f"score cannot be backfilled without re-running CheckM: {listed}"
+        )
     return quality_path
 
 

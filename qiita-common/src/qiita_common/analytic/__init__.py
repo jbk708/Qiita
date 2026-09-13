@@ -4,9 +4,14 @@ Two consumers run this same analytic and must not disagree about it: the
 compute-orchestrator native job `estimate_feature_table` (server-side, reached
 through a work ticket) and the client-side feature-table recipe (a user's machine,
 composing the analytic-export routes). They differ in everything *around* the
-analytic — where the inputs come from, how the result is written — and in nothing
-about the analytic itself, so the SQL lives here and the streaming and I/O stay with
-each caller.
+analytic — where the inputs come from, how the result is written — so the SQL lives
+here and the streaming and I/O stay with each caller.
+
+They disagree about the analytic in exactly one place, and it is a reachability limit
+rather than a choice: `denovo_map_statements` gates the de novo arm on CheckM scores
+and the client cannot reach `bin_quality` (`routes/assembly.py` allowlists the two
+tables a PAT may mint for), so a client-built combined table calls
+`denovo_map_table_sql` ungated.
 
 **Plain SQL text, so nothing here needs a connection of its own.** Callers execute
 these statements on a connection that has miint loaded. (Same shape as `chunking.py`'s
@@ -110,7 +115,6 @@ from .reconcile import (
     denovo_map_statements,
     denovo_map_table_sql,
     denovo_ogu_input_select_sql,
-    validate_quality_gate,
 )
 from .relations import (
     ALIGNMENT_TABLE,
@@ -293,6 +297,5 @@ __all__ = [
     "taxonomy_table_sql",
     "tree_copy_sql",
     "tree_diagnostics_sql",
-    "validate_quality_gate",
     "woltka_ogu_select_sql",
 ]

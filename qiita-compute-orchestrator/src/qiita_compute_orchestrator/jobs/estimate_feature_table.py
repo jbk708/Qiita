@@ -39,11 +39,9 @@ one.
 It adds one the reference arm has no counterpart for: the assembled genomes' CheckM
 completeness / contamination, staged as a third Parquet by the same resolver pass
 and arriving already keyed by genome. Neither store holds it whole, which is why the
-resolver rather than this module does the join (`runner/_feature_table.py`). It GATES
-the de novo map — a genome outside `min_completeness` / `max_contamination` is not
-staged, so it reaches neither the counts nor the coverage denominator, and the reads
-it held keep their reference placement. `analytic.denovo_map_statements` owns that
-rule; a reference genome has no CheckM score and is not gated.
+resolver rather than this module does the join (`runner/_feature_table.py`). It gates
+which assembled genomes are staged into the map at all; `analytic.denovo_map_statements`
+owns that rule.
 
 Each stream is drained inside its own `with`, by the CREATE that stages it, so the
 Flight client closes before the compute starts.
@@ -107,10 +105,9 @@ class Inputs(BaseModel):
     the same `action_context`, and the mint names the arm rather than the run.
 
     `min_completeness` / `max_contamination` are the de novo arm's quality gate, on
-    CheckM's percentage scale. They are the one pair whose default is reached HERE
-    rather than resolved CP-side: this action mints no identity and hashes no params,
-    so nothing control-plane-side needs the value, and a second literal there is the
-    drift `runner._processing._mint_processing_idx` describes for the assembler.
+    CheckM's percentage scale. Their default is reached here rather than resolved from
+    the `context_schema`, which declares no `default:`: this action hashes no params, so
+    nothing control-plane-side needs the value, and two declared defaults can diverge.
     """
 
     reference_idx: int
@@ -130,13 +127,9 @@ class Inputs(BaseModel):
     # Per-genome CheckM scores for the de novo arm, staged by the same resolver
     # pass that stages the map above. Nullable scores; the resolver states why.
     denovo_genome_quality_path: Path | None = None
-    # The quality gate applied to the de novo arm's genomes, as CheckM percentages.
-    # Both default to `qiita_common.analytic`'s literals, which is what an omitted
-    # `action_context` key resolves to — the params binding skips a key that is not
-    # there, so the default is reached here rather than CP-side. Read only for a
-    # combined table: a reference genome has no CheckM score to judge.
+    # The de novo arm's quality gate; `analytic.denovo_map_statements` applies it. The
+    # params binding skips an absent key, which is how these defaults are reached.
     min_completeness: float = Field(default=analytic.DEFAULT_MIN_COMPLETENESS, ge=0.0, le=100.0)
-    # No upper bound, for the reason `analytic.validate_quality_gate` gives.
     max_contamination: float = Field(default=analytic.DEFAULT_MAX_CONTAMINATION, ge=0.0)
 
 
@@ -214,10 +207,10 @@ async def _stage_denovo_lengths(conn: duckdb.DuckDBPyConnection, *, processing_i
     appended into one relation before the roll-up reads it.
 
     **The cohort comes from the de novo map itself**, not from a separate input. The
-    map holds exactly the samples that contributed a genome-bearing contig to this
-    run — so a sample that assembled nothing is absent from both, and asking the
-    data plane for its contigs would 404 on a run that legitimately produced none.
-    A second source for the same list is a second thing that can be wrong.
+    map holds the samples with a contig under a genome the quality gate admitted — so a
+    sample that assembled nothing, or whose genomes all failed the gate, is absent from
+    both, and asking the data plane for its contigs would 404 on a run that legitimately
+    produced none. A second source for the same list is a second thing that can be wrong.
     """
     conn.execute(analytic.denovo_contig_lengths_table_sql())
     cohort = [
@@ -261,12 +254,8 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
             map_sql = validate_parquet_path(inputs.genome_map_path)
             conn.execute(analytic.map_table_sql(f"read_parquet('{map_sql}')"))
             if combined:
-                # The scores, then the map gated on them. One sequence because the
-                # order is load-bearing and the gate is not optional — see
-                # `analytic.denovo_map_statements`. Gating the MAP is what carries the
-                # gate into the precedence DELETE, the length denominators, the
-                # coverage survivors and woltka's input, all of which read their
-                # genomes through it.
+                # The scores, then the map gated on them — `analytic.denovo_map_statements`
+                # owns the order and what the gate reaches.
                 denovo_map_sql = validate_parquet_path(inputs.denovo_genome_map_path)
                 quality_sql = validate_parquet_path(_require_denovo_genome_quality_path(inputs))
                 for sql, parameters in analytic.denovo_map_statements(

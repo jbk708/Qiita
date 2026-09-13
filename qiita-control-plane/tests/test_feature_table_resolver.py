@@ -53,9 +53,10 @@ _BIN_QUALITY_EXTRA = {"marker_lineage": pa.string(), "strain_heterogeneity": pa.
 def bin_quality(monkeypatch):
     """Stub the `bin_quality` DoGet and capture the ticket scope it was signed with.
 
-    Autouse because every de novo test reaches it; `rows` starts empty, which is the
-    state a run CheckM scored nothing in — so a test that says nothing about quality
-    still exercises the unscored path rather than skipping it.
+    Autouse because every de novo test reaches it. `rows` starts empty, which is a run
+    with no CheckM score for any subject — the state the resolver REFUSES — so a test
+    about anything else has to score its subjects (`_all_scored`) and a test that forgets
+    to fails loudly rather than passing over an unexercised path.
 
     Set `state["rows"]` to `(prep_sample_idx, kind, bin_id, completeness,
     contamination)` tuples before calling the resolver. `state["filters"]` collects
@@ -329,6 +330,13 @@ async def test_resolver_bad_action_context_raises(postgres_pool, tmp_path, actio
 # ---------------------------------------------------------------------------
 
 
+def _all_scored(s, *, completeness=90.0, contamination=1.0):
+    """A `bin_quality` row for every subject `_seed_denovo` creates — one
+    `('MAG', 'bin.1')` per prep_sample — which is the state of a run through the current
+    assembly pipeline, and the only state the resolver admits as a de novo arm."""
+    return [(ps, "MAG", "bin.1", completeness, contamination) for ps in s["prep_sample_idxs"]]
+
+
 async def _seed_denovo(pool, s, *, mask_idx=1, assembly_states=None, aligned=None, minted=True):
     """Add a de novo alignment over `s`'s samples, an assembly run, and both gates.
 
@@ -464,7 +472,7 @@ def _context(s, d=None, **extra):
     return ctx | extra
 
 
-async def test_resolver_stages_the_denovo_map_keyed_by_sample(postgres_pool, tmp_path):
+async def test_resolver_stages_the_denovo_map_keyed_by_sample(postgres_pool, tmp_path, bin_quality):
     """The happy combined path. The de novo map is THREE columns where the reference
     one is two, and the extra column is `prep_sample_idx` — a contig is
     content-addressed, so without it two samples' rows on a shared contig are
@@ -472,6 +480,7 @@ async def test_resolver_stages_the_denovo_map_keyed_by_sample(postgres_pool, tmp
     """
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
+    bin_quality["rows"] = _all_scored(s)
     try:
         result = await _resolve_feature_table_bindings(
             postgres_pool,
@@ -553,66 +562,59 @@ async def test_resolver_stages_quality_keyed_by_genome(postgres_pool, tmp_path, 
         await _cleanup(postgres_pool, s)
 
 
-async def test_a_genome_checkm_did_not_score_keeps_its_row_with_null_scores(
-    postgres_pool, tmp_path, bin_quality
-):
-    """Absence of a `bin_quality` row is a NORMAL state, not an error and not a
-    reason to drop the genome.
+async def test_an_unscored_subject_refuses_the_submission(postgres_pool, tmp_path, bin_quality):
+    """A MAG or LCG with no `bin_quality` row refuses the ticket, naming the prep_samples.
 
-    `bin_quality` is written empty-with-schema when CheckM scored nothing, and its
-    writer skips a class whose tool output is absent, so a MAG or LCG subject with no
-    quality row is an ordinary outcome. An INNER join would silently shorten the
-    genome set — the de novo map would carry a genome this file does not, and a
-    consumer comparing the two would see it missing with nothing saying why.
+    The gate's predicate is the positive form, so such a genome is excluded at every
+    bound — including the most permissive one. Refusing is what keeps that from being a
+    class quietly missing from the table, the same argument
+    `count_assembly_membership_without_genome` makes for a short denominator.
+
+    Reachable, not hypothetical: `checkm.sh` scored only the refined bins until circular
+    genomes were added, while LCG membership rows predate that by two months.
     """
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
     scored_sample = s["prep_sample_idxs"][0]
     bin_quality["rows"] = [(scored_sample, "MAG", "bin.1", 77.0, 2.0)]
     try:
-        result = await _resolve_feature_table_bindings(
-            postgres_pool,
-            action_context=_context(s, d),
-            reference_idx=s["reference_idx"],
-            workspace=tmp_path,
-            data_plane_url=_STUB_DP_URL,
-            signing_key=_STUB_SIGNING_KEY,
-        )
-        got = _quality_rows(result[DENOVO_GENOME_QUALITY_PATH_BINDING])
-        # Both genomes present — the unscored one is a row, not a gap.
-        assert set(got) == {genome_idx for _, genome_idx in d["contigs"]}
-        scored_genome = d["contigs"][0][1]
-        unscored_genome = d["contigs"][1][1]
-        assert got[scored_genome] == (77.0, 2.0)
-        assert got[unscored_genome] == (None, None)
-        # NULL, not 0.0: a genome nobody measured must not read as a genome that
-        # measured zero, which is what a COALESCE here would have made it.
-        assert got[unscored_genome] != (0.0, 0.0)
+        with pytest.raises(BackendFailure) as exc:
+            await _resolve_feature_table_bindings(
+                postgres_pool,
+                action_context=_context(s, d),
+                reference_idx=s["reference_idx"],
+                workspace=tmp_path,
+                data_plane_url=_STUB_DP_URL,
+                signing_key=_STUB_SIGNING_KEY,
+            )
+        message = str(exc.value)
+        assert "no CheckM score" in message
+        # The unscored sample is named; the scored one is not the complaint.
+        unscored_sample = s["prep_sample_idxs"][1]
+        assert str(unscored_sample) in message
     finally:
         await _cleanup_denovo(postgres_pool, d)
         await _cleanup(postgres_pool, s)
 
 
-async def test_a_run_that_scored_nothing_stages_every_genome_unscored(
+async def test_a_run_that_scored_nothing_refuses_the_submission(
     postgres_pool, tmp_path, bin_quality
 ):
-    """The whole-run form of the case above: an empty `bin_quality` is a success
-    upstream, so it must not fail or empty the file here."""
+    """The whole-run form: an empty `bin_quality` is a success upstream, and the run is
+    still unusable as a de novo arm because nothing in it can be judged."""
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
     assert bin_quality["rows"] == []
     try:
-        result = await _resolve_feature_table_bindings(
-            postgres_pool,
-            action_context=_context(s, d),
-            reference_idx=s["reference_idx"],
-            workspace=tmp_path,
-            data_plane_url=_STUB_DP_URL,
-            signing_key=_STUB_SIGNING_KEY,
-        )
-        got = _quality_rows(result[DENOVO_GENOME_QUALITY_PATH_BINDING])
-        assert set(got) == {genome_idx for _, genome_idx in d["contigs"]}
-        assert all(scores == (None, None) for scores in got.values())
+        with pytest.raises(BackendFailure, match="no CheckM score"):
+            await _resolve_feature_table_bindings(
+                postgres_pool,
+                action_context=_context(s, d),
+                reference_idx=s["reference_idx"],
+                workspace=tmp_path,
+                data_plane_url=_STUB_DP_URL,
+                signing_key=_STUB_SIGNING_KEY,
+            )
     finally:
         await _cleanup_denovo(postgres_pool, d)
         await _cleanup(postgres_pool, s)
@@ -630,6 +632,7 @@ async def test_the_quality_ticket_is_scoped_to_the_run_and_the_cohort(
     """
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
+    bin_quality["rows"] = _all_scored(s)
     try:
         await _resolve_feature_table_bindings(
             postgres_pool,
@@ -718,7 +721,7 @@ async def test_resolver_refuses_arms_aligned_at_different_masks(postgres_pool, t
 
 
 async def test_a_sample_that_assembled_nothing_is_reference_only_not_a_refusal(
-    postgres_pool, tmp_path
+    postgres_pool, tmp_path, bin_quality
 ):
     """`no_data` is the design's graceful path: the sample has no contigs, so no de
     novo arm is expected and the cohort still builds. This is the one absence that is
@@ -729,6 +732,7 @@ async def test_a_sample_that_assembled_nothing_is_reference_only_not_a_refusal(
     d = await _seed_denovo(
         postgres_pool, s, assembly_states={first: "completed", second: "no_data"}
     )
+    bin_quality["rows"] = _all_scored(s)
     try:
         result = await _resolve_feature_table_bindings(
             postgres_pool,

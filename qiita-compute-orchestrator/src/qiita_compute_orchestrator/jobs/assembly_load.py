@@ -311,9 +311,8 @@ def _write_bin_quality(
 
     Any class may be absent (a prep_sample with no refined bin, none circular, or no
     residue clearing the cut), and with all absent this writes a valid EMPTY Parquet
-    with the right schema so register-files always finds the table. A missing CheckM
-    reference DB is NOT one of those cases: `checkm.sh` exits non-zero when there are
-    genomes to score and no DB to score them with, so it never reaches here.
+    with the right schema so register-files always finds the table. `checkm.sh` states
+    what it does when there are genomes to score and no CheckM DB to score them with.
 
     Column names are pinned to CheckM 1.x / DAS_Tool 1.1.x (see the module
     constants)."""
