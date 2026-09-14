@@ -1721,6 +1721,13 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **`align/1.0.0`'s walltime ceiling is PT16H, above the PT8H its `align_sharded` blocks
+  kept timing out at (#563).** Walltime escalation doubles on each TIMEOUT and clamps to
+  the ceiling, so with a PT8H ceiling a block that needed more than 8 h failed its ticket
+  permanently as walltime-ceiling exhausted. The `align_sharded` baseline stays PT4H, so
+  ordinary tickets request the same walltime as before. A redriven ticket starts at its
+  persisted escalated floor, so a block that already reached PT8H runs once more at PT8H
+  before escalating to PT16H.
 - **long-read-assembly: binning no longer fails when MetaBAT2 forms no bins and MaxBin2 declines the assembly (#561).**
   metaWRAP exits non-zero when any binner fails, and MaxBin2 fails on an assembly whose
   contigs carry too few marker genes, so a prep_sample with such an assembly failed the
