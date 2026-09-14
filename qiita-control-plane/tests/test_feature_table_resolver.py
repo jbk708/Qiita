@@ -14,12 +14,14 @@ import pyarrow.parquet as pq
 import pytest
 from qiita_common.assembly_constants import BIN_QUALITY_TABLE
 from qiita_common.backend_failure import BackendFailure, FailureKind
+from qiita_common.models.processing import ProcessingStatus
 
 from qiita_control_plane.repositories.alignment_definition import mint_alignment_definition
 from qiita_control_plane.repositories.block import (
     create_alignment_sample_pending,
     finalize_alignment_sample,
 )
+from qiita_control_plane.repositories.processing import transition_processing_status
 from qiita_control_plane.runner import (
     GENOME_MAP_PATH_BINDING,
     _feature_table,
@@ -570,8 +572,9 @@ async def test_an_unscored_subject_refuses_the_submission(postgres_pool, tmp_pat
     class quietly missing from the table, the same argument
     `count_assembly_membership_without_genome` makes for a short denominator.
 
-    Reachable, not hypothetical: `checkm.sh` scored only the refined bins until circular
-    genomes were added, while LCG membership rows predate that by two months.
+    A backstop rather than the common case: subjects and scores are written by the same
+    assembly step, and a run from before circular genomes were scored is turned away by
+    `_refuse_deprecated_assembly` first.
     """
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
@@ -592,6 +595,83 @@ async def test_an_unscored_subject_refuses_the_submission(postgres_pool, tmp_pat
         # The unscored sample is named; the scored one is not the complaint.
         unscored_sample = s["prep_sample_idxs"][1]
         assert str(unscored_sample) in message
+    finally:
+        await _cleanup_denovo(postgres_pool, d)
+        await _cleanup(postgres_pool, s)
+
+
+async def _deprecate(pool, d, s, *, superseded_by):
+    await transition_processing_status(
+        pool,
+        processing_idx=d["processing_idx"],
+        status=ProcessingStatus.DEPRECATED,
+        reason="seeded supersession",
+        superseded_by=superseded_by,
+        principal_idx=s["principal_idx"],
+    )
+
+
+async def test_a_deprecated_assembly_run_refuses_the_submission(
+    postgres_pool, tmp_path, bin_quality
+):
+    """A deprecated assembly run cannot be a de novo arm, and the error names its
+    replacement.
+
+    Every subject is scored here, so the refusal can only be attributable to the
+    deprecation — the unscored path would report "no usable CheckM score" instead.
+    """
+    s = await _seed_scenario(postgres_pool, completed=2)
+    d = await _seed_denovo(postgres_pool, s)
+    bin_quality["rows"] = [(ps, "MAG", "bin.1", 77.0, 2.0) for ps in s["prep_sample_idxs"]]
+    replacement_idx = await postgres_pool.fetchval(
+        "INSERT INTO qiita.processing (params_hash, workflow, version, params)"
+        " VALUES ($1, 'long-read-assembly', '1.0.1', '{}'::jsonb) RETURNING processing_idx",
+        uuid.uuid4().bytes + uuid.uuid4().bytes,
+    )
+    try:
+        await _deprecate(postgres_pool, d, s, superseded_by=replacement_idx)
+        with pytest.raises(BackendFailure) as exc:
+            await _resolve_feature_table_bindings(
+                postgres_pool,
+                action_context=_context(s, d),
+                reference_idx=s["reference_idx"],
+                workspace=tmp_path,
+                data_plane_url=_STUB_DP_URL,
+                signing_key=_STUB_SIGNING_KEY,
+            )
+        message = str(exc.value)
+        assert "deprecated" in message
+        assert str(d["processing_idx"]) in message
+        assert str(replacement_idx) in message
+        assert "no usable CheckM score" not in message
+    finally:
+        await _cleanup_denovo(postgres_pool, d)
+        await postgres_pool.execute(
+            "DELETE FROM qiita.processing WHERE processing_idx = $1", replacement_idx
+        )
+        await _cleanup(postgres_pool, s)
+
+
+async def test_a_deprecated_run_with_no_replacement_says_so(postgres_pool, tmp_path, bin_quality):
+    """`superseded_by` is optional on a deprecation, so its absence is its own message
+    rather than a reference to run `None`."""
+    s = await _seed_scenario(postgres_pool, completed=2)
+    d = await _seed_denovo(postgres_pool, s)
+    bin_quality["rows"] = [(ps, "MAG", "bin.1", 77.0, 2.0) for ps in s["prep_sample_idxs"]]
+    try:
+        await _deprecate(postgres_pool, d, s, superseded_by=None)
+        with pytest.raises(BackendFailure) as exc:
+            await _resolve_feature_table_bindings(
+                postgres_pool,
+                action_context=_context(s, d),
+                reference_idx=s["reference_idx"],
+                workspace=tmp_path,
+                data_plane_url=_STUB_DP_URL,
+                signing_key=_STUB_SIGNING_KEY,
+            )
+        message = str(exc.value)
+        assert "records no replacement" in message
+        assert "None" not in message
     finally:
         await _cleanup_denovo(postgres_pool, d)
         await _cleanup(postgres_pool, s)

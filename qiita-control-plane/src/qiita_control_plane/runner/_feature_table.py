@@ -46,6 +46,7 @@ from qiita_common.assembly_constants import (
     BIN_QUALITY_SUBJECT_KEY,
     BIN_QUALITY_TABLE,
 )
+from qiita_common.models.processing import ProcessingStatus
 from qiita_common.parquet import PARQUET_OPTS_INTERMEDIATE, validate_parquet_path
 
 from ..actions.library import export_assembly_member_genome, export_member_genome
@@ -65,6 +66,7 @@ from ..repositories.assembly import (
     fetch_assembly_sample_states,
 )
 from ..repositories.block import list_incomplete_alignment_samples
+from ..repositories.processing import fetch_processing_by_idx
 from ._upload import _submission_bad_input, _submission_dp_fetch_failure
 
 # The genome-map Parquet the compute job consumes as an input (feature_idx ->
@@ -140,6 +142,7 @@ async def _validate_denovo_arm(
     except ValueError as exc:
         raise _submission_bad_input(str(exc)) from exc
 
+    await _refuse_deprecated_assembly(pool, processing_idx=processing_idx)
     await _apply_arm_gate(
         pool,
         denovo_alignment_idx=denovo_alignment_idx,
@@ -147,6 +150,35 @@ async def _validate_denovo_arm(
         prep_sample_idx=prep_sample_idx,
     )
     return processing_idx
+
+
+async def _refuse_deprecated_assembly(pool: asyncpg.Pool, *, processing_idx: int) -> None:
+    """Refuse a deprecated assembly run as a de novo arm, naming its replacement.
+
+    Nothing upstream of here refuses one. A deprecated run stays listed and its
+    genomes stay on the map — `repositories.processing` carries why — so neither the
+    alignment nor the map can tell a withdrawn computation from a current one, and a
+    table built from it would carry genomes the assay has replaced.
+
+    `superseded_by` is reported when it is set because that is the run the caller
+    wants. It is optional on a deprecation, so its absence is a different message
+    rather than a missing one.
+    """
+    row = await fetch_processing_by_idx(pool, processing_idx)
+    if row is None:
+        raise _submission_bad_input(f"assembly run {processing_idx} not found")
+    if row["status"] != ProcessingStatus.DEPRECATED.value:
+        return
+    replacement = row["superseded_by"]
+    if replacement is None:
+        raise _submission_bad_input(
+            f"assembly run {processing_idx} is deprecated and records no replacement, "
+            f"so it cannot be a de novo arm"
+        )
+    raise _submission_bad_input(
+        f"assembly run {processing_idx} is deprecated and cannot be a de novo arm; "
+        f"assembly run {replacement} replaces it"
+    )
 
 
 async def _apply_arm_gate(
@@ -402,11 +434,11 @@ async def _stage_denovo_genome_quality(
     # omission shows up as a class quietly missing from the table rather than as an
     # error.
     #
-    # The condition is real, not defensive: `checkm.sh` scored only the refined bins
-    # until the 2026-09-01 change that added the circular arm, while `assembly_hash`
-    # has written LCG membership rows since 2026-07-07, and the genome-mint backfill
-    # stamps them regardless of kind or score. A run completed between those dates has
-    # LCG subjects with no `bin_quality` row.
+    # A run's subjects and their scores are written by the same assembly step, so an
+    # active run carries both or neither, and `_refuse_deprecated_assembly` has already
+    # turned away the runs from before `checkm.sh` scored circular genomes, which carry
+    # subjects only. This refusal is what keeps a break in that coupling from reading as
+    # a table with one genome class quietly absent.
     if unscored:
         listed = sorted(unscored.items())[:_MAX_REPORTED]
         raise _submission_bad_input(
