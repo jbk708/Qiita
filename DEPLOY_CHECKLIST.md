@@ -70,22 +70,19 @@ _None yet._
   Every LCG under 300 kb fails, on completeness (0 of 7,181), against 5,479 of 6,287 at or
   above it; that small band is largely, not wholly, the `root (UID1)` elements CheckM
   places in no lineage (6,588 of 7,181). Reads on an excluded genome keep their reference
-  placement rather than
-  dropping out; reference genomes and reference-only tickets are unaffected. No env var,
+  placement rather than dropping out; reference genomes and reference-only tickets are
+  unaffected. No env var,
   host dir, scope or migration; the edited YAML re-syncs at 1.0.0 inside `activate.sh`
   (verify in bucket 5). (#564)
-- **Assembly runs that predate circular-genome scoring can no longer be a de novo arm.**
-  A combined-table submit naming one is refused with the prep_samples and counts, because
-  its LCG subjects have no `bin_quality` row and the gate cannot judge them. Unlike
-  `genome_idx`, a CheckM score cannot be backfilled — the run must be assembled again
-  (a re-submit runs the only enabled `long-read-assembly` version, which scores circular
-  genomes). No such submit exists today: the two affected runs are `long-read-assembly`
-  1.0.0 (`processing_idx` 1 and 2, every LCG subject unscored — 1,627 and 2,806), and
-  neither has an `assembly`-subject alignment, which is what a de novo arm is named by.
-  Both are deprecated, run 1 superseded by run 2 and run 2 by `processing_idx` 3 — so the
-  column reaches a scored run from run 1 only in two hops, via the other affected run.
-  Nothing to do at deploy time; if it ever fires it surfaces as a failed ticket with an
-  explanatory message. (#564)
+- **A combined-table submit is refused if the assembly run has an unscored MAG/LCG
+  subject**, naming the prep_samples and counts, because the gate cannot judge a genome
+  with no `bin_quality` row. CheckM runs once, as a step of the assembly run, and its
+  circular arm was added on 2026-09-01, so a run completed before that scored its MAGs
+  only; no action re-scores an existing run's bins. Every enabled `long-read-assembly`
+  version scores all three classes, and both active runs are scored in full, so this
+  cannot fire for a current assembly — only the deprecated 1.0.0 runs carry unscored
+  subjects, and neither has an `assembly`-subject alignment to be named by. Nothing to do
+  at deploy time. (#564)
 - The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated, and
   is unaffected by any of the above: `bin_quality` is un-mintable over HTTP, so a PAT
   cannot reach the scores. A client-built combined table therefore still includes every

@@ -413,8 +413,9 @@ async def _stage_denovo_genome_quality(
             f"{len(unscored)} prep_sample(s) of assembly run {processing_idx} have "
             f"MAG/LCG subjects with no usable CheckM score, so a "
             f"completeness/contamination gate would drop those genomes without "
-            f"reporting them. A score cannot be backfilled the way genome_idx was: the "
-            f"run has to be assembled again before it can be a de novo arm: {listed}"
+            f"reporting them. CheckM runs only as a step of the assembly workflow, so "
+            f"nothing scores an existing run's bins: use the superseding run if there "
+            f"is one, or assemble again at the enabled version: {listed}"
         )
     return quality_path
 
