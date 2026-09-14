@@ -44,7 +44,7 @@ _None yet._
   Each first runs once more at its persisted PT8H floor, then escalates to PT16H on that timeout.
 - `estimate-feature-table` is edited IN PLACE at 1.0.0, so the generic `qiita.action`
   list cannot tell a fresh sync from a stale row — the version string is unchanged.
-  Assert the two new `context_schema` keys instead: (#N)
+  Assert the two new `context_schema` keys instead: (#564)
 
   ```bash
   psql "$DATABASE_URL" -tAc "SELECT context_schema->'properties' ? 'min_completeness' AND context_schema->'properties' ? 'max_contamination' FROM qiita.action WHERE action_id='estimate-feature-table' AND version='1.0.0'"
@@ -71,7 +71,7 @@ _None yet._
   lineage. Reads on an excluded genome keep their reference placement rather than
   dropping out; reference genomes and reference-only tickets are unaffected. No env var,
   host dir, scope or migration; the edited YAML re-syncs at 1.0.0 inside `activate.sh`
-  (verify in bucket 5). (#N)
+  (verify in bucket 5). (#564)
 - **Assembly runs that predate circular-genome scoring can no longer be a de novo arm.**
   A combined-table submit naming one is refused with the prep_samples and counts, because
   its LCG subjects have no `bin_quality` row and the gate cannot judge them. Unlike
@@ -82,11 +82,11 @@ _None yet._
   and 2,806); both are deprecated and superseded onto the fully-scored run 3, and neither
   has an `assembly`-subject alignment, so neither can be named as a de novo arm at all.
   Nothing to do at deploy time; if it ever fires it surfaces as a failed ticket with an
-  explanatory message. (#N)
+  explanatory message. (#564)
 - The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated, and
   is unaffected by any of the above: `bin_quality` is un-mintable over HTTP, so a PAT
   cannot reach the scores. A client-built combined table therefore still includes every
-  MAG/LCG genome the map admits, and is not refused for an unscored run. (#N)
+  MAG/LCG genome the map admits, and is not refused for an unscored run. (#564)
 
 ## Deployed history
 

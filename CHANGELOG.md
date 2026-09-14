@@ -22,7 +22,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 ### Added
 
 - **`estimate-feature-table` gates the de novo arm on CheckM completeness /
-  contamination (#N).** Two new optional `action_context` keys, `min_completeness` and
+  contamination (#564).** Two new optional `action_context` keys, `min_completeness` and
   `max_contamination`, defaulting to 50 / 10. The gate filters the de novo
   feature->genome map, and because every other de novo relation resolves its genomes
   through that map, one term reaches the precedence DELETE, the per-genome length

@@ -402,11 +402,14 @@ async def _stage_denovo_genome_quality(
     # omission shows up as a class quietly missing from the table rather than as an
     # error.
     #
-    # This is reachable, not defensive. `checkm.sh` scored only the refined bins until
-    # the 2026-09-01 change that added the circular arm, while `assembly_hash` has
-    # written LCG membership rows since 2026-07-07 — so every run completed between
-    # those dates has LCG subjects with no `bin_quality` row, and the genome-mint
-    # backfill stamps them regardless of kind or score.
+    # The condition is real, not defensive: `checkm.sh` scored only the refined bins
+    # until the 2026-09-01 change that added the circular arm, while `assembly_hash`
+    # has written LCG membership rows since 2026-07-07, and the genome-mint backfill
+    # stamps them regardless of kind or score. Two runs on the 2026-09-13 deploy fall in
+    # that window, carrying 4,433 unscored LCG subjects between them. Neither is
+    # nameable as a de novo arm there — a de novo arm needs an `assembly`-subject
+    # alignment and neither has one — so this refuses a run that becomes nameable
+    # later, not one that is today.
     if unscored:
         listed = sorted(unscored.items())[:_MAX_REPORTED]
         raise _submission_bad_input(
