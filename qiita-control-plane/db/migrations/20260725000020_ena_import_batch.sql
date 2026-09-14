@@ -17,13 +17,12 @@
 --                  (via MiintEnaResolver) for this accession.
 --   registered  -> ena_import.registration.register_ena_study succeeded;
 --                  study_idx is set.
---   downloading -> one download-ena-study work_ticket was submitted per
---                  pool register_ena_study created
+--   downloading -> one download-ena-study work_ticket was submitted or reused
+--                  per pool holding the study's runs
 --                  (download_work_ticket_idxs populated).
---   done        -> a DISPLAY-ONLY state: rolled up on demand at GET time
---                  from download_work_ticket_idxs' qiita.work_ticket.state
---                  (all terminal-success). The batch driver itself never
---                  writes 'done' -- see routes/ena_import.py.
+--   done        -> never stored: GET rolls a 'downloading' item up to it
+--                  when every ticket is terminal-success
+--                  (ena_import.batch.fetch_batch_status), so the CHECK omits it.
 --   failed      -> resolve, register, or ticket-submission raised for this
 --                  accession; failure_reason carries why. Never the whole
 --                  batch -- only this item.
@@ -61,12 +60,12 @@ CREATE TABLE qiita.ena_import_batch_item (
     ena_study_accession       TEXT NOT NULL
         CHECK (length(ena_study_accession) BETWEEN 1 AND 255),
 
-    -- Mirrored by qiita_common.models.ena_import.BatchItemState. TEXT/CHECK,
-    -- not a Postgres ENUM -- see CLAUDE.md "Enum parity". Keep both sides
-    -- in sync by hand.
+    -- Mirrored by qiita_common.models.ena_import.BatchItemState, minus the
+    -- display-only 'done'. TEXT/CHECK, not a Postgres ENUM -- see CLAUDE.md
+    -- "Enum parity". Keep both sides in sync by hand.
     state                     TEXT NOT NULL DEFAULT 'pending'
         CHECK (state IN
-            ('pending', 'resolving', 'registered', 'downloading', 'done', 'failed')),
+            ('pending', 'resolving', 'registered', 'downloading', 'failed')),
 
     -- Set only while/when state = 'failed'; cleared (NULL) on any
     -- subsequent non-failed transition (e.g. a startup-reconcile re-drive
@@ -86,12 +85,12 @@ CREATE TABLE qiita.ena_import_batch_item (
     -- created the matched study.
     study_created             BOOLEAN NOT NULL DEFAULT false,
 
-    -- One work_ticket_idx per sequenced_pool register_ena_study created for
-    -- this study (one per distinct platform) -- appended as the batch driver
-    -- submits each pool's download-ena-study ticket via submit_work_ticket_core,
-    -- so a crash mid-submit leaves the tickets already sent recorded here (a
-    -- REGISTERED item is re-driven at startup, which reuses them). Array, not a
-    -- join table: a small, per-item fan-out the batch driver produces. It is
+    -- One work_ticket_idx per sequenced_pool holding this study's runs --
+    -- appended as the batch driver submits or reuses each pool's
+    -- download-ena-study ticket, so a crash mid-submit leaves the tickets
+    -- already sent recorded here (a REGISTERED item is re-driven at startup,
+    -- which reuses them). Array, not a join table: a small, per-item fan-out
+    -- the batch driver produces. It is
     -- read back at GET-time (fetch_batch_status rolls up each ticket's state);
     -- there is no FK (Postgres cannot FK an array's elements), so a deleted
     -- work_ticket would leave a dangling idx that the rollup treats as
@@ -102,7 +101,7 @@ CREATE TABLE qiita.ena_import_batch_item (
     -- failure_reason}. Written once register_ena_study runs (mirrors
     -- qiita_common.models.ena_import.EnaRunImportOutcome). Surfaced by
     -- GET /ena-import-batch/{idx} so per-ENA-run failures are visible, not dropped.
-    run_outcomes              JSONB NOT NULL DEFAULT '[]',
+    ena_run_outcomes          JSONB NOT NULL DEFAULT '[]',
 
     created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -115,13 +114,10 @@ COMMENT ON TABLE qiita.ena_import_batch_item IS
     'qiita_common.models.ena_import.BatchItemState.';
 
 COMMENT ON COLUMN qiita.ena_import_batch_item.download_work_ticket_idxs IS
-    'One work_ticket_idx per sequenced_pool this item''s study registered '
-    'into (one per distinct platform). GET /ena-import-batch/{idx} rolls up '
+    'One work_ticket_idx per sequenced_pool holding this item''s study''s '
+    'runs. GET /ena-import-batch/{idx} rolls up '
     'these tickets'' qiita.work_ticket.state on demand to report this item '
     'as done / downloading / failed(download), without mutating this row.';
-
-CREATE INDEX ena_import_batch_item_batch_idx_idx
-    ON qiita.ena_import_batch_item (batch_idx);
 
 -- Backs the import-created guard: before registering into a study that already
 -- exists, the driver asks whether any item created it. Partial -- only the

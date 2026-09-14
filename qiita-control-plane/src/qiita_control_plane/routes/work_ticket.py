@@ -698,14 +698,18 @@ async def _check_fastq_filename_prefix(
         )
 
 
-def _require_compute_backend_client(request: Request) -> None:
+def require_compute_backend_client(app: FastAPI) -> None:
     """Guard that 503s if the orchestrator dispatch path is not configured.
     Prevents creating tickets that can never run."""
-    if request.app.state.compute_backend_client is None:
+    if app.state.compute_backend_client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="compute orchestrator not configured (COMPUTE_ORCHESTRATOR_URL unset)",
         )
+
+
+def _require_compute_backend_client(request: Request) -> None:
+    require_compute_backend_client(request.app)
 
 
 async def _resolve_cancel_filter(pool: asyncpg.Pool, body: WorkTicketCancelRequest) -> list[int]:
@@ -746,28 +750,12 @@ async def submit_work_ticket_core(
     principal: Principal,
     body: WorkTicketCreateRequest,
 ) -> WorkTicketResponse:
-    """Submit one work ticket: the gating (audience/scope/context/
-    disallow-without-delete), the INSERT, and `schedule_dispatch` --
-    extracted from `POST /work-ticket` so an in-process caller with no live
-    HTTP request (the batch driver, submitting a `download-ena-study`
-    ticket on the batch's own submitting principal's behalf) gets the
-    IDENTICAL gates a real HTTP submission would go through, never a
-    bypass. In particular this enforces the TARGET action's own audience
-    against whatever `principal` is passed in — a batch caller cannot
-    submit a ticket for an action they are not personally audienced for
-    just because the batch route itself is admin-gated.
+    """Gate, INSERT, and dispatch one work ticket for `principal`.
 
-    Takes `app` (not `Request`) so it has no dependency on an in-flight
-    HTTP request; `submit_work_ticket` below is now a thin wrapper that
-    resolves `app`/`principal` from the request and delegates here. No
-    behavior change versus the pre-extraction route -- see
-    `tests/routes/test_work_ticket.py`, unmodified by this refactor.
+    Takes `app` rather than a `Request` so in-process callers get the same gates
+    as `POST /work-ticket`, including the action's audience check.
     """
-    if app.state.compute_backend_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="compute orchestrator not configured (COMPUTE_ORCHESTRATOR_URL unset)",
-        )
+    require_compute_backend_client(app)
     pool: asyncpg.Pool = app.state.pool
     settings: Settings = app.state.settings
 
@@ -996,9 +984,7 @@ async def submit_work_ticket(
     request: Request,
     principal: Principal = Depends(get_current_principal),
 ) -> WorkTicketResponse:
-    """Thin wrapper over `submit_work_ticket_core`: resolve `app`/`principal`
-    from the request and delegate. See `submit_work_ticket_core` for the
-    gating + INSERT + dispatch logic itself."""
+    """`submit_work_ticket_core` for the requesting principal."""
     return await submit_work_ticket_core(app=request.app, principal=principal, body=body)
 
 

@@ -57,32 +57,45 @@ async def update_ena_import_batch_item_state(
     )
 
 
+async def update_ena_import_batch_item_study_created(
+    conn: asyncpg.Connection, *, item_idx: int, study_idx: int
+) -> None:
+    """Record that this item created `study_idx`.
+
+    Must commit with the study INSERT: an item interrupted between the two would
+    leave a study no import is recorded as creating, refused on every re-import.
+    """
+    require_transaction(conn)
+    await conn.execute(
+        "UPDATE qiita.ena_import_batch_item SET study_idx = $2, study_created = true"
+        " WHERE idx = $1",
+        item_idx,
+        study_idx,
+    )
+
+
 async def update_ena_import_batch_item_registered(
     conn: asyncpg.Connection,
     *,
     item_idx: int,
     study_idx: int,
-    study_created: bool,
     ena_run_outcomes: list[dict[str, Any]],
 ) -> None:
     """Record a study's registration on its batch item, state -> 'registered'.
 
-    `study_created = study_created OR $5` is a self-referential SET clause
-    Postgres evaluates atomically within the UPDATE -- a re-drive that passes
-    `study_created=False` for an item already True cannot flip it back.
-    asyncpg has no default jsonb codec, so `ena_run_outcomes` is written as a
-    string + `::jsonb`.
+    Clears `download_work_ticket_idxs`: the driver re-collects them from the
+    pools, so a re-drive drops a ticket it has since replaced. asyncpg has no
+    default jsonb codec, so `ena_run_outcomes` is written as a string + `::jsonb`.
     """
     await conn.execute(
         "UPDATE qiita.ena_import_batch_item"
-        " SET state = $2, study_idx = $3, ena_run_outcomes = $4::jsonb,"
-        "     study_created = study_created OR $5, failure_reason = NULL"
+        " SET state = $2, study_idx = $3, ena_run_outcomes = $4::jsonb, failure_reason = NULL,"
+        "     download_work_ticket_idxs = '{}'"
         " WHERE idx = $1",
         item_idx,
         BatchItemState.REGISTERED.value,
         study_idx,
         json.dumps(ena_run_outcomes),
-        study_created,
     )
 
 
@@ -120,27 +133,34 @@ async def ena_import_created_study(
     )
 
 
-async def fetch_download_work_ticket_idx_for_sequenced_pool(
+async def fetch_sequenced_pool_download_states(
     pool_or_conn: asyncpg.Pool | asyncpg.Connection,
     *,
+    sequencing_run_idx: int,
     action_id: str,
     action_version: str,
-    sequenced_pool_idx: int,
-) -> int | None:
-    """Idx of an existing download-ena-study work_ticket for this pool, any state.
-
-    Matched against qiita.work_ticket directly by (action_id, action_version,
-    sequenced_pool_idx) -- that triple is the source of truth for "has this
-    pool already got a ticket", independent of what a batch item happens to
-    have recorded on its own download_work_ticket_idxs.
-    """
-    return await pool_or_conn.fetchval(
-        "SELECT work_ticket_idx FROM qiita.work_ticket"
-        " WHERE action_id = $1 AND action_version = $2 AND sequenced_pool_idx = $3"
-        " ORDER BY work_ticket_idx LIMIT 1",
+) -> list[asyncpg.Record]:
+    """Every sequenced_pool on `sequencing_run_idx`, oldest first, with
+    `has_sequenced_sample` (any active one) and its latest ticket for the action
+    (`work_ticket_idx` / `work_ticket_state`, NULL when it has none)."""
+    return await pool_or_conn.fetch(
+        "SELECT sp.idx AS sequenced_pool_idx,"
+        "       EXISTS (SELECT 1 FROM qiita.sequenced_sample ss"
+        "               JOIN qiita.prep_sample ps ON ps.idx = ss.prep_sample_idx"
+        "               WHERE ss.sequenced_pool_idx = sp.idx AND ps.retired = false)"
+        "         AS has_sequenced_sample,"
+        "       wt.work_ticket_idx, wt.state::text AS work_ticket_state"
+        " FROM qiita.sequenced_pool sp"
+        " LEFT JOIN LATERAL ("
+        "   SELECT work_ticket_idx, state FROM qiita.work_ticket"
+        "   WHERE action_id = $2 AND action_version = $3 AND sequenced_pool_idx = sp.idx"
+        "   ORDER BY work_ticket_idx DESC LIMIT 1"
+        " ) wt ON true"
+        " WHERE sp.sequencing_run_idx = $1"
+        " ORDER BY sp.idx",
+        sequencing_run_idx,
         action_id,
         action_version,
-        sequenced_pool_idx,
     )
 
 

@@ -65,8 +65,7 @@ def _map_geo_loc_name(value: str) -> dict[str, str]:
     """MIxS `geo_loc_name` is `country:region:locality`; only the country/sea part
     (before the first `:`) lands on `geographic location (country and/or sea)` --
     region/locality are dropped rather than guessed at. A value with no `:` (or an INSDC
-    missing marker) passes through whole; `harmonization.py`'s `known_missing_reasons`
-    wiring already resolves a missing marker on a mapped field."""
+    missing marker) passes through whole."""
     country = value.split(":", 1)[0] if ":" in value else value
     return {"geographic location (country and/or sea)": country.strip()}
 

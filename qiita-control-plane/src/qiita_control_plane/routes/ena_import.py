@@ -34,19 +34,9 @@ from ..ena_import.batch import (
     fetch_batch_status,
     schedule_ena_import_batch,
 )
+from .work_ticket import _require_compute_backend_client
 
 router = APIRouter(prefix=PATH_ENA_IMPORT_BATCH_PREFIX, tags=["ena-import-batch"])
-
-
-def _require_compute_backend_client(request: Request) -> None:
-    """503 if the orchestrator dispatch path is not configured -- a batch's
-    download-ena-study tickets can never run without it. Local copy of
-    `routes.work_ticket._require_compute_backend_client` (a route-layer guard)."""
-    if request.app.state.compute_backend_client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="compute orchestrator not configured (COMPUTE_ORCHESTRATOR_URL unset)",
-        )
 
 
 @router.post(

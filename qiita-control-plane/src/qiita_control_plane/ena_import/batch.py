@@ -12,14 +12,15 @@ The task (`_run_batch`) processes every item with bounded concurrency
 (`_STUDY_CONCURRENCY`) -- staying well under miint's ENAClient outbound rate
 limit and bounding concurrent DB writers. Each item (`_process_one_study`): resolve
 (blocking calls under `asyncio.to_thread`) -> `register_ena_study` -> one
-`download-ena-study` ticket per created pool, submitted in-process through
+`download-ena-study` ticket per pool holding the study's runs, reused when one
+already covers the pool and otherwise submitted in-process through
 `submit_work_ticket_core` with the BATCH's submitting principal (so the ticket's
 audience gate is enforced against a real principal). One accession's failure
 marks only that item `failed`.
 
 `reconcile_inflight_batches` (from `main.py` lifespan startup) re-drives every
 item still `pending`/`resolving`/`registered` after a CP restart --
-`register_ena_study` is idempotent and the submit loop reuses any already-created
+`register_ena_study` is idempotent and the submit loop reuses any covering
 download ticket, so re-driving is safe even if a prior resolve or ticket-submit
 partially ran.
 """
@@ -47,7 +48,6 @@ from ..repositories.ena_import_batch import (
     append_ena_import_batch_item_download_ticket,
     ena_import_batch_exists,
     ena_import_created_study,
-    fetch_download_work_ticket_idx_for_sequenced_pool,
     fetch_ena_import_batch_items,
     fetch_inflight_ena_import_batch_items,
     fetch_work_ticket_states_for_idxs,
@@ -55,6 +55,7 @@ from ..repositories.ena_import_batch import (
     insert_ena_import_batch_item,
     update_ena_import_batch_item_registered,
     update_ena_import_batch_item_state,
+    update_ena_import_batch_item_study_created,
 )
 from ..repositories.study import get_or_create_study_by_ena_accessions
 from .accession import validate_study_accession
@@ -62,13 +63,11 @@ from .miint_resolver import MiintEnaResolver
 from .registration import (
     EnaRunRegistrationStatus,
     EnaStudyRegistrationResult,
+    download_ticket_covers_pool,
+    fetch_download_pool_states,
     register_ena_study,
 )
-from .submit import (
-    DOWNLOAD_ENA_STUDY_ACTION_ID,
-    DOWNLOAD_ENA_STUDY_ACTION_VERSION,
-    build_download_ena_study_ticket,
-)
+from .submit import build_download_ena_study_ticket
 
 _log = logging.getLogger(__name__)
 
@@ -84,6 +83,9 @@ _STUDY_CONCURRENCY = 4
 # unrecognized, or a missing row) must not read as success.
 _TERMINAL_SUCCESS_STATES = frozenset(
     {WorkTicketState.COMPLETED.value, WorkTicketState.NO_DATA.value}
+)
+_TERMINAL_UNSUCCESSFUL_STATES = frozenset(
+    {WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value}
 )
 
 
@@ -165,7 +167,6 @@ async def _set_item_registered(
     item_idx: int,
     *,
     study_idx: int,
-    study_created: bool,
     ena_run_outcomes: list[dict[str, Any]],
 ) -> None:
     async with pool.acquire() as conn:
@@ -173,7 +174,6 @@ async def _set_item_registered(
             conn,
             item_idx=item_idx,
             study_idx=study_idx,
-            study_created=study_created,
             ena_run_outcomes=ena_run_outcomes,
         )
 
@@ -196,18 +196,6 @@ async def _mark_item_downloading(pool: asyncpg.Pool, item_idx: int) -> None:
         await update_ena_import_batch_item_state(
             conn, item_idx=item_idx, state=BatchItemState.DOWNLOADING.value
         )
-
-
-async def _existing_download_ticket_idx(pool: asyncpg.Pool, sequenced_pool_idx: int) -> int | None:
-    """Lets a re-driven `registered` item reuse a ticket a prior run already
-    submitted instead of re-submitting -- see the call site in
-    `_process_one_study` for why (409-avoidance on re-drive)."""
-    return await fetch_download_work_ticket_idx_for_sequenced_pool(
-        pool,
-        action_id=DOWNLOAD_ENA_STUDY_ACTION_ID,
-        action_version=DOWNLOAD_ENA_STUDY_ACTION_VERSION,
-        sequenced_pool_idx=sequenced_pool_idx,
-    )
 
 
 async def _process_one_study(
@@ -236,7 +224,7 @@ async def _process_one_study(
 
         # Resolve the study BEFORE registering anything, so an import into a
         # study we did not create fails with nothing written.
-        async with pool.acquire() as conn:
+        async with pool.acquire() as conn, conn.transaction():
             study_row, study_created = await get_or_create_study_by_ena_accessions(
                 conn,
                 bioproject_accession=study_header.study_accession,
@@ -247,6 +235,10 @@ async def _process_one_study(
                 # title is cosmetic, not identity, so fall back to the accession.
                 title=study_header.study_title or study_header.study_accession,
             )
+            if study_created:
+                await update_ena_import_batch_item_study_created(
+                    conn, item_idx=item.idx, study_idx=study_row["idx"]
+                )
         study_idx = study_row["idx"]
         if not study_created and not await _study_created_by_an_import(pool, study_idx):
             await _set_item_state(
@@ -274,7 +266,6 @@ async def _process_one_study(
             pool,
             item.idx,
             study_idx=result.study_idx,
-            study_created=study_created,
             ena_run_outcomes=_ena_run_outcomes(result),
         )
 
@@ -318,23 +309,35 @@ async def _process_one_study(
         # `POST /work-ticket` goes through, not a parallel copy.
         from ..routes.work_ticket import submit_work_ticket_core
 
-        for created_pool in result.created_pools:
-            # Re-drive safety: a prior run may have already submitted this pool's
-            # ticket before crashing. Reuse it rather than re-submit (a
-            # sequenced_pool re-submit 409s and would fail the whole item);
-            # otherwise submit fresh. Each idx is persisted as it lands so a crash
-            # mid-loop orphans nothing.
-            ticket_idx = await _existing_download_ticket_idx(pool, created_pool.sequenced_pool_idx)
-            if ticket_idx is None:
-                body = build_download_ena_study_ticket(
-                    sequenced_pool_idx=created_pool.sequenced_pool_idx,
-                    sequencing_run_idx=created_pool.sequencing_run_idx,
-                    ena_study_accession=study_header.study_accession,
-                )
-                response = await submit_work_ticket_core(app=app, principal=principal, body=body)
-                ticket_idx = response.work_ticket_idx
-            await _append_item_download_ticket(pool, item.idx, ticket_idx)
+        # Each idx is persisted as it lands so a crash mid-loop orphans nothing.
+        any_ticket = False
+        for sequencing_run_idx in dict.fromkeys(p.sequencing_run_idx for p in result.created_pools):
+            for pool_state in await fetch_download_pool_states(pool, sequencing_run_idx):
+                if not pool_state["has_sequenced_sample"]:
+                    continue
+                if download_ticket_covers_pool(pool_state["work_ticket_state"]):
+                    ticket_idx = pool_state["work_ticket_idx"]
+                else:
+                    body = build_download_ena_study_ticket(
+                        sequenced_pool_idx=pool_state["sequenced_pool_idx"],
+                        sequencing_run_idx=sequencing_run_idx,
+                        ena_study_accession=study_header.study_accession,
+                    )
+                    response = await submit_work_ticket_core(
+                        app=app, principal=principal, body=body
+                    )
+                    ticket_idx = response.work_ticket_idx
+                await _append_item_download_ticket(pool, item.idx, ticket_idx)
+                any_ticket = True
 
+        if not any_ticket:
+            await _set_item_state(
+                pool,
+                item.idx,
+                BatchItemState.FAILED,
+                failure_reason="study registered but no pool holds an active sequenced_sample",
+            )
+            return
         await _mark_item_downloading(pool, item.idx)
     except Exception as exc:  # noqa: BLE001 -- per-study isolation: one
         # accession's failure must never abort siblings; recorded on this item,
@@ -425,12 +428,15 @@ async def reconcile_inflight_batches(app: FastAPI) -> int:
             # control plane down -- the same per-accession isolation this module
             # promises everywhere else.
             principal = await load_human_user(pool, principal_idx)
-        except PrincipalUnusableError:
-            _log.exception(
-                "cannot re-drive ena_import_batch %d -- unresolvable submitting principal %d",
-                batch_idx,
-                principal_idx,
-            )
+        except PrincipalUnusableError as exc:
+            _log.warning("cannot re-drive ena_import_batch %d: %s", batch_idx, exc)
+            for r in batch_rows:
+                await _set_item_state(
+                    pool,
+                    r["idx"],
+                    BatchItemState.FAILED,
+                    failure_reason=f"not re-driven, submitting principal unusable: {exc.detail}",
+                )
             continue
         items = [
             BatchImportItemHandle(idx=r["idx"], ena_study_accession=r["ena_study_accession"])
@@ -455,9 +461,9 @@ async def fetch_batch_status(pool: asyncpg.Pool, *, batch_idx: int) -> BatchImpo
     `batch_idx` names no row.
 
     A `downloading` item's `download_work_ticket_idxs`' `work_ticket.state` are
-    rolled up ON DEMAND (never persisted back -- a pure read): any ticket failed
-    -> `failed` (naming the ticket(s); the batch itself is never failed); any
-    non-terminal -> stays `downloading`; all terminal-success -> `done`. Every
+    rolled up ON DEMAND (never persisted back -- a pure read): any ticket failed or
+    cancelled -> `failed` (naming the ticket(s); the batch itself is never failed);
+    any non-terminal -> stays `downloading`; all terminal-success -> `done`. Every
     other persisted state passes through unchanged.
     """
     if not await ena_import_batch_exists(pool, batch_idx):
@@ -478,14 +484,14 @@ async def fetch_batch_status(pool: asyncpg.Pool, *, batch_idx: int) -> BatchImpo
         ticket_idxs = list(row["download_work_ticket_idxs"])
         if state == BatchItemState.DOWNLOADING and ticket_idxs:
             states = [ticket_states.get(idx) for idx in ticket_idxs]
-            failed_idxs = [
-                idx
+            unsuccessful = [
+                f"{idx} ({s})"
                 for idx, s in zip(ticket_idxs, states, strict=True)
-                if s == WorkTicketState.FAILED.value
+                if s in _TERMINAL_UNSUCCESSFUL_STATES
             ]
-            if failed_idxs:
+            if unsuccessful:
                 state = BatchItemState.FAILED
-                failure_reason = f"download work_ticket(s) failed: {failed_idxs}"
+                failure_reason = f"download work_ticket(s) did not complete: {unsuccessful}"
             elif all(s in _TERMINAL_SUCCESS_STATES for s in states):
                 state = BatchItemState.DONE
             else:

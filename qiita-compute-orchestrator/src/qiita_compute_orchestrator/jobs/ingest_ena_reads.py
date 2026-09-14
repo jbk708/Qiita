@@ -9,14 +9,10 @@ the same mint-then-sort-and-assign pipeline as `ingest_reads` (`..read_staging`)
 Two-write-target and idempotent/re-runnable semantics are identical too.
 
 Gotchas specific to the ENA source:
-- md5 verification is miint's, not this job's. If the bundled `read_ena_sequences`
-  verifies downloaded bytes against ENA's `fastq_md5`, a mismatch raises
-  `duckdb.IOException` with "md5" in the message, which this job classifies
-  BAD_INPUT (permanent -- re-downloading yields the same bytes). Whether the miint
-  build the deploy stages verifies (and its default) is miint's to define and is
-  not asserted here: the classification branch handles a mismatch if one is raised
-  and is inert otherwise. (miint's md5 behavior on the bulk path is tracked
-  separately as an owner-approved duckdb-miint escalation.)
+- md5 verification is miint's, not this job's: `read_ena_sequences`'s
+  `verify_md5` defaults to true (duckdb-miint#172, docs/insdc_ena.md) and a
+  single-run scan raises `duckdb.IOException` naming the md5 mismatch, which
+  `_classify_ena_fetch_error` classifies.
 - One FRESH DuckDB connection PER RUN. `miint_warnings()` accumulates across
   queries in a session (duckdb-miint/docs/utilities.md), so a reused connection
   would leak one run's warnings into the next run's fail-loud check.
@@ -66,6 +62,9 @@ _DUCKDB_THREADS = 2
 # truncation warning contain "skip". A self-healed "...retrying..." message
 # does not, so a once-retried successful run is never mistaken for a skip.
 _SKIP_WARNING_MARKER = "skip"
+# Also contains "skip", but reports a complete run whose md5 could not be
+# checked (SFF, a non-gzip file), not missing data.
+_MD5_SKIPPED_WARNING_MARKER = "md5 verification skipped"
 
 # Substrings marking a raised duckdb.Error as transport/network-shaped (vs.
 # format/parse) — see `_classify_ena_fetch_error`. Conservative: a non-match is
@@ -105,7 +104,11 @@ class Inputs(BaseModel):
 def _skip_warnings(messages: list[str]) -> list[str]:
     """Filter `messages` down to the ones meaning this run's data is missing or
     partial. See `_SKIP_WARNING_MARKER` for why a substring match suffices."""
-    return [m for m in messages if _SKIP_WARNING_MARKER in m.lower()]
+    return [
+        m
+        for m in messages
+        if _SKIP_WARNING_MARKER in m.lower() and _MD5_SKIPPED_WARNING_MARKER not in m.lower()
+    ]
 
 
 def _stage_run_reads(

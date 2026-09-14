@@ -18,14 +18,15 @@ from qiita_control_plane.repositories.ena_import_batch import (
     append_ena_import_batch_item_download_ticket,
     ena_import_batch_exists,
     ena_import_created_study,
-    fetch_download_work_ticket_idx_for_sequenced_pool,
     fetch_ena_import_batch_items,
     fetch_inflight_ena_import_batch_items,
+    fetch_sequenced_pool_download_states,
     fetch_work_ticket_states_for_idxs,
     insert_ena_import_batch,
     insert_ena_import_batch_item,
     update_ena_import_batch_item_registered,
     update_ena_import_batch_item_state,
+    update_ena_import_batch_item_study_created,
 )
 from qiita_control_plane.repositories.study import create_study
 from qiita_control_plane.testing.db_seeds import (
@@ -201,41 +202,50 @@ async def test_update_ena_import_batch_item_registered_sets_fields(eib):
             conn,
             item_idx=item_idx,
             study_idx=study_idx,
-            study_created=True,
             ena_run_outcomes=outcomes,
         )
 
     row = await eib["pool"].fetchrow(
-        "SELECT state, study_idx, study_created, failure_reason, ena_run_outcomes"
+        "SELECT state, study_idx, failure_reason, ena_run_outcomes"
         " FROM qiita.ena_import_batch_item WHERE idx = $1",
         item_idx,
     )
     assert row["state"] == BatchItemState.REGISTERED.value
     assert row["study_idx"] == study_idx
-    assert row["study_created"] is True
     assert row["failure_reason"] is None
     # jsonb does not preserve key order, so compare parsed structure.
     assert json.loads(row["ena_run_outcomes"]) == outcomes
 
 
-async def test_update_ena_import_batch_item_registered_keeps_study_created_true_once_set(eib):
-    """`study_created = study_created OR $5` must not let a later call
-    passing `study_created=False` flip an already-True item back."""
+async def test_update_ena_import_batch_item_study_created_survives_registration(eib):
     _, item_idx = await _new_batch_item(eib)
     study_idx = await _seed_study(eib)
 
     async with eib["pool"].acquire() as conn:
+        async with conn.transaction():
+            await update_ena_import_batch_item_study_created(
+                conn, item_idx=item_idx, study_idx=study_idx
+            )
         await update_ena_import_batch_item_registered(
-            conn, item_idx=item_idx, study_idx=study_idx, study_created=True, ena_run_outcomes=[]
-        )
-        await update_ena_import_batch_item_registered(
-            conn, item_idx=item_idx, study_idx=study_idx, study_created=False, ena_run_outcomes=[]
+            conn, item_idx=item_idx, study_idx=study_idx, ena_run_outcomes=[]
         )
 
-    study_created = await eib["pool"].fetchval(
-        "SELECT study_created FROM qiita.ena_import_batch_item WHERE idx = $1", item_idx
+    row = await eib["pool"].fetchrow(
+        "SELECT study_idx, study_created FROM qiita.ena_import_batch_item WHERE idx = $1",
+        item_idx,
     )
-    assert study_created is True
+    assert row["study_idx"] == study_idx
+    assert row["study_created"] is True
+
+
+async def test_update_ena_import_batch_item_study_created_requires_transaction(eib):
+    _, item_idx = await _new_batch_item(eib)
+    study_idx = await _seed_study(eib)
+    async with eib["pool"].acquire() as conn:
+        with pytest.raises(RuntimeError):
+            await update_ena_import_batch_item_study_created(
+                conn, item_idx=item_idx, study_idx=study_idx
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -268,13 +278,9 @@ async def test_ena_import_created_study_true_and_false(eib):
     created_study_idx = await _seed_study(eib)
     uncreated_study_idx = await _seed_study(eib)
 
-    async with eib["pool"].acquire() as conn:
-        await update_ena_import_batch_item_registered(
-            conn,
-            item_idx=item_idx,
-            study_idx=created_study_idx,
-            study_created=True,
-            ena_run_outcomes=[],
+    async with eib["pool"].acquire() as conn, conn.transaction():
+        await update_ena_import_batch_item_study_created(
+            conn, item_idx=item_idx, study_idx=created_study_idx
         )
 
     assert await ena_import_created_study(eib["pool"], created_study_idx) is True
@@ -319,21 +325,21 @@ async def test_fetch_inflight_ena_import_batch_items_filters_by_state(eib):
     pool = eib["pool"]
     _, pending_item = await _new_batch_item(eib)
     _, registered_item = await _new_batch_item(eib)
-    _, done_item = await _new_batch_item(eib)
+    _, failed_item = await _new_batch_item(eib)
 
     async with pool.acquire() as conn:
         await update_ena_import_batch_item_state(
             conn, item_idx=registered_item, state=BatchItemState.REGISTERED.value
         )
         await update_ena_import_batch_item_state(
-            conn, item_idx=done_item, state=BatchItemState.DONE.value
+            conn, item_idx=failed_item, state=BatchItemState.FAILED.value
         )
 
     rows = await fetch_inflight_ena_import_batch_items(pool)
     inflight_idxs = {r["idx"] for r in rows}
     assert pending_item in inflight_idxs
     assert registered_item in inflight_idxs
-    assert done_item not in inflight_idxs
+    assert failed_item not in inflight_idxs
 
     for row in rows:
         if row["idx"] == pending_item:
@@ -341,7 +347,7 @@ async def test_fetch_inflight_ena_import_batch_items_filters_by_state(eib):
 
 
 # ---------------------------------------------------------------------------
-# fetch_download_work_ticket_idx_for_sequenced_pool / fetch_work_ticket_states_for_idxs
+# fetch_sequenced_pool_download_states / fetch_work_ticket_states_for_idxs
 # ---------------------------------------------------------------------------
 
 
@@ -372,6 +378,7 @@ async def sequenced_pool_ctx(postgres_pool):
         "pool": postgres_pool,
         "principal_idx": principal_idx,
         "sequenced_pool_idx": pool_idx,
+        "sequencing_run_idx": run_idx,
         "action_id": action_id,
         "version": version,
     }
@@ -406,31 +413,35 @@ async def _seed_work_ticket(ctx, *, state: str = "pending") -> int:
     )
 
 
-async def test_fetch_download_work_ticket_idx_for_sequenced_pool_matches_and_misses(
-    sequenced_pool_ctx,
-):
+async def test_fetch_sequenced_pool_download_states_reports_latest_ticket(sequenced_pool_ctx):
     ctx = sequenced_pool_ctx
-    ticket_idx = await _seed_work_ticket(ctx)
+    older_idx = await _seed_work_ticket(ctx, state="completed")
+    latest_idx = await _seed_work_ticket(ctx, state="cancelled")
     try:
-        found = await fetch_download_work_ticket_idx_for_sequenced_pool(
+        (row,) = await fetch_sequenced_pool_download_states(
             ctx["pool"],
+            sequencing_run_idx=ctx["sequencing_run_idx"],
             action_id=ctx["action_id"],
             action_version=ctx["version"],
-            sequenced_pool_idx=ctx["sequenced_pool_idx"],
         )
-        assert found == ticket_idx
+        assert row["sequenced_pool_idx"] == ctx["sequenced_pool_idx"]
+        assert row["has_sequenced_sample"] is True
+        assert row["work_ticket_idx"] == latest_idx
+        assert row["work_ticket_state"] == "cancelled"
 
-        # A different (unrelated) action_id must not match this pool's ticket.
-        missing = await fetch_download_work_ticket_idx_for_sequenced_pool(
+        # Another action's tickets are not this pool's download tickets.
+        (other,) = await fetch_sequenced_pool_download_states(
             ctx["pool"],
+            sequencing_run_idx=ctx["sequencing_run_idx"],
             action_id="some-other-action",
             action_version=ctx["version"],
-            sequenced_pool_idx=ctx["sequenced_pool_idx"],
         )
-        assert missing is None
+        assert other["work_ticket_idx"] is None
+        assert other["work_ticket_state"] is None
     finally:
         await ctx["pool"].execute(
-            "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = $1", ticket_idx
+            "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",
+            [older_idx, latest_idx],
         )
 
 

@@ -328,7 +328,7 @@ async def get_or_create_study_by_ena_accessions(
     """Race-safe find-or-create for an ENA-study import.
 
     Positional accession mapping is the caller's responsibility (see
-    `ena_import.registration.register_ena_study`): this function only
+    `ena_import.batch._process_one_study`): this function only
     keys the lookup/insert on the two accession values it is handed --
     it does not itself decide which resolved ENA field maps to which
     column.
@@ -373,10 +373,9 @@ async def get_or_create_study_by_ena_accessions(
         # accession lookup this function started with.
         existing_row = await _fetch_study_by_bioproject_accession(conn, bioproject_accession)
         if existing_row is None:
-            # qiita.study has no delete surface, so this branch is not
-            # reachable in practice -- kept as a fail-loud backstop rather
-            # than a silent None return, mirroring insert_sequencing_run's
-            # equivalent guard.
+            # Reached when the collision was on ena_study_accession for a
+            # study whose bioproject_accession differs or is NULL -- the lookup
+            # only matches on bioproject_accession.
             raise asyncpg.PostgresError(
                 "find-or-create on study(bioproject_accession="
                 f"{bioproject_accession!r}) collided on insert but the"

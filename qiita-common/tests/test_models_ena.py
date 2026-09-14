@@ -143,7 +143,7 @@ def test_ena_run_record_single_end_lists_are_single_element():
     assert run.fastq_bytes == [123456]
 
 
-def test_ena_run_record_blank_optional_fields_default_empty():
+def test_ena_run_record_blank_optional_fields_default_none():
     from qiita_common.models.ena import EnaRunRecord
 
     run = EnaRunRecord(
@@ -152,11 +152,29 @@ def test_ena_run_record_blank_optional_fields_default_empty():
         sample_accession="SAMEA3610311",
         study_accession="PRJEB11419",
     )
-    assert run.fastq_ftp == []
-    assert run.fastq_bytes == []
+    assert run.fastq_ftp is None
+    assert run.fastq_bytes is None
     assert run.read_count is None
     assert run.base_count is None
     assert run.instrument_platform is None
+
+
+def test_ena_run_record_accepts_null_fastq_lists():
+    """miint's `read_ena` returns NULL, not an empty list, for an empty per-file field."""
+    from qiita_common.models.ena import EnaRunRecord
+
+    run = EnaRunRecord(
+        run_accession="ERR1074767",
+        experiment_accession="ERX1111111",
+        sample_accession="SAMEA3610311",
+        study_accession="PRJEB11419",
+        fastq_ftp=None,
+        fastq_aspera=None,
+        fastq_bytes=None,
+        fastq_md5=None,
+    )
+    assert run.fastq_ftp is None
+    assert run.fastq_md5 is None
 
 
 def test_ena_run_record_rejects_garbage_fastq_bytes():

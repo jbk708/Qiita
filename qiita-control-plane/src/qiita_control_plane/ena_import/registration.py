@@ -1,35 +1,28 @@
 """ENA study registration composer: turns one resolved ENA study
-(`EnaStudyHeader` + `EnaRunRecord` list) into Qiita `study` / `biosample` /
-`prep_sample` / `sequenced_sample` rows, idempotently -- re-imports and
+(`EnaStudyHeader` + `EnaRunRecord` list) into `biosample` / `prep_sample` /
+`sequenced_sample` rows in an existing study, idempotently -- re-imports and
 cross-study biosample overlap converge, never duplicate.
 
 Order of operations:
 
-  1. Get-or-create the `study` from the header, keyed *positionally* on the two
-     ENA accessions (never prefix-sniffed): `study_accession` ->
-     `bioproject_accession`, `secondary_study_accession` -> `ena_study_accession`.
-
-  2. Map each run's `instrument_platform` to `qiita.platform`
+  1. Map each run's `instrument_platform` to `qiita.platform`
      (`platform_mapping.map_ena_platform`), isolated per run: an unmappable
      value fails only that run. Successfully-mapped runs are grouped by platform.
 
-  3. Per distinct mapped platform: get-or-create one `sequencing_run`
-     (`instrument_run_id = "{study_accession}:{platform}"`) and one
-     `sequenced_pool` on it (reused if one already exists -- `insert_sequenced_
-     pool` has no content key to de-dup against).
+  2. Per distinct mapped platform: get-or-create one `sequencing_run`
+     (`instrument_run_id = "{study_accession}:{platform}"`) and pick the pool new
+     runs go into (see `_resolve_platform_pools`).
 
-  4. Per ENA run, in its own transaction (per-run atomicity): get-or-create the
-     biosample by ENA sample accession (cross-study de-dup) and link it to the
-     study. If newly created, harmonize its ENA attributes onto it once
-     (write-once: cross-study reuse does not re-harmonize). Skip if a
-     sequenced_sample already carries this run's `ena_run_accession` (idempotent
-     re-import), else map library_strategy/library_source to a curated
-     prep_protocol name and import via `import_sequenced_prep_sample`.
+  3. Per ENA run, in its own transaction (per-run atomicity): resolve or import
+     the biosample by ENA sample accession (cross-study de-dup; only the import
+     writes metadata) and link it to the study. Skip if a sequenced_sample
+     already carries this run's `ena_run_accession` (idempotent re-import), else
+     map library_strategy/library_source to a curated prep_protocol name and
+     import via `import_sequenced_prep_sample`.
 
-Harmonization gaps are reported on `EnaRunRegistrationOutcome.harmonization`, never
-raised; a genuine harmonization failure is caught by the same per-run try/except
-as every other step. No read bytes or batch fan-out here -- those live in the
-download workflow and the batch driver.
+A per-run failure, harmonization included, is caught and reported on its
+`EnaRunRegistrationOutcome`. No read bytes or batch fan-out here -- those live
+in the download workflow and the batch driver.
 """
 
 from __future__ import annotations
@@ -39,7 +32,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 import asyncpg
-from qiita_common.models import Platform
+from qiita_common.models import Platform, WorkTicketState
 from qiita_common.models.ena import (
     EnaRunRecord,
     EnaSampleAttributes,
@@ -54,13 +47,15 @@ from qiita_control_plane.repositories.biosample import (
     resolve_or_import_biosample_by_ena_accession,
 )
 from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
+from qiita_control_plane.repositories.ena_import_batch import (
+    fetch_sequenced_pool_download_states,
+)
 from qiita_control_plane.repositories.prep_protocol import fetch_prep_protocol_idx_by_name
 from qiita_control_plane.repositories.sequenced_sample import (
     fetch_sequenced_sample_idxs_by_ena_run_accession,
     import_sequenced_prep_sample,
 )
 from qiita_control_plane.repositories.sequencing_run import (
-    fetch_sequenced_pool_idxs_for_run,
     insert_sequenced_pool,
     insert_sequencing_run,
 )
@@ -68,6 +63,7 @@ from qiita_control_plane.repositories.sequencing_run import (
 from .harmonization import HarmonizationResult, build_biosample_metadata
 from .platform_mapping import UnmappableEnaPlatformError, map_ena_platform
 from .protocol_mapping import map_ena_run_to_prep_protocol_name
+from .submit import DOWNLOAD_ENA_STUDY_ACTION_ID, DOWNLOAD_ENA_STUDY_ACTION_VERSION
 
 # The ENA default sample checklist (seeded by db/migrations). Every ENA-imported
 # biosample is bound to it -- resolved once per study import, not per run.
@@ -106,13 +102,40 @@ class EnaRunRegistrationOutcome:
     harmonization: HarmonizationResult | None = None
 
 
+# A pool whose latest download ticket ended in one of these is downloaded
+# afresh: a new ticket re-reads its roster, so it may still take new runs.
+_RESUBMITTABLE_DOWNLOAD_TICKET_STATES = frozenset(
+    {WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value}
+)
+
+
+def download_ticket_covers_pool(work_ticket_state: str | None) -> bool:
+    """Whether a pool's latest download ticket has downloaded, or is downloading,
+    the pool: reuse it, and put no new runs in that pool (its roster is read once
+    at dispatch, so runs added after it would never be downloaded)."""
+    return (
+        work_ticket_state is not None
+        and work_ticket_state not in _RESUBMITTABLE_DOWNLOAD_TICKET_STATES
+    )
+
+
+async def fetch_download_pool_states(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, sequencing_run_idx: int
+) -> list[asyncpg.Record]:
+    """`fetch_sequenced_pool_download_states` for the download-ena-study action."""
+    return await fetch_sequenced_pool_download_states(
+        pool_or_conn,
+        sequencing_run_idx=sequencing_run_idx,
+        action_id=DOWNLOAD_ENA_STUDY_ACTION_ID,
+        action_version=DOWNLOAD_ENA_STUDY_ACTION_VERSION,
+    )
+
+
 @dataclass(frozen=True)
 class CreatedPool:
-    """One `(platform, sequenced_pool_idx, sequencing_run_idx)` triple resolved
-    (created or reused). The batch driver uses these to build one
-    `download-ena-study` ticket per pool without re-deriving them from the DB.
-    `platform` is the `Platform` enum value as plain `str` (matching the DB's
-    `qiita.platform` enum text).
+    """One `(platform, sequenced_pool_idx, sequencing_run_idx)` triple on a
+    platform's sequencing_run, created or pre-existing. `platform` is the
+    `Platform` enum value as plain `str`.
     """
 
     platform: str
@@ -161,6 +184,9 @@ async def register_ena_study(
         # Map each run's platform, isolated per run: an unmappable platform fails
         # only that run. Only successfully-mapped runs are grouped by platform.
         ena_runs_by_platform: dict[Platform, list[EnaRunRecord]] = defaultdict(list)
+        already_present = await fetch_sequenced_sample_idxs_by_ena_run_accession(
+            conn, values=[ena_run.run_accession for ena_run in ena_runs]
+        )
         outcomes_by_accession: dict[str, EnaRunRegistrationOutcome] = {}
         for ena_run in ena_runs:
             try:
@@ -174,25 +200,18 @@ async def register_ena_study(
                 continue
             ena_runs_by_platform[platform].append(ena_run)
 
-        # One sequencing_run + sequenced_pool per distinct platform that has
-        # at least one successfully-mapped run.
-        sequenced_pool_idx_by_platform: dict[Platform, int] = {}
+        target_pool_idx_by_platform: dict[Platform, int | None] = {}
         created_pools: list[CreatedPool] = []
-        for platform in ena_runs_by_platform:
-            sequenced_pool_idx, sequencing_run_idx = await _get_or_create_pool_for_platform(
+        for platform, platform_runs in ena_runs_by_platform.items():
+            platform_pools, target_pool_idx = await _resolve_platform_pools(
                 conn,
                 study_accession=study_header.study_accession,
                 platform=platform,
                 created_by_idx=caller_idx,
+                needs_pool=any(r.run_accession not in already_present for r in platform_runs),
             )
-            sequenced_pool_idx_by_platform[platform] = sequenced_pool_idx
-            created_pools.append(
-                CreatedPool(
-                    platform=platform.value,
-                    sequenced_pool_idx=sequenced_pool_idx,
-                    sequencing_run_idx=sequencing_run_idx,
-                )
-            )
+            target_pool_idx_by_platform[platform] = target_pool_idx
+            created_pools.extend(platform_pools)
 
         for platform, platform_runs in ena_runs_by_platform.items():
             for ena_run in platform_runs:
@@ -201,7 +220,7 @@ async def register_ena_study(
                     ena_run=ena_run,
                     study_idx=study_idx,
                     platform=platform,
-                    sequenced_pool_idx=sequenced_pool_idx_by_platform[platform],
+                    sequenced_pool_idx=target_pool_idx_by_platform[platform],
                     owner_idx=owner_idx,
                     caller_idx=caller_idx,
                     metadata_checklist_idx=metadata_checklist_idx,
@@ -218,47 +237,53 @@ async def register_ena_study(
     )
 
 
-async def _get_or_create_pool_for_platform(
+async def _resolve_platform_pools(
     conn: asyncpg.Connection,
     *,
     study_accession: str,
     platform: Platform,
     created_by_idx: int,
-) -> tuple[int, int]:
-    """Get-or-create the one sequencing_run + sequenced_pool for a
-    (study, platform) pair (both repo calls are single statements). Returns
-    `(sequenced_pool_idx, sequencing_run_idx)` so the caller can surface them on
-    `created_pools` without a second lookup.
+    needs_pool: bool,
+) -> tuple[list[CreatedPool], int | None]:
+    """Get-or-create the (study, platform) sequencing_run and return every pool
+    on it, plus the pool new runs go into: the newest one no download ticket
+    covers, else a new pool when `needs_pool`, else None.
 
-    Concurrency assumption: single-writer-per-study. This get-or-create is a
-    SELECT-then-INSERT with no arbitrating constraint on the no-preflight ENA
-    path -- `sequenced_pool`'s unique indexes are partial
-    (`WHERE run_preflight_sha256 IS NOT NULL`) and the ENA path sets no run
-    preflight, so two concurrent batches for the same (study, platform) would
-    each fall through the SELECT and mint a pool plus a redundant download
-    ticket. In-batch fan-out is already bounded to one writer per study by the
-    accession de-dup in `create_ena_import_batch`; closing the cross-batch
-    window is tracked as a follow-up (candidate: serialize this path with an
-    advisory / row lock inside a transaction, off the shared no-preflight pool
-    contract)."""
-    instrument_run_id = f"{study_accession}:{platform.value}"
+    Concurrency assumption: single-writer-per-study. This is a SELECT-then-INSERT
+    with no arbitrating constraint on the no-preflight ENA path, so two
+    concurrent batches for the same (study, platform) could each mint a pool.
+    In-batch fan-out is bounded to one writer per study by the accession de-dup
+    in `create_ena_import_batch`; the cross-batch window is still open."""
     sequencing_run_idx, _ = await insert_sequencing_run(
         conn,
-        instrument_run_id=instrument_run_id,
+        instrument_run_id=f"{study_accession}:{platform.value}",
         platform=platform,
         created_by_idx=created_by_idx,
     )
-
-    existing_pool_idxs = await fetch_sequenced_pool_idxs_for_run(conn, sequencing_run_idx)
-    if existing_pool_idxs:
-        return existing_pool_idxs[0], sequencing_run_idx
-
-    sequenced_pool_idx, _ = await insert_sequenced_pool(
-        conn,
-        sequencing_run_idx=sequencing_run_idx,
-        created_by_idx=created_by_idx,
-    )
-    return sequenced_pool_idx, sequencing_run_idx
+    states = await fetch_download_pool_states(conn, sequencing_run_idx)
+    pool_idxs = [s["sequenced_pool_idx"] for s in states]
+    open_pool_idxs = [
+        s["sequenced_pool_idx"]
+        for s in states
+        if not download_ticket_covers_pool(s["work_ticket_state"])
+    ]
+    target_pool_idx = open_pool_idxs[-1] if open_pool_idxs else None
+    if target_pool_idx is None and needs_pool:
+        target_pool_idx, _ = await insert_sequenced_pool(
+            conn,
+            sequencing_run_idx=sequencing_run_idx,
+            created_by_idx=created_by_idx,
+        )
+        pool_idxs.append(target_pool_idx)
+    pools = [
+        CreatedPool(
+            platform=platform.value,
+            sequenced_pool_idx=idx,
+            sequencing_run_idx=sequencing_run_idx,
+        )
+        for idx in pool_idxs
+    ]
+    return pools, target_pool_idx
 
 
 async def _register_one_ena_run(
@@ -267,7 +292,7 @@ async def _register_one_ena_run(
     ena_run: EnaRunRecord,
     study_idx: int,
     platform: Platform,
-    sequenced_pool_idx: int,
+    sequenced_pool_idx: int | None,
     owner_idx: int,
     caller_idx: int,
     metadata_checklist_idx: int,
@@ -328,6 +353,11 @@ async def _register_one_ena_run(
                     harmonization=harmonization_result,
                 )
 
+            if sequenced_pool_idx is None:
+                raise RuntimeError(
+                    f"{ena_run.run_accession} was not registered when this import began,"
+                    " but no pool was opened for it"
+                )
             protocol_name = map_ena_run_to_prep_protocol_name(
                 library_strategy=ena_run.library_strategy,
                 library_source=ena_run.library_source,

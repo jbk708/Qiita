@@ -47,10 +47,11 @@ class EnaRunRecord(BaseModel):
     # carried through unmapped -- ena_import.platform_mapping maps it to
     # Platform, fail-loud on an unrecognized value.
     instrument_platform: str | None = None
-    fastq_ftp: list[str] = Field(default_factory=list)
-    fastq_aspera: list[str] = Field(default_factory=list)
-    fastq_bytes: list[int] = Field(default_factory=list)
-    fastq_md5: list[str] = Field(default_factory=list)
+    # NULL when ENA reports the field empty (e.g. a run with no generated FASTQ).
+    fastq_ftp: list[str] | None = None
+    fastq_aspera: list[str] | None = None
+    fastq_bytes: list[int] | None = None
+    fastq_md5: list[str] | None = None
     read_count: int | None = None
     base_count: int | None = None
 

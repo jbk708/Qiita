@@ -424,8 +424,12 @@ class PrincipalUnusableError(RuntimeError):
 
     A plain `RuntimeError` rather than an `HTTPException` so non-request callers
     (background tasks, startup reconcile) can use the same loader; the request
-    path maps it to a 401.
+    path maps it to a 401 carrying only `detail`, never the principal idx.
     """
+
+    def __init__(self, principal_idx: int, detail: str) -> None:
+        super().__init__(f"principal {principal_idx}: {detail}")
+        self.detail = detail
 
 
 async def load_human_user(pool: asyncpg.Pool, principal_idx: int) -> HumanUser:
@@ -444,13 +448,9 @@ async def load_human_user(pool: asyncpg.Pool, principal_idx: int) -> HumanUser:
         principal_idx,
     )
     if row is None:
-        raise PrincipalUnusableError(
-            f"principal {principal_idx}: user record not found for principal"
-        )
+        raise PrincipalUnusableError(principal_idx, "user record not found for principal")
     if row["disabled"] or row["retired"]:
-        raise PrincipalUnusableError(
-            f"principal {principal_idx}: {MSG_PRINCIPAL_DISABLED_OR_RETIRED}"
-        )
+        raise PrincipalUnusableError(principal_idx, MSG_PRINCIPAL_DISABLED_OR_RETIRED)
     return _human_user_from_row(row, scopes=role_ceiling(row["system_role"]))
 
 
@@ -460,4 +460,4 @@ async def _build_human_user(pool: asyncpg.Pool, principal_idx: int) -> HumanUser
     try:
         return await load_human_user(pool, principal_idx)
     except PrincipalUnusableError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise HTTPException(status_code=401, detail=exc.detail) from exc

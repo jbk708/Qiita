@@ -287,6 +287,25 @@ def test_retrying_warning_alone_does_not_fail(fake_mint, monkeypatch, tmp_path):
     assert fake_mint == [(10, 1)]
 
 
+def test_md5_verification_skipped_warning_does_not_fail(fake_mint, monkeypatch, tmp_path):
+    """miint's "md5 verification skipped" warning reports a complete run it could
+    not verify, not missing data, so it must not trip the skip check."""
+
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        _write_intermediate(intermediate_path, [(1, "r1", "ACGT", None, None, None)])
+        return 1, [
+            "read_ena_sequences: WARNING: md5 verification skipped for run 'ERR001' — "
+            "file 'https://ftp.sra.ebi.ac.uk/vol1/ERR001.fastq' is not gzip-compressed; "
+            "md5 verification only supports the gzip transport basis"
+        ]
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001")])
+
+    _run(inputs, tmp_path / "ws")
+    assert fake_mint == [(10, 1)]
+
+
 def test_zero_reads_with_no_warning_is_permanent_bad_input(fake_mint, monkeypatch, tmp_path):
     """Unlike ingest_reads' empty-well case, an ENA run producing zero reads with
     NO explanatory warning is anomalous, not a legitimate empty result — fail

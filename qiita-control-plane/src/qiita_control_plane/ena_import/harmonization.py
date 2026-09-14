@@ -2,9 +2,9 @@
 
 `attribute_mapping.map_ena_attributes` splits one BioSample's attributes into a
 curated set landing on a `biosample_global_field` (cross-study comparable) and
-everything else, retained as study-local rather than dropped. Both halves go to
-`repositories.biosample.resolve_or_import_biosample_by_ena_accession` as one
-metadata dict; this module holds no SQL.
+everything else, retained as study-local rather than dropped. The halves go to
+`repositories.biosample.resolve_or_import_biosample_by_ena_accession` as two
+separate dicts; this module holds no SQL.
 """
 
 from __future__ import annotations

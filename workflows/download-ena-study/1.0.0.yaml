@@ -10,9 +10,9 @@ description: >
   workflow is the read-storage half). There is no `study` ScopeTargetKind
   in Qiita, so while the user-facing request is per-study, the download
   work-ticket is `sequenced_pool`-scoped: `ena_import.registration.
-  register_ena_study` creates one sequenced_pool per (study, platform)
-  pair, and this ticket downloads exactly one such pool's runs. A
-  multi-platform study therefore yields multiple download tickets, fanned
+  register_ena_study` puts runs into pools on one sequencing_run per
+  (study, platform), and this ticket downloads exactly one such pool's runs.
+  A multi-platform study therefore yields multiple download tickets, fanned
   out by the batch driver.
 
   The runner materializes the pool's `{prep_sample_idx, ena_run_accession}`
