@@ -19,7 +19,11 @@ _None yet._
 
 ### 2. One-time host setup
 
-_None yet._
+- `[admin]` Confirm outbound HTTPS from the control-plane host to
+  `www.ebi.ac.uk`, and from the SLURM compute nodes to `www.ebi.ac.uk` and
+  `ftp.sra.ebi.ac.uk`. ENA imports resolve metadata on the control plane and
+  download reads on the cluster; no readiness probe checks either, so a
+  blocked host fails its imports at runtime (#369).
 
 ### 3. Migrations
 

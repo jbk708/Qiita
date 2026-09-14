@@ -22,19 +22,26 @@ processed independently, with bounded concurrency, in three phases:
    `biosample` per distinct ENA sample accession (de-duplicated **across studies** —
    two studies that share a sample converge on the same biosample row, never a
    duplicate), and one `sequenced_sample`/`prep_sample` per run. Runs are grouped by
-   mapped platform into one `sequencing_run` + `sequenced_pool` per `(study,
-   platform)` pair — a multi-platform study yields more than one pool. Each run's ENA
-   sample attributes are harmonized onto its biosample's metadata the first time that
-   biosample is created (a re-import or a cross-study reuse does not re-harmonize).
-3. **Submit** — one `download-ena-study` work ticket per pool created in step 2,
-   scoped to that `sequenced_pool`. This is the ticket that actually pulls read bytes;
-   registration itself never touches read data.
+   mapped platform into one `sequencing_run` per `(study, platform)` pair, and new
+   runs go into a `sequenced_pool` on it — a multi-platform study yields more than one
+   pool. Each run's ENA sample attributes are harmonized onto its biosample's metadata
+   the first time that biosample is created (a re-import or a cross-study reuse does
+   not re-harmonize).
+3. **Submit** — one `download-ena-study` work ticket per pool holding the study's
+   runs, scoped to that `sequenced_pool`. A pool whose ticket is in flight or finished
+   reuses it; one with no ticket, or whose ticket failed or was cancelled, gets a new
+   one. This is the ticket that actually pulls read bytes; registration itself never
+   touches read data.
 
 ### Re-importing, and studies we created ourselves
 
 Re-importing an accession is the supported way to pick up runs a bioproject gained
 since the last import: runs already registered come back as `skipped_already_present`
-and only the new ones are added. Nothing schedules this — it is an operator gesture.
+and only the new ones are added. A download ticket reads its pool's run list once, when
+it starts, so new runs never join a pool whose download is in flight or finished — they
+go into a new pool with its own ticket, and the accession reports `done` only once every
+pool's download has. A re-import is also how to retry a failed or cancelled download.
+Nothing schedules this — it is an operator gesture.
 
 An import will only add to a study **an import created**. A study Qiita created
 natively and later deposited to ENA carries a `bioproject_accession` too, so
@@ -59,7 +66,13 @@ and, on failure, the reason.
 - `GET /api/v1/ena-import-batch/{idx}` — the batch's current, rolled-up per-accession
   status: `pending` / `resolving` / `registered` / `downloading` / `done` / `failed`,
   with `study_idx` and the download ticket idx(s) once resolved, and a
-  `failure_reason` on any `failed` item. Also admin-only.
+  `failure_reason` on any `failed` item. An item whose download ticket failed or was
+  cancelled reports `failed`. Also admin-only.
+
+A control-plane restart re-drives every accession still `pending`, `resolving` or
+`registered`, unless the batch's submitter has since been disabled or retired: those
+accessions fail with that reason instead, and a re-import by an active admin picks
+them up.
 
 The actual read download runs as the `download-ena-study` workflow
 (`workflows/download-ena-study/1.0.0.yaml`), the same `qiita ticket status` /
@@ -120,9 +133,9 @@ gaps expected to close soon (except where noted):
   per-run failure model above) rather than importing correctly. Filling out DDBJ
   coverage is deferred to the backlog.
 - **No ENVO / taxon-ontology harmonization.** Free-text environment and taxonomy
-  fields ENA supplies are harmonized onto the checklist's plain text/enum fields as
-  given; there is no ENVO term resolution or NCBI taxon-id cross-referencing in this
-  path. Also deferred to the backlog.
+  fields ENA supplies are kept as study-local text as given; there is no ENVO term
+  resolution or NCBI taxon-id cross-referencing in this path. Also deferred to the
+  backlog.
 
 ## The duckdb-miint dependency
 
@@ -130,18 +143,21 @@ Metadata resolution and read download both go through `duckdb-miint` table funct
 not a hand-rolled ENA client:
 
 - `read_ena` — study header + run list.
-- `read_ena_attributes` — per-sample attributes, pivoted into the checklist model.
+- `read_ena_attributes` — per-sample attributes, grouped into one map per sample.
 - `read_ena_sequences` — the actual read download, called by the `ingest_ena_reads`
   compute job once a pool's runs are registered.
 
-**md5 verification is pending an upstream miint change.** `read_ena_sequences` does
-not verify a downloaded run's bytes against ENA's published `fastq_md5` today — this
-is a known, tracked gap (a duckdb-miint escalation), not a silent oversight; a
-downloaded run's read count and format are still checked (a run that comes back
-truncated or empty fails loud, never registers silently), but byte-level checksum
-verification against ENA's own hash is not wired in yet. Do not add ad hoc
-verification around this job in the meantime — the fix belongs in `duckdb-miint`
-itself, propagated through the normal extension-version bump.
+**md5 verification is miint's.** `read_ena_sequences` verifies each downloaded FASTQ
+file against ENA's published `fastq_md5` by default (`verify_md5`, duckdb-miint#172;
+see miint's [`insdc_ena` docs](https://the-miint.github.io/duckdb-miint/insdc_ena/)),
+and a mismatch fails the run. Where verification does not apply (an SFF run, a file
+that is not gzip-compressed, no `fastq_md5` from ENA) the run still registers. A run
+that comes back truncated or empty fails loud either way.
+
+**Network access.** The control-plane host resolves metadata from `www.ebi.ac.uk`, and
+the SLURM compute nodes running `ingest_ena_reads` reach both `www.ebi.ac.uk` and
+`ftp.sra.ebi.ac.uk`, all over HTTPS. Nothing probes this at deploy: a host that cannot
+reach them fails its imports at resolve, and a compute node its download tickets.
 
 An unresolvable accession (malformed, or one ENA does not recognize) fails loud with
 an actionable message rather than resolving to a silent empty result — see

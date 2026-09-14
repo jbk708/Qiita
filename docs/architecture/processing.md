@@ -171,7 +171,8 @@ accessions and returns immediately with a batch handle, while a background task
 `duckdb-miint`'s `read_ena` / `read_ena_attributes`), registers it into
 `study`/`biosample`/`sequenced_sample` rows (de-duplicating biosamples that share
 an ENA sample accession across studies), and submits one `download-ena-study`
-work ticket per `(study, platform)` `sequenced_pool` it created. That ticket then
+work ticket per `sequenced_pool` holding the study's runs (a re-import's new runs
+get a new pool once an earlier pool's download is under way). That ticket then
 runs like any other workflow: a native `ingest_ena_reads` step (`read_ena_sequences`
 + the same mint-then-sort-and-assign pipeline `ingest_reads` uses) followed by the
 standard `register-files` action into DuckLake. One accession's failure — resolver
