@@ -36,20 +36,25 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   novo placement was on an excluded genome keeps its reference placement instead of being
   lost from both arms.
 
-  **A run with any unscored MAG or LCG subject is refused at submit** rather than gated,
-  because the predicate is the positive form and excludes a NULL at every bound. Such
-  runs exist: `checkm.sh` scored only the refined bins until circular genomes were added
-  to it, while `assembly_hash` has written LCG membership rows since two months earlier,
-  so every run completed between those changes has LCG subjects with no `bin_quality`
-  row — and the genome-mint backfill stamps them regardless of score, which is what makes
-  them reachable as a de novo arm. A missing score cannot be backfilled the way
-  `genome_idx` was; the run has to be assembled again under a version that scores
-  circular genomes. Without the refusal the gate would drop the class most likely to be a
-  complete genome without reporting it.
+  **A deprecated assembly run is refused as a de novo arm**, naming its `superseded_by`
+  replacement. Nothing else on this path refused one: a deprecated run stays listed and
+  its genomes stay on the map, so neither the alignment nor the map distinguishes a
+  withdrawn computation from a current one. Both drivers apply it —
+  `denovo_assembly_deprecation_error` is the shared wording, the resolver reading the row
+  from Postgres and the client recipe from `GET /processing/{processing_idx}`.
 
-  The client-side `qiita feature-table build --denovo-alignment-idx` is not gated:
+  **A run with any unscored MAG or LCG subject is also refused at submit** rather than
+  gated, because the predicate is the positive form and excludes a NULL at every bound.
+  `checkm.sh` scored only the refined bins until circular genomes were added to it, while
+  membership wrote every class, so a run at a version predating that carries MAG/LCG
+  subjects with no `bin_quality` row. Those runs are deprecated, so the refusal above
+  turns them away first; every enabled assembly version now scores all three classes,
+  which leaves this one a backstop against a run whose subjects and scores disagree.
+
+  The client-side `qiita feature-table build --denovo-alignment-idx` is not score-gated:
   `bin_quality` is un-mintable over HTTP, so a PAT cannot reach the scores. The
-  `analytic` package docstring records that divergence.
+  `analytic` package docstring records that divergence. Deprecation status is not
+  privileged that way, which is why that half is checked on both sides.
 
 - **The genome map is served as Parquet from a sibling route, so a large reference
   is no longer unbuildable (#550).** `GET /reference/{idx}/genome-map` caps at 250,000

@@ -46,13 +46,13 @@ from qiita_common.assembly_constants import (
     BIN_QUALITY_SUBJECT_KEY,
     BIN_QUALITY_TABLE,
 )
-from qiita_common.models.processing import ProcessingStatus
 from qiita_common.parquet import PARQUET_OPTS_INTERMEDIATE, validate_parquet_path
 
 from ..actions.library import export_assembly_member_genome, export_member_genome
 from ..auth.tickets import run_signed_flight_call, sign_ticket
 from ..feature_table import (
     denovo_alignment_processing_idx,
+    denovo_assembly_deprecation_error,
     parse_feature_table_denovo,
     parse_feature_table_scope,
 )
@@ -155,30 +155,25 @@ async def _validate_denovo_arm(
 async def _refuse_deprecated_assembly(pool: asyncpg.Pool, *, processing_idx: int) -> None:
     """Refuse a deprecated assembly run as a de novo arm, naming its replacement.
 
-    Nothing upstream of here refuses one. A deprecated run stays listed and its
-    genomes stay on the map — `repositories.processing` carries why — so neither the
-    alignment nor the map can tell a withdrawn computation from a current one, and a
-    table built from it would carry genomes the assay has replaced.
+    Nothing else on the feature-table path refuses one — the assembly mint has its own
+    check (`runner/_processing.py`), but a combined table names a run that was minted
+    long before. `denovo_assembly_deprecation_error` is the wording, shared with the
+    client recipe.
 
-    `superseded_by` is reported when it is set because that is the run the caller
-    wants. It is optional on a deprecation, so its absence is a different message
-    rather than a missing one.
+    The row is fetched rather than derived: `processing_idx` comes out of the de novo
+    alignment's hashed params, which carry no lifecycle. A missing row is fail-loud
+    rather than a real state — withdrawal here is deprecation, not deletion.
     """
     row = await fetch_processing_by_idx(pool, processing_idx)
     if row is None:
         raise _submission_bad_input(f"assembly run {processing_idx} not found")
-    if row["status"] != ProcessingStatus.DEPRECATED.value:
-        return
-    replacement = row["superseded_by"]
-    if replacement is None:
-        raise _submission_bad_input(
-            f"assembly run {processing_idx} is deprecated and records no replacement, "
-            f"so it cannot be a de novo arm"
-        )
-    raise _submission_bad_input(
-        f"assembly run {processing_idx} is deprecated and cannot be a de novo arm; "
-        f"assembly run {replacement} replaces it"
+    message = denovo_assembly_deprecation_error(
+        processing_idx=processing_idx,
+        status=row["status"],
+        superseded_by=row["superseded_by"],
     )
+    if message is not None:
+        raise _submission_bad_input(message)
 
 
 async def _apply_arm_gate(
@@ -434,11 +429,14 @@ async def _stage_denovo_genome_quality(
     # omission shows up as a class quietly missing from the table rather than as an
     # error.
     #
-    # A run's subjects and their scores are written by the same assembly step, so an
-    # active run carries both or neither, and `_refuse_deprecated_assembly` has already
-    # turned away the runs from before `checkm.sh` scored circular genomes, which carry
-    # subjects only. This refusal is what keeps a break in that coupling from reading as
-    # a table with one genome class quietly absent.
+    # Not defensive: `checkm.sh` scored only the refined bins until circular genomes
+    # were added on 2026-09-01, while membership wrote every class, so a run at a
+    # version predating that carries MAG/LCG subjects with no `bin_quality` row.
+    # `_refuse_deprecated_assembly` turns those away first only because an operator
+    # deprecated them; one left active at such a version would still arrive here. Every
+    # ENABLED version now scores all three classes, which is what makes this a backstop.
+    # UNBINNED, whose quality rows are deliberately a subset of its memberships
+    # (`1.0.1.yaml`), cannot trip it: `fetch_assembly_genome_subject` admits MAG/LCG.
     if unscored:
         listed = sorted(unscored.items())[:_MAX_REPORTED]
         raise _submission_bad_input(

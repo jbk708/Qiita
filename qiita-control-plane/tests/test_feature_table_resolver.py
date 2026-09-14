@@ -339,6 +339,29 @@ def _all_scored(s, *, completeness=90.0, contamination=1.0):
     return [(ps, "MAG", "bin.1", completeness, contamination) for ps in s["prep_sample_idxs"]]
 
 
+async def _seed_processing_row(pool, *, version):
+    """A bare `qiita.processing` row, the shape `_seed_denovo` mints its run with."""
+    return await pool.fetchval(
+        "INSERT INTO qiita.processing (params_hash, workflow, version, params)"
+        " VALUES ($1, 'long-read-assembly', $2, '{}'::jsonb) RETURNING processing_idx",
+        uuid.uuid4().bytes + uuid.uuid4().bytes,
+        version,
+    )
+
+
+async def _seed_deprecation(pool, s, d, *, superseded_by):
+    """Deprecate `d`'s assembly run through the repository, so the table's
+    biconditional CHECK on the three provenance columns stays in the loop."""
+    await transition_processing_status(
+        pool,
+        processing_idx=d["processing_idx"],
+        status=ProcessingStatus.DEPRECATED,
+        reason="seeded supersession",
+        superseded_by=superseded_by,
+        principal_idx=s["principal_idx"],
+    )
+
+
 async def _seed_denovo(pool, s, *, mask_idx=1, assembly_states=None, aligned=None, minted=True):
     """Add a de novo alignment over `s`'s samples, an assembly run, and both gates.
 
@@ -572,8 +595,8 @@ async def test_an_unscored_subject_refuses_the_submission(postgres_pool, tmp_pat
     class quietly missing from the table, the same argument
     `count_assembly_membership_without_genome` makes for a short denominator.
 
-    A backstop rather than the common case: subjects and scores are written by the same
-    assembly step, and a run from before circular genomes were scored is turned away by
+    A backstop rather than the common case: every enabled assembly version scores all
+    three classes, and a run from before circular genomes were scored is turned away by
     `_refuse_deprecated_assembly` first.
     """
     s = await _seed_scenario(postgres_pool, completed=2)
@@ -600,17 +623,6 @@ async def test_an_unscored_subject_refuses_the_submission(postgres_pool, tmp_pat
         await _cleanup(postgres_pool, s)
 
 
-async def _deprecate(pool, d, s, *, superseded_by):
-    await transition_processing_status(
-        pool,
-        processing_idx=d["processing_idx"],
-        status=ProcessingStatus.DEPRECATED,
-        reason="seeded supersession",
-        superseded_by=superseded_by,
-        principal_idx=s["principal_idx"],
-    )
-
-
 async def test_a_deprecated_assembly_run_refuses_the_submission(
     postgres_pool, tmp_path, bin_quality
 ):
@@ -622,14 +634,10 @@ async def test_a_deprecated_assembly_run_refuses_the_submission(
     """
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
-    bin_quality["rows"] = [(ps, "MAG", "bin.1", 77.0, 2.0) for ps in s["prep_sample_idxs"]]
-    replacement_idx = await postgres_pool.fetchval(
-        "INSERT INTO qiita.processing (params_hash, workflow, version, params)"
-        " VALUES ($1, 'long-read-assembly', '1.0.1', '{}'::jsonb) RETURNING processing_idx",
-        uuid.uuid4().bytes + uuid.uuid4().bytes,
-    )
+    bin_quality["rows"] = _all_scored(s)
+    replacement_idx = await _seed_processing_row(postgres_pool, version="1.0.1")
     try:
-        await _deprecate(postgres_pool, d, s, superseded_by=replacement_idx)
+        await _seed_deprecation(postgres_pool, s, d, superseded_by=replacement_idx)
         with pytest.raises(BackendFailure) as exc:
             await _resolve_feature_table_bindings(
                 postgres_pool,
@@ -652,14 +660,51 @@ async def test_a_deprecated_assembly_run_refuses_the_submission(
         await _cleanup(postgres_pool, s)
 
 
+async def test_deprecation_is_refused_before_the_unscored_check(
+    postgres_pool, tmp_path, bin_quality
+):
+    """A run that is BOTH deprecated and unscored reports the deprecation.
+
+    This is the ordering `_write_denovo_genome_quality`'s comment rests on — that the
+    runs predating circular-genome scoring are turned away by status before anything
+    reads their scores. Without it the caller is told to fix the scores of a run whose
+    replacement already exists.
+    """
+    s = await _seed_scenario(postgres_pool, completed=2)
+    d = await _seed_denovo(postgres_pool, s)
+    bin_quality["rows"] = []
+    replacement_idx = await _seed_processing_row(postgres_pool, version="1.0.1")
+    try:
+        await _seed_deprecation(postgres_pool, s, d, superseded_by=replacement_idx)
+        with pytest.raises(BackendFailure) as exc:
+            await _resolve_feature_table_bindings(
+                postgres_pool,
+                action_context=_context(s, d),
+                reference_idx=s["reference_idx"],
+                workspace=tmp_path,
+                data_plane_url=_STUB_DP_URL,
+                signing_key=_STUB_SIGNING_KEY,
+            )
+        message = str(exc.value)
+        assert "deprecated" in message
+        assert str(replacement_idx) in message
+        assert "no usable CheckM score" not in message
+    finally:
+        await _cleanup_denovo(postgres_pool, d)
+        await postgres_pool.execute(
+            "DELETE FROM qiita.processing WHERE processing_idx = $1", replacement_idx
+        )
+        await _cleanup(postgres_pool, s)
+
+
 async def test_a_deprecated_run_with_no_replacement_says_so(postgres_pool, tmp_path, bin_quality):
     """`superseded_by` is optional on a deprecation, so its absence is its own message
     rather than a reference to run `None`."""
     s = await _seed_scenario(postgres_pool, completed=2)
     d = await _seed_denovo(postgres_pool, s)
-    bin_quality["rows"] = [(ps, "MAG", "bin.1", 77.0, 2.0) for ps in s["prep_sample_idxs"]]
+    bin_quality["rows"] = _all_scored(s)
     try:
-        await _deprecate(postgres_pool, d, s, superseded_by=None)
+        await _seed_deprecation(postgres_pool, s, d, superseded_by=None)
         with pytest.raises(BackendFailure) as exc:
             await _resolve_feature_table_bindings(
                 postgres_pool,

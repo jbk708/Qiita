@@ -71,10 +71,15 @@ _None yet._
   above it; that small band is largely, not wholly, the `root (UID1)` elements CheckM
   places in no lineage (6,588 of 7,181). Reads on an excluded genome keep their reference
   placement rather than dropping out; reference genomes and reference-only tickets are
-  unaffected. No env var,
-  host dir, scope or migration; the edited YAML re-syncs at 1.0.0 inside `activate.sh`
+  unaffected. No env var, host dir, scope or migration; the edited YAML re-syncs at
+  1.0.0 inside `activate.sh`
   (verify in bucket 5). (#564)
-- **A combined-table submit is refused if the assembly run has an unscored MAG/LCG
+- **A combined-table submit naming a DEPRECATED assembly run is now refused**, with its
+  `superseded_by` replacement. Previously it was accepted, so an operator who names one
+  after this deploy gets a failed ticket where they got a table before. Both drivers
+  refuse it — the server-side resolver and `qiita feature-table build`. Neither active
+  run is deprecated, so no current request changes. (#564)
+- **A combined-table submit is also refused if the assembly run has an unscored MAG/LCG
   subject**, naming the prep_samples and counts, because the gate cannot judge a genome
   with no `bin_quality` row. CheckM runs once, as a step of the assembly run, and its
   circular arm was added on 2026-09-01, so a run completed before that scored its MAGs
@@ -83,10 +88,12 @@ _None yet._
   cannot fire for a current assembly — only the deprecated 1.0.0 runs carry unscored
   subjects, and neither has an `assembly`-subject alignment to be named by. Nothing to do
   at deploy time. (#564)
-- The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated, and
-  is unaffected by any of the above: `bin_quality` is un-mintable over HTTP, so a PAT
-  cannot reach the scores. A client-built combined table therefore still includes every
-  MAG/LCG genome the map admits, and is not refused for an unscored run. (#564)
+- The client-side `qiita feature-table build --denovo-alignment-idx` is NOT score-gated:
+  `bin_quality` is un-mintable over HTTP, so a PAT cannot reach the scores. A
+  client-built combined table therefore still includes every MAG/LCG genome the map
+  admits, and is not refused for an unscored run. It DOES refuse a deprecated run —
+  lifecycle status is an ordinary unnarrowed read, so that half is checked on both
+  sides. (#564)
 
 ## Deployed history
 
