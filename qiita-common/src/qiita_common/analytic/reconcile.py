@@ -181,10 +181,9 @@ def _validate_quality_gate(min_completeness: float, max_contamination: float) ->
     """Refuse a completeness that is not a percentage, or a negative contamination.
 
     `coverage_filter_applies` states the argument for refusing its own bound at all.
-    The upper bound is on completeness only: a percentage above 100 is not one, where
-    CheckM's contamination genuinely exceeds it — 122 of the 72,986 scored MAG/LCG
-    subjects on the 2026-09-13 lake sit above 100, to a maximum of 191.7 — so a ceiling
-    here would refuse bounds the data needs.
+    The upper bound is on completeness only: a percentage above 100 is not one, whereas
+    CheckM's contamination is not bounded at 100 — values reach 191.7 on the 2026-09-13
+    lake — so a ceiling here would refuse a threshold a caller needs to admit those rows.
 
     **Both tests are written so NaN fails them**, which is why neither is the shorter
     `x < 0.0` / `x > 100.0` form: every comparison against NaN is false, so that form

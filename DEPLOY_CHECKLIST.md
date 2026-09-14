@@ -65,10 +65,12 @@ _None yet._
   two new optional `action_context` keys (`min_completeness`, `max_contamination`). A
   ticket carrying `denovo_alignment_idx` and naming neither key gets the gate, so a table
   rebuilt after this deploy holds fewer qiita genomes than the same request did before
-  it: on the only de novo arm this deploy can name (`alignment_idx` 4), the defaults keep
-  27,962 of 59,427 MAG/LCG genomes (47.1%) — 48.9% of MAG, 40.7% of LCG. Every LCG under
-  300 kb fails, on completeness; those are the `root (UID1)` elements CheckM places in no
-  lineage. Reads on an excluded genome keep their reference placement rather than
+  it: on the one arm an `assembly`-subject alignment exists for (`alignment_idx` 4), the
+  defaults keep 27,962 of 59,427 MAG/LCG genomes (47.1%) — 48.9% of MAG, 40.7% of LCG.
+  Every LCG under 300 kb fails, on completeness (0 of 7,181), against 5,479 of 6,287 at or
+  above it; that small band is largely, not wholly, the `root (UID1)` elements CheckM
+  places in no lineage (6,588 of 7,181). Reads on an excluded genome keep their reference
+  placement rather than
   dropping out; reference genomes and reference-only tickets are unaffected. No env var,
   host dir, scope or migration; the edited YAML re-syncs at 1.0.0 inside `activate.sh`
   (verify in bucket 5). (#564)
@@ -77,10 +79,11 @@ _None yet._
   its LCG subjects have no `bin_quality` row and the gate cannot judge them. Unlike
   `genome_idx`, a CheckM score cannot be backfilled — the run must be assembled again
   (a re-submit runs the only enabled `long-read-assembly` version, which scores circular
-  genomes). **No such submit is reachable on this deploy.** The two affected runs are
-  `long-read-assembly` 1.0.0 (`processing_idx` 1 and 2, every LCG subject unscored — 1,627
-  and 2,806); both are deprecated and superseded onto the fully-scored run 3, and neither
-  has an `assembly`-subject alignment, so neither can be named as a de novo arm at all.
+  genomes). No such submit exists today: the two affected runs are `long-read-assembly`
+  1.0.0 (`processing_idx` 1 and 2, every LCG subject unscored — 1,627 and 2,806), and
+  neither has an `assembly`-subject alignment, which is what a de novo arm is named by.
+  Both are deprecated, run 1 superseded by run 2 and run 2 by `processing_idx` 3 — so the
+  column reaches a scored run from run 1 only in two hops, via the other affected run.
   Nothing to do at deploy time; if it ever fires it surfaces as a failed ticket with an
   explanatory message. (#564)
 - The client-side `qiita feature-table build --denovo-alignment-idx` is NOT gated, and
