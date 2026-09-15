@@ -102,6 +102,10 @@ class EnaRunRegistrationOutcome:
     harmonization: HarmonizationResult | None = None
 
 
+# pg_advisory_xact_lock(class, key) class; distinct from fanout_dispatch's.
+_POOL_RESOLVE_LOCK_CLASS = 0x0E4A_0001
+_INT4_MASK = 0x7FFF_FFFF
+
 # A pool whose latest download ticket ended in one of these is downloaded
 # afresh: a new ticket re-reads its roster, so it may still take new runs.
 _RESUBMITTABLE_DOWNLOAD_TICKET_STATES = frozenset(
@@ -249,16 +253,10 @@ async def _resolve_platform_pools(
     on it, plus the pool new runs go into: the newest one no download ticket
     covers, else a new pool when `needs_pool`, else None.
 
-    Runs in a transaction holding `pg_advisory_xact_lock` on the resolved
-    `sequencing_run` row until commit, closing the cross-batch race (#372): the
-    no-preflight pool path has no arbitrating constraint, so two concurrent
-    batches for the same (study, platform) could each mint a pool. The lock
-    serializes the choice + insert -- the second writer re-reads state and
-    reuses the first's pool. `insert_sequencing_run` already converges both
-    writers onto one run idx (its `instrument_run_id` unique key), so that idx is
-    the lock key. A partial unique on the no-preflight pool is deliberately
-    avoided: it would break the "always 201" path pinned by
-    `test_create_sequenced_pool_no_preflight_always_creates_201`."""
+    Holds an advisory key on the sequencing_run idx until commit, so a
+    concurrent batch for the same (study, platform) reuses the pool rather than
+    minting a second: the no-preflight insert has no constraint to arbitrate
+    (see `insert_sequenced_pool`)."""
     async with conn.transaction():
         sequencing_run_idx, _ = await insert_sequencing_run(
             conn,
@@ -266,8 +264,11 @@ async def _resolve_platform_pools(
             platform=platform,
             created_by_idx=created_by_idx,
         )
-        # Serialize per run so a concurrent writer reuses, not duplicates, the pool.
-        await conn.execute("SELECT pg_advisory_xact_lock($1)", sequencing_run_idx)
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock($1, $2)",
+            _POOL_RESOLVE_LOCK_CLASS,
+            sequencing_run_idx & _INT4_MASK,
+        )
         states = await fetch_download_pool_states(conn, sequencing_run_idx)
         pool_idxs = [s["sequenced_pool_idx"] for s in states]
         open_pool_idxs = [

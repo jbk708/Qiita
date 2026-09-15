@@ -743,22 +743,22 @@ async def test_concurrent_registration_of_shared_biosample_dedupes_to_one_row(re
 
 
 async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
-    """The cross-batch race #372: two concurrent batches for the same
-    (study, platform) must converge on one sequencing_run + one sequenced_pool,
-    not mint a duplicate pool.
+    """Two concurrent batches for the same (study, platform) must converge on one
+    sequenced_pool, not mint a duplicate.
 
-    `asyncio.gather` alone can't force it -- one event loop may not interleave
-    in the tiny window and no constraint forces convergence. So pin writer A
-    open between its "no pool" read and its INSERT, letting B reach the same
-    point. Without serialization B mints a second pool; with the advisory lock B
-    blocks on A's lock, re-reads, and reuses A's pool."""
+    The sequencing_run is committed first so B cannot wait on A's uncommitted
+    `instrument_run_id` insert instead. A is held between its "no pool" read and
+    its INSERT; B blocks on A's lock, re-reads, and reuses A's pool."""
     import asyncio
-    import contextlib
     from unittest.mock import patch
 
+    from qiita_common.models import Platform
+
     from qiita_control_plane.ena_import import registration
+    from qiita_control_plane.repositories.sequencing_run import insert_sequencing_run
 
     study_accession = unique_accession("PRJNA")
+    reg["tracker"].study_accessions.append(study_accession)
     header = _study_header(study_accession=study_accession)
     # Same study + platform, distinct runs: each needs a pool on the one run.
     run_1 = _run(
@@ -773,6 +773,13 @@ async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
         sample_accession=unique_accession("SAMD"),
         study_accession=study_accession,
     )
+    async with reg["pool"].acquire() as conn:
+        run_idx, _ = await insert_sequencing_run(
+            conn,
+            instrument_run_id=f"{study_accession}:{Platform.ILLUMINA.value}",
+            platform=Platform.ILLUMINA,
+            created_by_idx=reg["caller_idx"],
+        )
 
     insert_runs: list[int] = []
     a_reached_insert = asyncio.Event()  # A read "no pool", paused before INSERT
@@ -796,16 +803,28 @@ async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
             **kwargs,
         )
 
+    async def b_blocked_or_inserting():
+        while not b_reached_insert.is_set():
+            if await reg["pool"].fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity a"
+                " JOIN pg_locks l ON l.pid = a.pid"
+                " WHERE a.wait_event_type = 'Lock' AND l.locktype = 'advisory'"
+                "   AND NOT l.granted AND l.classid = $1 AND l.objid = $2)",
+                registration._POOL_RESOLVE_LOCK_CLASS,
+                run_idx,
+            ):
+                return
+            await asyncio.sleep(0.01)
+
     with patch.object(registration, "insert_sequenced_pool", gated_insert):
         task_a = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_1]))
-        await a_reached_insert.wait()  # A held before its INSERT
-        task_b = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_2]))
-        # B reaches its INSERT only when unsynchronized; bound the wait so the
-        # locked (fixed) path, where B never arrives, still proceeds.
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(b_reached_insert.wait(), timeout=2.0)
-        release_a.set()
-        results = await asyncio.gather(task_a, task_b)
+        try:
+            await asyncio.wait_for(a_reached_insert.wait(), timeout=10)
+            task_b = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_2]))
+            await asyncio.wait_for(b_blocked_or_inserting(), timeout=10)
+        finally:
+            release_a.set()
+        results = await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=10)
 
     assert results[0].study_idx == results[1].study_idx
     study_idx = results[0].study_idx
@@ -813,7 +832,7 @@ async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
     # One sequencing_run, keyed on instrument_run_id.
     run_rows = await reg["pool"].fetch(
         "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id = $1",
-        f"{study_accession}:illumina",
+        f"{study_accession}:{Platform.ILLUMINA.value}",
     )
     assert len(run_rows) == 1
     run_idx = run_rows[0]["idx"]

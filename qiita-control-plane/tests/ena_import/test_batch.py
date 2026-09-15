@@ -1611,6 +1611,59 @@ async def test_reimport_resubmits_a_download_that_did_not_complete(
     await _cleanup_study(postgres_pool, accession)
 
 
+async def test_submit_conflict_reuses_the_ticket_a_concurrent_batch_submitted(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    """Two batches can both read a pool as uncovered; the second's submit then
+    409s and must reuse the first's in-flight ticket, not fail the item."""
+    from qiita_control_plane.ena_import import batch as batch_module
+
+    accession = unique_accession("PRJNA")
+    first_idx, first_items = await _drive_one_study(
+        batch_app, postgres_pool, admin_principal, accession
+    )
+    batch_cleanup.append(first_idx)
+    (first_ticket,) = await _item_ticket_idxs(postgres_pool, first_items[0].idx)
+
+    real_fetch = batch_module.fetch_download_pool_states
+    reads = 0
+
+    async def stale_first_read(pool_or_conn, sequencing_run_idx):
+        nonlocal reads
+        reads += 1
+        rows = await real_fetch(pool_or_conn, sequencing_run_idx)
+        if reads == 1:
+            return [{**r, "work_ticket_idx": None, "work_ticket_state": None} for r in rows]
+        return rows
+
+    monkeypatch.setattr(batch_module, "fetch_download_pool_states", stale_first_read)
+
+    second_idx, second_items = await _drive_one_study(
+        batch_app, postgres_pool, admin_principal, accession
+    )
+    batch_cleanup.append(second_idx)
+
+    assert reads == 2
+    item_row = await postgres_pool.fetchrow(
+        "SELECT state, failure_reason, download_work_ticket_idxs"
+        " FROM qiita.ena_import_batch_item WHERE idx = $1",
+        second_items[0].idx,
+    )
+    assert item_row["failure_reason"] is None
+    assert item_row["state"] == BatchItemState.DOWNLOADING.value
+    assert list(item_row["download_work_ticket_idxs"]) == [first_ticket]
+    assert (
+        await postgres_pool.fetchval(
+            "SELECT count(*) FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
+            DOWNLOAD_ENA_STUDY_ACTION_ID,
+            DOWNLOAD_ENA_STUDY_ACTION_VERSION,
+        )
+        == 1
+    )
+
+    await _cleanup_study(postgres_pool, accession)
+
+
 async def test_platform_whose_runs_all_failed_gets_no_ticket(
     batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
 ):

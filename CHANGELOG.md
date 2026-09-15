@@ -1816,13 +1816,13 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
-- **ENA import: a cross-batch race that minted a duplicate `sequencing_run` pool (and a redundant `download-ena-study` ticket) for a `(study, platform)` is serialized (#372).**
+- **ENA import: a cross-batch race that minted a duplicate `sequencing_run` pool (and a redundant `download-ena-study` ticket) for a `(study, platform)` is serialized (#575).**
   `_resolve_platform_pools` was a SELECT-then-INSERT with no arbitrating constraint on the
   no-preflight pool path, so two concurrent batches for the same `(study, platform)` each
-  created a pool. The get-or-create now runs inside a transaction that takes
-  `pg_advisory_xact_lock` on the resolved `sequencing_run` row: the second writer blocks,
-  re-reads pool state, and reuses the pool the first created. The pool stays contractually
-  "always 201" (no partial-unique constraint was added).
+  created a pool. The get-or-create now holds a transaction-level advisory key on the
+  `sequencing_run` idx: the second writer blocks, re-reads pool state, and reuses the pool
+  the first created. A batch whose download-ticket submit 409s because a concurrent batch
+  already submitted one for the pool now reuses that ticket instead of failing the item.
 - **`align/1.0.0`'s walltime ceiling is PT16H, above the PT8H its `align_sharded` blocks
   kept timing out at (#563).** Walltime escalation doubles on each TIMEOUT and clamps to
   the ceiling, so with a PT8H ceiling a block that needed more than 8 h failed its ticket
