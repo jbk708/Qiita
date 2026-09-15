@@ -570,19 +570,7 @@ def test_membership_accession_join_keeps_features_with_no_manifest_match(tmp_pat
     assert rows == {100: "ACC1", 999: None}, "orphan feature survives with NULL accession"
 
 
-def _write_genome_map_parquet(path, rows):
-    """Write a genome_map Parquet: (read_id, genome_source, genome_source_id)."""
-    import duckdb
-
-    with duckdb.connect(":memory:") as c:
-        c.execute(
-            "CREATE TEMP TABLE g (read_id VARCHAR, genome_source VARCHAR, genome_source_id VARCHAR)"
-        )
-        c.executemany("INSERT INTO g VALUES (?, ?, ?)", rows)
-        c.execute(f"COPY g TO '{path}' (FORMAT PARQUET)")
-
-
-def _write_read_id_parquet(path, schema, rows):
+def _write_parquet(path, schema, rows):
     import duckdb
 
     with duckdb.connect(":memory:") as c:
@@ -591,90 +579,104 @@ def _write_read_id_parquet(path, schema, rows):
         c.execute(f"COPY t TO '{path}' (FORMAT PARQUET)")
 
 
-def test_assert_genome_map_overlap_full_match_is_silent(tmp_path, caplog):
-    """A genome map whose every read_id is in the FASTA manifest neither fails nor
-    warns -- the whole map survives the association join."""
-    import logging
-    import uuid
+_GENOME_MAP_SCHEMA = "read_id VARCHAR, genome_source VARCHAR, genome_source_id VARCHAR"
 
-    import duckdb
 
-    from qiita_control_plane.actions.library import _assert_genome_map_overlap
-
+def _genome_map_and_manifest(tmp_path, map_rows, manifest_read_ids):
     genome_map = tmp_path / "genome_map.parquet"
     manifest = tmp_path / "manifest.parquet"
-    _write_genome_map_parquet(
-        genome_map,
+    _write_parquet(genome_map, _GENOME_MAP_SCHEMA, map_rows)
+    _write_parquet(manifest, "read_id VARCHAR", [(r,) for r in manifest_read_ids])
+    return genome_map, manifest
+
+
+def test_check_genome_map_full_match_is_silent(tmp_path, caplog):
+    import logging
+
+    from qiita_control_plane.actions.library import _check_genome_map
+
+    genome_map, manifest = _genome_map_and_manifest(
+        tmp_path,
         [("READ1", "genbank", "G001"), ("READ2", "genbank", "G002")],
-    )
-    _write_read_id_parquet(
-        manifest,
-        "read_id VARCHAR, sequence_hash UUID",
-        [("READ1", str(uuid.UUID(int=1))), ("READ2", str(uuid.UUID(int=2)))],
+        ["READ1", "READ2"],
     )
 
-    with caplog.at_level(logging.WARNING), duckdb.connect(":memory:") as c:
-        _assert_genome_map_overlap(c, genome_map, manifest)
+    with caplog.at_level(logging.WARNING):
+        assert _check_genome_map(genome_map, manifest, "work_ticket 7") is False
 
-    assert caplog.records == [], "full overlap must not warn"
+    assert caplog.records == []
 
 
-def test_assert_genome_map_overlap_zero_match_fails(tmp_path):
-    """A genome map sharing no read_id with the FASTA fails before any write -- the
-    old N=0 backstop only fired at plan-shards, after the full ingest."""
-    import uuid
-
-    import duckdb
+def test_check_genome_map_zero_match_names_unmatched_read_ids(tmp_path):
     import pytest
 
-    from qiita_control_plane.actions.library import _assert_genome_map_overlap
+    from qiita_control_plane.actions.library import _check_genome_map
 
-    genome_map = tmp_path / "genome_map.parquet"
-    manifest = tmp_path / "manifest.parquet"
-    _write_genome_map_parquet(
-        genome_map,
+    genome_map, manifest = _genome_map_and_manifest(
+        tmp_path,
         [("READX", "genbank", "G001"), ("READY", "genbank", "G002")],
-    )
-    _write_read_id_parquet(
-        manifest,
-        "read_id VARCHAR, sequence_hash UUID",
-        [("READ1", str(uuid.UUID(int=1)))],
+        ["READ1"],
     )
 
-    with duckdb.connect(":memory:") as c:
-        with pytest.raises(ValueError, match="shares no read_id with the FASTA manifest"):
-            _assert_genome_map_overlap(c, genome_map, manifest)
+    with pytest.raises(ValueError, match=r"none of its 2 read_id\(s\).*READX, READY"):
+        _check_genome_map(genome_map, manifest, "work_ticket 7")
 
 
-def test_assert_genome_map_overlap_partial_match_warns(tmp_path, caplog):
-    """A partially-matching map is kept (a map may legitimately cover a subset of the
-    reads) but warns with how many genomes are lost to the INNER JOIN, so the
-    operator is no longer left with silently wrong results."""
+def test_check_genome_map_partial_match_counts_read_ids_not_genomes(tmp_path, caplog):
+    """G001 keeps READ1, so it is still associated; its unmatched READ3 is counted."""
     import logging
-    import uuid
 
-    import duckdb
+    from qiita_control_plane.actions.library import _check_genome_map
 
-    from qiita_control_plane.actions.library import _assert_genome_map_overlap
+    genome_map, manifest = _genome_map_and_manifest(
+        tmp_path,
+        [
+            ("READ1", "genbank", "G001"),
+            ("READ3", "genbank", "G001"),
+            ("READMISSING", "genbank", "G002"),
+        ],
+        ["READ1", "READ2"],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _check_genome_map(genome_map, manifest, "work_ticket 7")
+
+    (record,) = caplog.records
+    assert record.getMessage() == (
+        "work_ticket 7: 2 of 3 genome-map read_id(s) are not sequence IDs in the reference "
+        "FASTA and get no genome association (e.g. READ3, READMISSING)"
+    )
+
+
+def test_check_genome_map_requires_read_id_column(tmp_path):
+    import pytest
+
+    from qiita_control_plane.actions.library import _check_genome_map
 
     genome_map = tmp_path / "genome_map.parquet"
     manifest = tmp_path / "manifest.parquet"
-    _write_genome_map_parquet(
-        genome_map,
-        [("READ1", "genbank", "G001"), ("READMISSING", "genbank", "G002")],
+    _write_parquet(
+        genome_map, "genome_source VARCHAR, genome_source_id VARCHAR", [("genbank", "G001")]
     )
-    _write_read_id_parquet(
-        manifest,
-        "read_id VARCHAR, sequence_hash UUID",
-        [("READ1", str(uuid.UUID(int=1)))],
+    _write_parquet(manifest, "read_id VARCHAR", [("READ1",)])
+
+    with pytest.raises(ValueError, match=r"missing required column\(s\): \['read_id'\]"):
+        _check_genome_map(genome_map, manifest, "work_ticket 7")
+
+
+def test_check_genome_map_rejects_null_read_id(tmp_path):
+    import pytest
+
+    from qiita_control_plane.actions.library import _check_genome_map
+
+    genome_map, manifest = _genome_map_and_manifest(
+        tmp_path,
+        [("READ1", "genbank", "G001"), (None, "genbank", "G002")],
+        ["READ1"],
     )
 
-    with caplog.at_level(logging.WARNING), duckdb.connect(":memory:") as c:
-        _assert_genome_map_overlap(c, genome_map, manifest)
-
-    assert any(
-        "1 of 2 read(s) have no matching FASTA sequence" in r.message for r in caplog.records
-    )
+    with pytest.raises(ValueError, match=r"1 row\(s\) with a NULL read_id"):
+        _check_genome_map(genome_map, manifest, "work_ticket 7")
 
 
 def test_reap_staged_reads_none_root_is_noop():

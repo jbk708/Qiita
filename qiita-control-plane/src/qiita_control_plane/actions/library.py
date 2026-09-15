@@ -102,6 +102,9 @@ _CHUNK_SIZE = 10_000
 # runner/_feature_table.py, which cap their own reports.
 _MAX_REPORTED = 20
 
+# Unmatched genome-map read_ids named in `_check_genome_map`'s error and warning.
+_GENOME_MAP_UNMATCHED_EXAMPLES = 5
+
 # Deterministic basename `mint_features` writes its feature-map Parquet under.
 # Single-sourced because the runner's restart path (`_reconstruct_action_outputs`)
 # rebuilds this path WITHOUT re-running the primitive, so the two must not drift.
@@ -277,7 +280,8 @@ def _validate_genome_map(duck: duckdb.DuckDBPyConnection, genome_map_path: Path)
     maps may omit it (treated as all-NULL). Raises ValueError if any
     `genome_source` is outside the GenomeSource vocabulary, or if the
     qiita-origin rule is violated (prep_sample_idx set iff genome_source='qiita').
-    One DISTINCT scan, so a genome-scale map is never materialised.
+    Also requires a non-NULL `read_id` on every row. Scans only, so a
+    genome-scale map is never materialised.
     """
     columns = {
         c[0]
@@ -285,9 +289,14 @@ def _validate_genome_map(duck: duckdb.DuckDBPyConnection, genome_map_path: Path)
             "SELECT * FROM read_parquet(?) LIMIT 0", [str(genome_map_path)]
         ).description
     }
-    missing = {"genome_source", "genome_source_id"} - columns
+    missing = {"read_id", "genome_source", "genome_source_id"} - columns
     if missing:
         raise ValueError(f"genome_map is missing required column(s): {sorted(missing)}")
+    null_read_ids = duck.execute(
+        "SELECT count(*) FROM read_parquet(?) WHERE read_id IS NULL", [str(genome_map_path)]
+    ).fetchone()[0]
+    if null_read_ids:
+        raise ValueError(f"genome_map has {null_read_ids} row(s) with a NULL read_id")
     has_prep = "prep_sample_idx" in columns
     prep_expr = "prep_sample_idx" if has_prep else "CAST(NULL AS BIGINT)"
     combos = duck.execute(
@@ -313,40 +322,48 @@ def _validate_genome_map(duck: duckdb.DuckDBPyConnection, genome_map_path: Path)
     return has_prep
 
 
-def _assert_genome_map_overlap(
-    duck: duckdb.DuckDBPyConnection,
-    genome_map_path: Path,
-    manifest_path: Path,
-) -> None:
-    """Fail a genome map that matches no FASTA read; warn when it matches only some.
+def _check_genome_map(genome_map_path: Path, manifest_path: Path, scope: str) -> bool:
+    """Validate the genome map and its read_id overlap with the FASTA manifest;
+    returns whether it carries `prep_sample_idx`.
 
-    A genome-map read_id absent from the manifest (the FASTA's reads) associates a
-    genome with a sequence that was never ingested, so `_associate_genomes`' INNER
-    JOIN silently drops it. Zero overlap fails before any write -- the old N=0
-    backstop only fired at plan-shards, after the full ingest; partial overlap
-    warns with the count lost, since a map may legitimately cover a subset of the
-    reads (e.g. amplicon mixed with full genomes).
+    No overlap raises. Partial overlap only warns, since a map may legitimately
+    cover a subset of the reads (e.g. amplicon mixed with full genomes).
+    Blocking; the caller runs it off the event loop.
     """
-    map_reads, matched_reads = duck.execute(
-        "SELECT count(*), count(m.read_id)"
-        " FROM read_parquet(?) AS g"
-        " LEFT JOIN read_parquet(?) AS m ON g.read_id = m.read_id",
-        [str(genome_map_path), str(manifest_path)],
-    ).fetchone()
-    if matched_reads == 0:
+    with duckdb_connect() as duck:
+        duck.execute(f"SET temp_directory='{validate_parquet_path(manifest_path.parent)}'")
+        has_prep = _validate_genome_map(duck, genome_map_path)
+        map_read_ids, unmatched = duck.execute(
+            "SELECT count(*), count(*) FILTER (WHERE m.read_id IS NULL)"
+            " FROM read_parquet(?) AS g"
+            " LEFT JOIN read_parquet(?) AS m ON g.read_id = m.read_id",
+            [str(genome_map_path), str(manifest_path)],
+        ).fetchone()
+        if not unmatched:
+            return has_prep
+        examples = ", ".join(
+            read_id
+            for (read_id,) in duck.execute(
+                "SELECT g.read_id FROM read_parquet(?) AS g"
+                " ANTI JOIN read_parquet(?) AS m ON g.read_id = m.read_id"
+                " ORDER BY g.read_id LIMIT ?",
+                [str(genome_map_path), str(manifest_path), _GENOME_MAP_UNMATCHED_EXAMPLES],
+            ).fetchall()
+        )
+    if unmatched == map_read_ids:
         raise ValueError(
-            f"genome_map ({map_reads} read(s)) shares no read_id with the FASTA "
-            "manifest, so no genome would be associated. Confirm the map targets "
-            "this reference's reads."
+            f"genome map: none of its {map_read_ids} read_id(s) is a sequence ID in the "
+            f"reference FASTA (e.g. {examples}), so no genome would be associated"
         )
-    if matched_reads < map_reads:
-        _log.warning(
-            "genome_map: %d of %d read(s) have no matching FASTA sequence and were "
-            "dropped from the genome association; the reference keeps the matched %d.",
-            map_reads - matched_reads,
-            map_reads,
-            matched_reads,
-        )
+    _log.warning(
+        "%s: %d of %d genome-map read_id(s) are not sequence IDs in the reference FASTA "
+        "and get no genome association (e.g. %s)",
+        scope,
+        unmatched,
+        map_read_ids,
+        examples,
+    )
+    return has_prep
 
 
 async def _associate_genomes(
@@ -354,6 +371,8 @@ async def _associate_genomes(
     manifest_path: Path,
     genome_map_path: Path,
     feature_map_path: Path,
+    *,
+    has_prep: bool,
 ) -> None:
     """Write qiita.feature_genome (and qiita.genome) rows for `genome_map_path`.
 
@@ -362,19 +381,13 @@ async def _associate_genomes(
     and against the already-written feature_map (sequence_hash → feature_idx) on
     sequence_hash — so feature_idx is resolved set-side in DuckDB rather than
     from an in-memory Python mapping. Rows whose read_id isn't in the manifest
-    are dropped by the INNER JOIN — the genome map may legitimately cover only
-    a subset of FASTA reads. Streamed in `_CHUNK_SIZE` batches so a
-    genome-scale map never materialises in Python.
+    are dropped by the INNER JOIN (see `_check_genome_map`). Streamed in
+    `_CHUNK_SIZE` batches so a genome-scale map never materialises in Python.
 
-    The whole map is validated up front (`_validate_genome_map`) — vocabulary
-    and the qiita-origin rule -- and its read_ids are checked against the FASTA
-    manifest: a map matching no read fails before any write, and one matching
-    only some logs how many genomes are dropped. (A map may legitimately cover a
-    subset of the reads, so partial coverage warns rather than fails.)
+    `has_prep` is `_check_genome_map`'s result; `mint_features` runs that check
+    before minting.
     """
     with duckdb_connect() as duck:
-        has_prep = _validate_genome_map(duck, genome_map_path)
-        _assert_genome_map_overlap(duck, genome_map_path, manifest_path)
         prep_select = "g.prep_sample_idx" if has_prep else "CAST(NULL AS BIGINT) AS prep_sample_idx"
         reader = duck.execute(
             f"SELECT fm.feature_idx, g.genome_source, g.genome_source_id, {prep_select}"
@@ -468,6 +481,7 @@ async def mint_features(
     output_dir: Path,
     genome_map_path: Path | None = None,
     output_basename: str = MINT_FEATURES_OUTPUT_BASENAME,
+    scope: str = "mint-features",
 ) -> tuple[Path, int, int]:
     """Mint feature_idx values for sequence hashes in a manifest Parquet file.
 
@@ -495,16 +509,18 @@ async def mint_features(
 
     If `genome_map_path` is supplied, qiita.feature_genome rows are also
     written for each entry in that Parquet. Schema:
-    `(read_id TEXT, genome_source TEXT, genome_source_id TEXT)`. The
-    read_id key is JOINed against the manifest's read_id; rows whose
-    read_id isn't in the manifest are dropped (a genome map may cover
-    only a subset of the FASTA's reads, e.g. amplicon mixed with full
-    genomes).
+    `(read_id TEXT, genome_source TEXT, genome_source_id TEXT)`, JOINed on the
+    manifest's read_id. `_check_genome_map` runs before anything is minted: a map
+    matching no read_id raises ValueError, and a partial match logs a warning
+    tagged with `scope`.
     """
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found: {manifest_path}")
     if genome_map_path is not None and not genome_map_path.exists():
         raise FileNotFoundError(f"Genome map not found: {genome_map_path}")
+    has_prep = False
+    if genome_map_path is not None:
+        has_prep = await asyncio.to_thread(_check_genome_map, genome_map_path, manifest_path, scope)
     output_dir.mkdir(parents=True, exist_ok=True)
     feature_map_path = output_dir / output_basename
 
@@ -567,7 +583,9 @@ async def mint_features(
         write_conn.close()
 
     if genome_map_path is not None:
-        await _associate_genomes(pool, manifest_path, genome_map_path, feature_map_path)
+        await _associate_genomes(
+            pool, manifest_path, genome_map_path, feature_map_path, has_prep=has_prep
+        )
 
     return feature_map_path, total_minted, total_reused
 
