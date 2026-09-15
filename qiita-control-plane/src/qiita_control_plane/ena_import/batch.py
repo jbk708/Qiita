@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import asyncpg
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from qiita_common.models import WorkTicketState
 from qiita_common.models.ena_import import (
     BatchImportItem,
@@ -323,10 +323,20 @@ async def _process_one_study(
                         sequencing_run_idx=sequencing_run_idx,
                         ena_study_accession=study_header.study_accession,
                     )
-                    response = await submit_work_ticket_core(
-                        app=app, principal=principal, body=body
-                    )
-                    ticket_idx = response.work_ticket_idx
+                    try:
+                        response = await submit_work_ticket_core(
+                            app=app, principal=principal, body=body
+                        )
+                        ticket_idx = response.work_ticket_idx
+                    except HTTPException as exc:
+                        if exc.status_code != status.HTTP_409_CONFLICT:
+                            raise
+                        # A concurrent batch submitted this pool's ticket after our read.
+                        ticket_idx = await _covering_download_ticket_idx(
+                            pool, sequencing_run_idx, pool_state["sequenced_pool_idx"]
+                        )
+                        if ticket_idx is None:
+                            raise
                 await _append_item_download_ticket(pool, item.idx, ticket_idx)
                 any_ticket = True
 
@@ -349,6 +359,17 @@ async def _process_one_study(
             exc,
         )
         await _set_item_state(pool, item.idx, BatchItemState.FAILED, failure_reason=str(exc))
+
+
+async def _covering_download_ticket_idx(
+    pool: asyncpg.Pool, sequencing_run_idx: int, sequenced_pool_idx: int
+) -> int | None:
+    for pool_state in await fetch_download_pool_states(pool, sequencing_run_idx):
+        if pool_state["sequenced_pool_idx"] == sequenced_pool_idx and download_ticket_covers_pool(
+            pool_state["work_ticket_state"]
+        ):
+            return pool_state["work_ticket_idx"]
+    return None
 
 
 async def _run_batch(

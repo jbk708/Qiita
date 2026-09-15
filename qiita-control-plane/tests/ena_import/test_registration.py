@@ -742,6 +742,124 @@ async def test_concurrent_registration_of_shared_biosample_dedupes_to_one_row(re
     assert harmonized_flags == [False, True]
 
 
+async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
+    """Two concurrent batches for the same (study, platform) must converge on one
+    sequenced_pool, not mint a duplicate.
+
+    The sequencing_run is committed first so B cannot wait on A's uncommitted
+    `instrument_run_id` insert instead. A is held between its "no pool" read and
+    its INSERT; B blocks on A's lock, re-reads, and reuses A's pool."""
+    import asyncio
+    from unittest.mock import patch
+
+    from qiita_common.models import Platform
+
+    from qiita_control_plane.ena_import import registration
+    from qiita_control_plane.repositories.sequencing_run import insert_sequencing_run
+
+    study_accession = unique_accession("PRJNA")
+    reg["tracker"].study_accessions.append(study_accession)
+    header = _study_header(study_accession=study_accession)
+    # Same study + platform, distinct runs: each needs a pool on the one run.
+    run_1 = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMD"),
+        study_accession=study_accession,
+    )
+    run_2 = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMD"),
+        study_accession=study_accession,
+    )
+    async with reg["pool"].acquire() as conn:
+        run_idx, _ = await insert_sequencing_run(
+            conn,
+            instrument_run_id=f"{study_accession}:{Platform.ILLUMINA.value}",
+            platform=Platform.ILLUMINA,
+            created_by_idx=reg["caller_idx"],
+        )
+
+    insert_runs: list[int] = []
+    a_reached_insert = asyncio.Event()  # A read "no pool", paused before INSERT
+    b_reached_insert = asyncio.Event()  # B reached its own INSERT
+    release_a = asyncio.Event()  # release A to INSERT + commit
+
+    orig_insert = registration.insert_sequenced_pool
+
+    async def gated_insert(conn, *, sequencing_run_idx, created_by_idx, **kwargs):
+        first = not insert_runs
+        insert_runs.append(sequencing_run_idx)
+        if first:
+            a_reached_insert.set()
+            await release_a.wait()
+        else:
+            b_reached_insert.set()
+        return await orig_insert(
+            conn,
+            sequencing_run_idx=sequencing_run_idx,
+            created_by_idx=created_by_idx,
+            **kwargs,
+        )
+
+    async def b_blocked_or_inserting():
+        while not b_reached_insert.is_set():
+            if await reg["pool"].fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity a"
+                " JOIN pg_locks l ON l.pid = a.pid"
+                " WHERE a.wait_event_type = 'Lock' AND l.locktype = 'advisory'"
+                "   AND NOT l.granted AND l.classid = $1 AND l.objid = $2)",
+                registration._POOL_RESOLVE_LOCK_CLASS,
+                run_idx,
+            ):
+                return
+            await asyncio.sleep(0.01)
+
+    with patch.object(registration, "insert_sequenced_pool", gated_insert):
+        task_a = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_1]))
+        try:
+            await asyncio.wait_for(a_reached_insert.wait(), timeout=10)
+            task_b = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_2]))
+            await asyncio.wait_for(b_blocked_or_inserting(), timeout=10)
+        finally:
+            release_a.set()
+        results = await asyncio.wait_for(asyncio.gather(task_a, task_b), timeout=10)
+
+    assert results[0].study_idx == results[1].study_idx
+    study_idx = results[0].study_idx
+
+    # One sequencing_run, keyed on instrument_run_id.
+    run_rows = await reg["pool"].fetch(
+        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id = $1",
+        f"{study_accession}:{Platform.ILLUMINA.value}",
+    )
+    assert len(run_rows) == 1
+    run_idx = run_rows[0]["idx"]
+
+    # Exactly one sequenced_pool -- the assertion the race breaks.
+    pool_rows = await reg["pool"].fetch(
+        "SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = $1",
+        run_idx,
+    )
+    assert len(pool_rows) == 1
+    pool_idx = pool_rows[0]["idx"]
+
+    # Both runs landed on that single pool.
+    sample_pool_idxs = {
+        r["sequenced_pool_idx"]
+        for r in await reg["pool"].fetch(
+            "SELECT ss.sequenced_pool_idx"
+            " FROM qiita.sequenced_sample ss"
+            " JOIN qiita.prep_sample_to_study pst"
+            "   ON pst.prep_sample_idx = ss.prep_sample_idx"
+            " WHERE pst.study_idx = $1",
+            study_idx,
+        )
+    }
+    assert sample_pool_idxs == {pool_idx}
+
+
 # ---------------------------------------------------------------------------
 # prep_sample / sequenced_sample creation, reserved-range invariant
 # ---------------------------------------------------------------------------
