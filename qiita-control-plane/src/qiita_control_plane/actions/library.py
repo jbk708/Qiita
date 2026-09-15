@@ -313,6 +313,42 @@ def _validate_genome_map(duck: duckdb.DuckDBPyConnection, genome_map_path: Path)
     return has_prep
 
 
+def _assert_genome_map_overlap(
+    duck: duckdb.DuckDBPyConnection,
+    genome_map_path: Path,
+    manifest_path: Path,
+) -> None:
+    """Fail a genome map that matches no FASTA read; warn when it matches only some.
+
+    A genome-map read_id absent from the manifest (the FASTA's reads) associates a
+    genome with a sequence that was never ingested, so `_associate_genomes`' INNER
+    JOIN silently drops it. Zero overlap fails before any write -- the old N=0
+    backstop only fired at plan-shards, after the full ingest; partial overlap
+    warns with the count lost, since a map may legitimately cover a subset of the
+    reads (e.g. amplicon mixed with full genomes).
+    """
+    map_reads, matched_reads = duck.execute(
+        "SELECT count(*), count(m.read_id)"
+        " FROM read_parquet(?) AS g"
+        " LEFT JOIN read_parquet(?) AS m ON g.read_id = m.read_id",
+        [str(genome_map_path), str(manifest_path)],
+    ).fetchone()
+    if matched_reads == 0:
+        raise ValueError(
+            f"genome_map ({map_reads} read(s)) shares no read_id with the FASTA "
+            "manifest, so no genome would be associated. Confirm the map targets "
+            "this reference's reads."
+        )
+    if matched_reads < map_reads:
+        _log.warning(
+            "genome_map: %d of %d read(s) have no matching FASTA sequence and were "
+            "dropped from the genome association; the reference keeps the matched %d.",
+            map_reads - matched_reads,
+            map_reads,
+            matched_reads,
+        )
+
+
 async def _associate_genomes(
     pool: asyncpg.Pool,
     manifest_path: Path,
@@ -331,10 +367,14 @@ async def _associate_genomes(
     genome-scale map never materialises in Python.
 
     The whole map is validated up front (`_validate_genome_map`) — vocabulary
-    and the qiita-origin rule — so a bad map fails before any DB write.
+    and the qiita-origin rule -- and its read_ids are checked against the FASTA
+    manifest: a map matching no read fails before any write, and one matching
+    only some logs how many genomes are dropped. (A map may legitimately cover a
+    subset of the reads, so partial coverage warns rather than fails.)
     """
     with duckdb_connect() as duck:
         has_prep = _validate_genome_map(duck, genome_map_path)
+        _assert_genome_map_overlap(duck, genome_map_path, manifest_path)
         prep_select = "g.prep_sample_idx" if has_prep else "CAST(NULL AS BIGINT) AS prep_sample_idx"
         reader = duck.execute(
             f"SELECT fm.feature_idx, g.genome_source, g.genome_source_id, {prep_select}"

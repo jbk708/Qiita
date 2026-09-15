@@ -570,6 +570,113 @@ def test_membership_accession_join_keeps_features_with_no_manifest_match(tmp_pat
     assert rows == {100: "ACC1", 999: None}, "orphan feature survives with NULL accession"
 
 
+def _write_genome_map_parquet(path, rows):
+    """Write a genome_map Parquet: (read_id, genome_source, genome_source_id)."""
+    import duckdb
+
+    with duckdb.connect(":memory:") as c:
+        c.execute(
+            "CREATE TEMP TABLE g (read_id VARCHAR, genome_source VARCHAR, genome_source_id VARCHAR)"
+        )
+        c.executemany("INSERT INTO g VALUES (?, ?, ?)", rows)
+        c.execute(f"COPY g TO '{path}' (FORMAT PARQUET)")
+
+
+def _write_read_id_parquet(path, schema, rows):
+    import duckdb
+
+    with duckdb.connect(":memory:") as c:
+        c.execute(f"CREATE TEMP TABLE t ({schema})")
+        c.executemany(f"INSERT INTO t VALUES ({', '.join('?' for _ in rows[0])})", rows)
+        c.execute(f"COPY t TO '{path}' (FORMAT PARQUET)")
+
+
+def test_assert_genome_map_overlap_full_match_is_silent(tmp_path, caplog):
+    """A genome map whose every read_id is in the FASTA manifest neither fails nor
+    warns -- the whole map survives the association join."""
+    import logging
+    import uuid
+
+    import duckdb
+
+    from qiita_control_plane.actions.library import _assert_genome_map_overlap
+
+    genome_map = tmp_path / "genome_map.parquet"
+    manifest = tmp_path / "manifest.parquet"
+    _write_genome_map_parquet(
+        genome_map,
+        [("READ1", "genbank", "G001"), ("READ2", "genbank", "G002")],
+    )
+    _write_read_id_parquet(
+        manifest,
+        "read_id VARCHAR, sequence_hash UUID",
+        [("READ1", str(uuid.UUID(int=1))), ("READ2", str(uuid.UUID(int=2)))],
+    )
+
+    with caplog.at_level(logging.WARNING), duckdb.connect(":memory:") as c:
+        _assert_genome_map_overlap(c, genome_map, manifest)
+
+    assert caplog.records == [], "full overlap must not warn"
+
+
+def test_assert_genome_map_overlap_zero_match_fails(tmp_path):
+    """A genome map sharing no read_id with the FASTA fails before any write -- the
+    old N=0 backstop only fired at plan-shards, after the full ingest."""
+    import uuid
+
+    import duckdb
+    import pytest
+
+    from qiita_control_plane.actions.library import _assert_genome_map_overlap
+
+    genome_map = tmp_path / "genome_map.parquet"
+    manifest = tmp_path / "manifest.parquet"
+    _write_genome_map_parquet(
+        genome_map,
+        [("READX", "genbank", "G001"), ("READY", "genbank", "G002")],
+    )
+    _write_read_id_parquet(
+        manifest,
+        "read_id VARCHAR, sequence_hash UUID",
+        [("READ1", str(uuid.UUID(int=1)))],
+    )
+
+    with duckdb.connect(":memory:") as c:
+        with pytest.raises(ValueError, match="shares no read_id with the FASTA manifest"):
+            _assert_genome_map_overlap(c, genome_map, manifest)
+
+
+def test_assert_genome_map_overlap_partial_match_warns(tmp_path, caplog):
+    """A partially-matching map is kept (a map may legitimately cover a subset of the
+    reads) but warns with how many genomes are lost to the INNER JOIN, so the
+    operator is no longer left with silently wrong results."""
+    import logging
+    import uuid
+
+    import duckdb
+
+    from qiita_control_plane.actions.library import _assert_genome_map_overlap
+
+    genome_map = tmp_path / "genome_map.parquet"
+    manifest = tmp_path / "manifest.parquet"
+    _write_genome_map_parquet(
+        genome_map,
+        [("READ1", "genbank", "G001"), ("READMISSING", "genbank", "G002")],
+    )
+    _write_read_id_parquet(
+        manifest,
+        "read_id VARCHAR, sequence_hash UUID",
+        [("READ1", str(uuid.UUID(int=1)))],
+    )
+
+    with caplog.at_level(logging.WARNING), duckdb.connect(":memory:") as c:
+        _assert_genome_map_overlap(c, genome_map, manifest)
+
+    assert any(
+        "1 of 2 read(s) have no matching FASTA sequence" in r.message for r in caplog.records
+    )
+
+
 def test_reap_staged_reads_none_root_is_noop():
     """CP-only/dev (no shared scratch) reaps nothing and never raises."""
     from qiita_control_plane.actions.sequenced_pool import reap_staged_reads
