@@ -249,41 +249,49 @@ async def _resolve_platform_pools(
     on it, plus the pool new runs go into: the newest one no download ticket
     covers, else a new pool when `needs_pool`, else None.
 
-    Concurrency assumption: single-writer-per-study. This is a SELECT-then-INSERT
-    with no arbitrating constraint on the no-preflight ENA path, so two
-    concurrent batches for the same (study, platform) could each mint a pool.
-    In-batch fan-out is bounded to one writer per study by the accession de-dup
-    in `create_ena_import_batch`; the cross-batch window is still open."""
-    sequencing_run_idx, _ = await insert_sequencing_run(
-        conn,
-        instrument_run_id=f"{study_accession}:{platform.value}",
-        platform=platform,
-        created_by_idx=created_by_idx,
-    )
-    states = await fetch_download_pool_states(conn, sequencing_run_idx)
-    pool_idxs = [s["sequenced_pool_idx"] for s in states]
-    open_pool_idxs = [
-        s["sequenced_pool_idx"]
-        for s in states
-        if not download_ticket_covers_pool(s["work_ticket_state"])
-    ]
-    target_pool_idx = open_pool_idxs[-1] if open_pool_idxs else None
-    if target_pool_idx is None and needs_pool:
-        target_pool_idx, _ = await insert_sequenced_pool(
+    Runs in a transaction holding `pg_advisory_xact_lock` on the resolved
+    `sequencing_run` row until commit, closing the cross-batch race (#372): the
+    no-preflight pool path has no arbitrating constraint, so two concurrent
+    batches for the same (study, platform) could each mint a pool. The lock
+    serializes the choice + insert -- the second writer re-reads state and
+    reuses the first's pool. `insert_sequencing_run` already converges both
+    writers onto one run idx (its `instrument_run_id` unique key), so that idx is
+    the lock key. A partial unique on the no-preflight pool is deliberately
+    avoided: it would break the "always 201" path pinned by
+    `test_create_sequenced_pool_no_preflight_always_creates_201`."""
+    async with conn.transaction():
+        sequencing_run_idx, _ = await insert_sequencing_run(
             conn,
-            sequencing_run_idx=sequencing_run_idx,
+            instrument_run_id=f"{study_accession}:{platform.value}",
+            platform=platform,
             created_by_idx=created_by_idx,
         )
-        pool_idxs.append(target_pool_idx)
-    pools = [
-        CreatedPool(
-            platform=platform.value,
-            sequenced_pool_idx=idx,
-            sequencing_run_idx=sequencing_run_idx,
-        )
-        for idx in pool_idxs
-    ]
-    return pools, target_pool_idx
+        # Serialize per run so a concurrent writer reuses, not duplicates, the pool.
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", sequencing_run_idx)
+        states = await fetch_download_pool_states(conn, sequencing_run_idx)
+        pool_idxs = [s["sequenced_pool_idx"] for s in states]
+        open_pool_idxs = [
+            s["sequenced_pool_idx"]
+            for s in states
+            if not download_ticket_covers_pool(s["work_ticket_state"])
+        ]
+        target_pool_idx = open_pool_idxs[-1] if open_pool_idxs else None
+        if target_pool_idx is None and needs_pool:
+            target_pool_idx, _ = await insert_sequenced_pool(
+                conn,
+                sequencing_run_idx=sequencing_run_idx,
+                created_by_idx=created_by_idx,
+            )
+            pool_idxs.append(target_pool_idx)
+        pools = [
+            CreatedPool(
+                platform=platform.value,
+                sequenced_pool_idx=idx,
+                sequencing_run_idx=sequencing_run_idx,
+            )
+            for idx in pool_idxs
+        ]
+        return pools, target_pool_idx
 
 
 async def _register_one_ena_run(

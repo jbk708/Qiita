@@ -742,6 +742,105 @@ async def test_concurrent_registration_of_shared_biosample_dedupes_to_one_row(re
     assert harmonized_flags == [False, True]
 
 
+async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
+    """The cross-batch race #372: two concurrent batches for the same
+    (study, platform) must converge on one sequencing_run + one sequenced_pool,
+    not mint a duplicate pool.
+
+    `asyncio.gather` alone can't force it -- one event loop may not interleave
+    in the tiny window and no constraint forces convergence. So pin writer A
+    open between its "no pool" read and its INSERT, letting B reach the same
+    point. Without serialization B mints a second pool; with the advisory lock B
+    blocks on A's lock, re-reads, and reuses A's pool."""
+    import asyncio
+    import contextlib
+    from unittest.mock import patch
+
+    from qiita_control_plane.ena_import import registration
+
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    # Same study + platform, distinct runs: each needs a pool on the one run.
+    run_1 = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMD"),
+        study_accession=study_accession,
+    )
+    run_2 = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMD"),
+        study_accession=study_accession,
+    )
+
+    insert_runs: list[int] = []
+    a_reached_insert = asyncio.Event()  # A read "no pool", paused before INSERT
+    b_reached_insert = asyncio.Event()  # B reached its own INSERT
+    release_a = asyncio.Event()  # release A to INSERT + commit
+
+    orig_insert = registration.insert_sequenced_pool
+
+    async def gated_insert(conn, *, sequencing_run_idx, created_by_idx, **kwargs):
+        first = not insert_runs
+        insert_runs.append(sequencing_run_idx)
+        if first:
+            a_reached_insert.set()
+            await release_a.wait()
+        else:
+            b_reached_insert.set()
+        return await orig_insert(
+            conn,
+            sequencing_run_idx=sequencing_run_idx,
+            created_by_idx=created_by_idx,
+            **kwargs,
+        )
+
+    with patch.object(registration, "insert_sequenced_pool", gated_insert):
+        task_a = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_1]))
+        await a_reached_insert.wait()  # A held before its INSERT
+        task_b = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_2]))
+        # B reaches its INSERT only when unsynchronized; bound the wait so the
+        # locked (fixed) path, where B never arrives, still proceeds.
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(b_reached_insert.wait(), timeout=2.0)
+        release_a.set()
+        results = await asyncio.gather(task_a, task_b)
+
+    assert results[0].study_idx == results[1].study_idx
+    study_idx = results[0].study_idx
+
+    # One sequencing_run, keyed on instrument_run_id.
+    run_rows = await reg["pool"].fetch(
+        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id = $1",
+        f"{study_accession}:illumina",
+    )
+    assert len(run_rows) == 1
+    run_idx = run_rows[0]["idx"]
+
+    # Exactly one sequenced_pool -- the assertion the race breaks.
+    pool_rows = await reg["pool"].fetch(
+        "SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = $1",
+        run_idx,
+    )
+    assert len(pool_rows) == 1
+    pool_idx = pool_rows[0]["idx"]
+
+    # Both runs landed on that single pool.
+    sample_pool_idxs = {
+        r["sequenced_pool_idx"]
+        for r in await reg["pool"].fetch(
+            "SELECT ss.sequenced_pool_idx"
+            " FROM qiita.sequenced_sample ss"
+            " JOIN qiita.prep_sample_to_study pst"
+            "   ON pst.prep_sample_idx = ss.prep_sample_idx"
+            " WHERE pst.study_idx = $1",
+            study_idx,
+        )
+    }
+    assert sample_pool_idxs == {pool_idx}
+
+
 # ---------------------------------------------------------------------------
 # prep_sample / sequenced_sample creation, reserved-range invariant
 # ---------------------------------------------------------------------------
