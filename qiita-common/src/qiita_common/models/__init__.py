@@ -204,11 +204,14 @@ from qiita_common.models.run_folder import (
 )
 from qiita_common.models.sample_field import (
     GLOBAL_FIELD_IDX_ATTR,
+    NOT_SETTABLE_ON_LINKED_FIELD,
     STUDY_FIELD_IDX_ATTR,
     SampleGlobalFieldResponse,
     SampleStudyFieldCreateRequest,
+    SampleStudyFieldPatchRequest,
     SampleStudyFieldResponse,
     field_wire_name,
+    unique_in_study_rejection_reason,
 )
 from qiita_common.models.sequencing import (
     AlignmentDefinitionDeleteResponse,
@@ -542,7 +545,10 @@ __all__ = [
     "SampleMetadataValue",
     "SampleMetadataWriteRequest",
     "SampleMetadataWriteResponse",
+    "NOT_SETTABLE_ON_LINKED_FIELD",
     "SampleStudyFieldCreateRequest",
+    "SampleStudyFieldPatchRequest",
+    "unique_in_study_rejection_reason",
     "SampleStudyFieldResponse",
     "SequencedSampleListItem",
     "SequencedSampleListResponse",

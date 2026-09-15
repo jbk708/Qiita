@@ -56,6 +56,40 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   `analytic` package docstring records that divergence. Deprecation status is not
   privileged that way, which is why that half is checked on both sides.
 
+- **A study can declare that a study-local field's values identify its samples,
+  and can change that declaration later (#562).** `unique_in_study` on
+  `biosample_study_field` / `prep_sample_study_field` makes the database reject a
+  duplicate value within the study and reject a missing-value marker outright.
+  It is settable on create and on edit, comes back on every field read,
+  and is refused for a globally-linked field and for the closed value sets (boolean,
+  terminology) with a per-field 422 naming the rule. Enforcement follows the current
+  policy rather than the one the field was minted with: a trigger mirrors a change
+  onto every metadata row already written through the field. Switching it on over
+  values that already repeat answers 409, over a sample with a missing value answers
+  422, and either way the change rolls back whole. Uniqueness is case-sensitive and
+  scoped to one study: two studies may hold the same value through their own local
+  fields. Defaults false, so existing fields are unaffected. Editing a field also needs
+  a tag to edit against, so field reads and creates now carry an `ETag` and
+  `updated_at`, and `GET /api/v1/study/{study_idx}/biosample-field/{study_field_idx}`
+  and its prep-sample twin serve one definition at the same viewer floor as the list
+  route. `data_type` and the global-field link stay immutable, since changing either
+  rewrites the meaning of every value already stored. A field holding a value on a
+  published sample refuses a policy change in either direction: publication freezes
+  the policy along with the values it governs.
+
+- **A biosample's owner-submitted identifier must be unique within the study-local
+  field recording it (#562).** The import mints the owner-id field declaring that
+  policy, and refuses to write through a field of that name that does not declare it —
+  a field guaranteeing no distinctness cannot serve as the identifier a study names its
+  samples by. A field of that name storing anything other than text is refused for a
+  related reason, rather than coercing the identifier into a shape its owner did not
+  submit. A second biosample claiming an identifier that field already holds is refused
+  and told which value repeated. A study may record owner ids through more than one
+  local field — contributors arrive under different column names — so the same
+  identifier through a different field, or in a different study, is untouched. Owner-id
+  fields minted before this rule are brought up to it by migration, which aborts rather
+  than picking a winner when a field's existing values cannot satisfy the policy.
+
 - **The genome map is served as Parquet from a sibling route, so a large reference
   is no longer unbuildable (#550).** `GET /reference/{idx}/genome-map` caps at 250,000
   entries and 413s above it; both genome-bearing references on the deploy are past
