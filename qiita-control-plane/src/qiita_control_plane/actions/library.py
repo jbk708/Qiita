@@ -339,6 +339,8 @@ def _check_genome_map(genome_map_path: Path, manifest_path: Path, scope: str) ->
             " LEFT JOIN read_parquet(?) AS m ON g.read_id = m.read_id",
             [str(genome_map_path), str(manifest_path)],
         ).fetchone()
+        if map_read_ids == 0:
+            raise ValueError("genome map has no rows, so no genome would be associated")
         if not unmatched:
             return has_prep
         examples = ", ".join(

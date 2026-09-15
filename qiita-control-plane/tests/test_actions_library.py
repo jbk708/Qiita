@@ -648,6 +648,23 @@ def test_check_genome_map_partial_match_counts_read_ids_not_genomes(tmp_path, ca
     )
 
 
+def test_check_genome_map_rejects_empty_map(tmp_path):
+    import duckdb
+    import pytest
+
+    from qiita_control_plane.actions.library import _check_genome_map
+
+    genome_map = tmp_path / "genome_map.parquet"
+    manifest = tmp_path / "manifest.parquet"
+    with duckdb.connect(":memory:") as c:
+        c.execute(f"CREATE TEMP TABLE t ({_GENOME_MAP_SCHEMA})")
+        c.execute(f"COPY t TO '{genome_map}' (FORMAT PARQUET)")
+    _write_parquet(manifest, "read_id VARCHAR", [("READ1",)])
+
+    with pytest.raises(ValueError, match="genome map has no rows"):
+        _check_genome_map(genome_map, manifest, "work_ticket 7")
+
+
 def test_check_genome_map_requires_read_id_column(tmp_path):
     import pytest
 
