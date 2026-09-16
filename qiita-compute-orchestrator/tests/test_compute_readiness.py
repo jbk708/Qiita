@@ -193,6 +193,7 @@ compute-readiness: miint-read-fastx=ok
 compute-readiness: shared-fs-visible=ok path=/scratch/qiita
 compute-readiness: shared-fs-writable=ok
 compute-readiness: cp-from-compute=ok cp_url=https://qiita.example.org
+compute-readiness: ena-from-compute=ok
 trailing line outside the prefix
 """
     results = cr._parse_probe_log(log)
@@ -207,6 +208,7 @@ trailing line outside the prefix
         ("probe/shared-fs-visible", "pass"),
         ("probe/shared-fs-writable", "pass"),
         ("probe/cp-from-compute", "pass"),
+        ("probe/ena-from-compute", "pass"),
     ]
 
 
@@ -217,6 +219,7 @@ compute-readiness: native-import=fail
 compute-readiness: miint-read-fastx=fail
 compute-readiness: shared-fs-visible=fail path=/scratch/qiita
 compute-readiness: cp-from-compute=skip cp_url_set=fail token_set=fail
+compute-readiness: ena-from-compute=fail err=URLError: no route to host
 """
     statuses = {r.name: r.status for r in cr._parse_probe_log(log)}
     assert statuses == {
@@ -225,6 +228,7 @@ compute-readiness: cp-from-compute=skip cp_url_set=fail token_set=fail
         "probe/miint-read-fastx": "fail",
         "probe/shared-fs-visible": "fail",
         "probe/cp-from-compute": "skip",
+        "probe/ena-from-compute": "fail",
     }
 
 
@@ -268,6 +272,29 @@ def test_probe_script_checks_miint_read_fastx():
     assert "miint-read-fastx=ok" in script
     assert "miint-read-fastx=fail" in script
     assert "max_batch_bytes" in script
+
+
+def test_probe_script_checks_ena_reachability_from_compute():
+    """The compute half of the deploy's ENA egress check. Runs
+    `ena_reachability_check` as a module through the shared `run_module_probe`
+    helper, so the hosts and the verdict are pinned on that module's own tests
+    and the `err=` capture on native-import's."""
+    script = cr.build_probe_script(path_scratch="/scratch/qiita")
+    assert "run_module_probe qiita_compute_orchestrator.ena_reachability_check" in script
+    assert "ena-from-compute=ok" in script
+    assert "ena-from-compute=fail err=$MODULE_PROBE_ERR" in script
+
+
+def test_probe_script_runs_both_module_probes_through_one_helper():
+    """native-import and ena-from-compute share one capture path, so they cannot
+    drift into different ideas of what reaches the operator's `err=` field. The
+    row names stay literals at the call sites — `_parse_probe_log` and the
+    script-vs-parser parity test both read them out of the script's text."""
+    script = cr.build_probe_script(path_scratch="/scratch/qiita")
+    assert script.count("run_module_probe() {") == 1
+    assert script.count("run_module_probe qiita_compute_orchestrator.") == 2
+    # No call site re-implements the capture the helper owns.
+    assert "-P -m" not in script.split("run_module_probe() {", 1)[1].split("}", 1)[1]
 
 
 def test_probe_script_is_valid_bash():
