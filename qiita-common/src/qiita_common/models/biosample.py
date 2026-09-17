@@ -193,6 +193,26 @@ TERMINOLOGY_TERM_VALUE_COLUMN = "value_terminology_term_idx"
 BIOSAMPLE_FIELD_TAXON_ID = "taxon_id"
 BIOSAMPLE_FIELD_HOST_TAXON_ID = "host_taxon_id"
 
+# `biosample_global_field.display_name` values the ENA ingestion path writes directly --
+# NOT the `internal_name`s above. BIOSAMPLE_DISPLAY_NAMES is the subset of the seeded
+# registry this code names by constant, not the full registry.
+BIOSAMPLE_DISPLAY_COLLECTION_DATE = "collection date"
+BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_COUNTRY_OR_SEA = "geographic location (country and/or sea)"
+BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_LATITUDE = "geographic location (latitude)"
+BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_LONGITUDE = "geographic location (longitude)"
+BIOSAMPLE_DISPLAY_DEPTH = "depth"
+BIOSAMPLE_DISPLAY_HOST_TAXON_ID = "host taxon id"
+BIOSAMPLE_DISPLAY_NAMES = frozenset(
+    {
+        BIOSAMPLE_DISPLAY_COLLECTION_DATE,
+        BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_COUNTRY_OR_SEA,
+        BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_LATITUDE,
+        BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_LONGITUDE,
+        BIOSAMPLE_DISPLAY_DEPTH,
+        BIOSAMPLE_DISPLAY_HOST_TAXON_ID,
+    }
+)
+
 # The two `qiita.missing_value_reason` names the host-filter resolver RECOGNISES
 # — i.e. the two that say something definite about whether a host exists.
 #

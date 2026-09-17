@@ -2,6 +2,8 @@
 `biosample_global_field.display_name`, splitting mapped from unmapped, dropping nothing.
 Normalization is whitespace/case-insensitive; the lookup table is exact-match, never fuzzy."""
 
+from qiita_common.models import BIOSAMPLE_DISPLAY_NAMES
+
 from qiita_control_plane.ena_import.attribute_mapping import map_ena_attributes
 
 
@@ -220,3 +222,19 @@ def test_map_ena_attributes_both_vocabularies_coexist_when_targets_differ():
         "geographic location (longitude)": "139.6917",
         "depth": "10",
     }
+
+
+def test_map_ena_attributes_emits_only_biosample_display_names():
+    attributes = {
+        "collection date": "2019-06-01",
+        "geographic location (country and/or sea)": "USA: California",
+        "geographic location (latitude)": "32.88",
+        "geographic location (longitude)": "-117.24",
+        "depth": "10.5",
+        "geo loc name": "Japan:Shiga",
+        "lat lon": "35.6895 N 139.6917 E",
+    }
+
+    mapped, _ = map_ena_attributes(attributes)
+
+    assert set(mapped) <= BIOSAMPLE_DISPLAY_NAMES
