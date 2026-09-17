@@ -1,0 +1,8 @@
+@import 'tailwindcss';
+
+/* Tailwind UI application kit uses the stock palette + Inter-ish system font.
+   Component styling lives in the markup; keep this file minimal. */
+html {
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
