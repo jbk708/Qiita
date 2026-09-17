@@ -1,0 +1,61 @@
+# Rendered from this template at container start by the nginx image's
+# 20-envsubst-on-templates.sh. Only QIITA_* placeholders are substituted
+# (NGINX_ENVSUBST_FILTER in the Dockerfile) — nginx's own $uri/$host are left
+# alone.
+#
+# This is the app-tier server block only. It terminates no TLS and owns no
+# hostname: the host's deploy/nginx/qiita.conf stays the public edge (TLS,
+# server_name, the Arrow Flight gRPC location, the rate-limit zones) and
+# forwards to ${QIITA_WEB_PORT} here.
+
+server {
+    listen ${QIITA_WEB_PORT};
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Same-origin API. api.ts hardcodes BASE = '/api/v1' precisely so the
+    # bundle and the control plane share an origin; this location is the
+    # production stand-in for the Vite dev proxy in vite.config.ts.
+    location /api/v1/ {
+        proxy_pass ${QIITA_CP_UPSTREAM};
+        proxy_http_version 1.1;
+        # Deliberately the UPSTREAM's hostname, not $host. kl-remote runs no
+        # control plane, so QIITA_CP_UPSTREAM is a remote https:// origin and
+        # the request has to arrive there carrying that origin's name, both for
+        # SNI-matched TLS and so the CP is not asked to answer for a host it
+        # does not serve. For a local CP, set QIITA_CP_HOST to the same
+        # host:port as the upstream.
+        proxy_set_header Host ${QIITA_CP_HOST};
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # /auth/login answers with a 302 to AuthRocket; pass it through
+        # untouched so the browser follows it rather than nginx rewriting it.
+        proxy_redirect off;
+
+        # Needed when QIITA_CP_UPSTREAM is https://: nginx defaults
+        # proxy_ssl_server_name off, and a CP behind name-based TLS would get
+        # no SNI and fail the handshake. No-op for an http:// upstream.
+        proxy_ssl_server_name on;
+    }
+
+    # Content-hashed bundle output — safe to cache indefinitely.
+    location /_app/immutable/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    # index.html carries the references to those hashed assets, so it must
+    # never be the stale one.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # SPA fallback: adapter-static emits index.html as the fallback for every
+    # client-side route, so an unknown path is the router's job, not a 404.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
