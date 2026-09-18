@@ -3652,6 +3652,13 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **The ENA ingestion path names the `biosample_global_field` display names it writes as
+  constants instead of literals (#589).** `collection date`, the three geographic-location
+  fields, `depth`, and `host taxon id` are now `BIOSAMPLE_DISPLAY_*` in
+  `qiita_common.models.biosample`, re-exported from `qiita_common.models`.
+  `attribute_mapping.py` and `harmonization.py` emit them; the normalized-tag lookup keys
+  in `attribute_mapping.py` are unaffected. No behavior change.
+
 - **`align/1.0.0`'s memory ceiling is 128 GB, above the `align_sharded` step's
   unchanged 64 GB baseline (#560).** With the ceiling equal to the baseline, OOM
   escalation had no larger size to grow to, so the step's first OOM failed its ticket
