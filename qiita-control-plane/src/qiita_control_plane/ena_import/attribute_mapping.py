@@ -104,8 +104,9 @@ def _map_lat_lon(value: str) -> dict[str, str] | None:
     }
 
 
-# Keys are ENA/MIxS tags and stay literal; handler outputs are the seeded display_name
-# constants -- this table doesn't create the global field.
+# Keys are the ENA/MIxS tags we recognize, so they stay literal: keying on the display-name
+# constants would let a Qiita rename change which ENA tags are recognized, and `geo loc
+# name` / `lat lon` match no display name anyway. Handlers emit the seeded display names.
 _ENA_ATTRIBUTE_TAG_HANDLERS: dict[str, _TagHandler] = {
     "collection date": _passthrough(BIOSAMPLE_DISPLAY_COLLECTION_DATE),
     "geographic location (country and/or sea)": _passthrough(

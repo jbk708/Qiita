@@ -15,7 +15,7 @@ from qiita_common.models import BIOSAMPLE_DISPLAY_HOST_TAXON_ID
 
 from .attribute_mapping import map_ena_attributes
 
-# The import composer enforces this required global field. ENA carries no NCBI
+# The import composer requires the `host taxon id` global field. ENA carries no NCBI
 # host taxon id -- its `host` is submitter free text -- so the honest value is
 # the missing-value marker rather than a guess or a weakened gate.
 HOST_TAXON_ID_UNKNOWN = "not provided"

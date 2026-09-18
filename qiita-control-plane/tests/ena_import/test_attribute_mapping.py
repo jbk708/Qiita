@@ -2,9 +2,12 @@
 `biosample_global_field.display_name`, splitting mapped from unmapped, dropping nothing.
 Normalization is whitespace/case-insensitive; the lookup table is exact-match, never fuzzy."""
 
-from qiita_common.models import BIOSAMPLE_DISPLAY_NAMES
+from qiita_common.models import biosample
 
-from qiita_control_plane.ena_import.attribute_mapping import map_ena_attributes
+from qiita_control_plane.ena_import.attribute_mapping import (
+    _ENA_ATTRIBUTE_TAG_HANDLERS,
+    map_ena_attributes,
+)
 
 
 def test_map_ena_attributes_maps_known_tags_to_display_names():
@@ -235,6 +238,9 @@ def test_map_ena_attributes_emits_only_biosample_display_names():
         "lat lon": "35.6895 N 139.6917 E",
     }
 
-    mapped, _ = map_ena_attributes(attributes)
+    mapped, unmapped = map_ena_attributes(attributes)
 
-    assert set(mapped) <= BIOSAMPLE_DISPLAY_NAMES
+    assert set(attributes) == set(_ENA_ATTRIBUTE_TAG_HANDLERS)
+    assert not unmapped
+    display_names = {v for k, v in vars(biosample).items() if k.startswith("BIOSAMPLE_DISPLAY_")}
+    assert set(mapped) <= display_names
