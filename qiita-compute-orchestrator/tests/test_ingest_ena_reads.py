@@ -367,8 +367,8 @@ def test_format_fetch_error_is_permanent(fake_mint, monkeypatch, tmp_path):
 
 def test_md5_mismatch_fetch_error_is_permanent(fake_mint, monkeypatch, tmp_path):
     """A raised duckdb.Error shaped like miint's md5-verification failure (has
-    "md5", no transient marker) classifies BAD_INPUT (permanent) — the declared
-    fastq_md5 mismatch reproduces on retry, not a transient blip."""
+    "md5", no transient marker) classifies BAD_INPUT, and the reason tells the
+    operator how to tell a corrupted download from a bad published digest."""
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
         raise duckdb.IOException(
@@ -385,6 +385,7 @@ def test_md5_mismatch_fetch_error_is_permanent(fake_mint, monkeypatch, tmp_path)
     assert exc.value.transient is False
     assert "fastq_md5" in exc.value.reason.lower()
     assert "ena portal api" in exc.value.reason.lower()
+    assert "re-import" in exc.value.reason.lower()
 
 
 def test_md5_error_with_transient_marker_still_classifies_transient(
