@@ -1878,6 +1878,15 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   **Behavior change on already-deployed data:** a study whose two recorded accessions
   contradict an incoming import's pair now fails that import item instead of silently
   reusing the study.
+- **`ingest_ena_reads`'s md5-mismatch failure reason says how to tell a corrupted download from a digest ENA itself publishes wrong, instead of blaming "data corruption" (#591).**
+  The old wording named one cause among several and pointed at a re-queue a permanent
+  failure never reaches. The message now tells the operator to compare the run's
+  `fastq_md5` in the ENA Portal API against the value in the error: equal means ENA's own
+  file disagrees with its digest and a re-import fails identically, different means the
+  download was corrupted and a re-import retries it. The classification stays `BAD_INPUT`,
+  now as a stated choice rather than a claim about retries — miint raises the same error
+  for both causes ([duckdb-miint#274](https://github.com/the-miint/duckdb-miint/issues/274)),
+  and #595 tracks revisiting it.
 - **Reference load: a genome map is checked against the reference FASTA before anything is minted, so a map whose read_ids match no FASTA sequence fails and a partial match logs what went unmatched (#577).**
   `_associate_genomes` INNER-JOINed the genome map onto the manifest's `read_id`, silently
   dropping every map row whose `read_id` isn't a FASTA sequence ID. `mint-features` now
