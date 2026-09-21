@@ -218,9 +218,11 @@ async def download_ena_study_action(postgres_pool):
 
 
 async def _cleanup_study(postgres_pool, study_accession: str) -> None:
-    """Best-effort FK-reverse cleanup for one study this test created."""
+    """Best-effort FK-reverse cleanup for one study this test created,
+    looked up by either accession column."""
     study_idx = await postgres_pool.fetchval(
-        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1", study_accession
+        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1 OR ena_study_accession = $1",
+        study_accession,
     )
     if study_idx is None:
         return
@@ -1419,6 +1421,61 @@ async def test_import_refuses_a_study_no_import_created(
     )
 
     await _cleanup_study(postgres_pool, accession)
+
+
+async def test_import_refuses_a_study_no_import_created_matched_by_secondary_accession(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    """Same guard as `test_import_refuses_a_study_no_import_created`, but the
+    native study is matched via ena_study_accession (bioproject_accession
+    NULL) rather than bioproject_accession."""
+    ena_accession = unique_accession("ERP")
+    async with postgres_pool.acquire() as conn, conn.transaction():
+        native = await create_study(
+            conn,
+            owner_idx=admin_principal.principal_idx,
+            created_by_idx=admin_principal.principal_idx,
+            title=f"natively created {ena_accession}",
+            ena_study_accession=ena_accession,
+        )
+    native_idx = native["idx"]
+
+    fresh_bioproject = unique_accession("PRJEB")
+    monkeypatch.setattr(
+        _QUERY_STUDY,
+        lambda accession: (
+            ["study_accession", "secondary_study_accession", "study_title"],
+            [(fresh_bioproject, accession, f"title for {accession}")],
+        ),
+    )
+
+    batch_idx, items = await _drive_one_study(
+        batch_app, postgres_pool, admin_principal, ena_accession
+    )
+    batch_cleanup.append(batch_idx)
+
+    row = await postgres_pool.fetchrow(
+        "SELECT state, failure_reason, study_idx FROM qiita.ena_import_batch_item WHERE idx = $1",
+        items[0].idx,
+    )
+    assert row["state"] == BatchItemState.FAILED.value
+    assert "not created by an ENA import" in row["failure_reason"]
+    assert (
+        await postgres_pool.fetchval(
+            "SELECT count(*) FROM qiita.prep_sample_to_study WHERE study_idx = $1", native_idx
+        )
+        == 0
+    )
+    assert (
+        await postgres_pool.fetchval(
+            "SELECT count(*) FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
+            DOWNLOAD_ENA_STUDY_ACTION_ID,
+            DOWNLOAD_ENA_STUDY_ACTION_VERSION,
+        )
+        == 0
+    )
+
+    await _cleanup_study(postgres_pool, ena_accession)
 
 
 async def test_import_allows_a_study_an_earlier_batch_created(
