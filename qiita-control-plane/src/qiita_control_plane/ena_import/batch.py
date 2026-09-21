@@ -73,9 +73,11 @@ _log = logging.getLogger(__name__)
 # Process-wide bound on concurrent resolve+register, shared by every in-flight
 # batch. Each permit holds at most one pool connection, so this must stay well
 # below db.get_pool's max_size or the batch driver alone can starve every other
-# caller of a connection. It also bounds the ENA request rate: miint's ENAClient
-# limits ~3 req/s per instance, and each read_ena/read_ena_attributes query makes
-# a fresh one, so N concurrent studies can reach ~3N req/s.
+# caller of a connection. It also bounds the ENA request rate: miint's docs
+# (https://the-miint.github.io/duckdb-miint/insdc_ena/) say only "rate-limited
+# to ~3 requests/second", with no stated scope -- duckdb-miint#276 asks miint to
+# document whether that cap is per ENAClient instance (today's per-query client
+# construction would then let N concurrent studies reach ~3N req/s) or global.
 _STUDY_CONCURRENCY = 4
 
 
