@@ -1887,7 +1887,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   now as a stated choice rather than a claim about retries — miint raises the same error
   for both causes ([duckdb-miint#274](https://github.com/the-miint/duckdb-miint/issues/274)),
   and #595 tracks revisiting it.
-- **The `miint-sequence-split`, `miint-host-filter-fns`, `miint-infer-trim`, and `miint-gpl-boundary` compute-readiness probes now fail under `python -O` / `PYTHONOPTIMIZE`, where they previously reported ok (#592).**
+- **The `miint-sequence-split`, `miint-host-filter-fns`, `miint-infer-trim`, and `miint-gpl-boundary` compute-readiness probes now report contract drift under `python -O` / `PYTHONOPTIMIZE`, where they previously reported ok (#592).**
   Each probe signaled the contract drift it exists to catch with a bare `assert`,
   which `python -O` (or `PYTHONOPTIMIZE` set anywhere in the SLURM job env) strips —
   the probe then exited 0 and printed nothing on exactly the drift it was checking
