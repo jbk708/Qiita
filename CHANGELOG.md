@@ -1866,11 +1866,10 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
-- **ENA import: a study findable only by its secondary accession (`ena_study_accession`) is now reused instead of silently missed, and a pair that resolves to a contradicting study now fails loud instead of reusing the wrong one (#590).**
+- **ENA import: a study findable only by its secondary accession (`ena_study_accession`) is now reused instead of failing with an opaque error, and a pair that resolves to a contradicting study now fails loud instead of reusing the wrong one (#590).**
   `get_or_create_study_by_ena_accessions` looked up an existing study by
-  `bioproject_accession` only. A study recorded with just an `ena_study_accession`
-  (e.g. one this fix's own reuse path leaves that way, or one created before either
-  accession was set) was invisible to that lookup: re-importing it hit the
+  `bioproject_accession` only. A study recorded with an `ena_study_accession` but no
+  `bioproject_accession` was invisible to that lookup: re-importing it hit the
   `ena_study_accession` unique constraint on create, then the same bioproject-only
   refetch missed again and raised an opaque `PostgresError`. The find-or-create now
   resolves an existing study by either accession, and raises a new
@@ -1878,8 +1877,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   studies, or contradicts the one study it does resolve to.
   **Behavior change on already-deployed data:** a study whose two recorded accessions
   contradict an incoming import's pair now fails that import item instead of silently
-  reusing the study — this was not audited against live data before merge, so review
-  whether any deployed study's accession pairing could collide with an in-flight import.
+  reusing the study.
 - **Reference load: a genome map is checked against the reference FASTA before anything is minted, so a map whose read_ids match no FASTA sequence fails and a partial match logs what went unmatched (#577).**
   `_associate_genomes` INNER-JOINed the genome map onto the manifest's `read_id`, silently
   dropping every map row whose `read_id` isn't a FASTA sequence ID. `mint-features` now

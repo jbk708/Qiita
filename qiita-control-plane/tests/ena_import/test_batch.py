@@ -218,9 +218,11 @@ async def download_ena_study_action(postgres_pool):
 
 
 async def _cleanup_study(postgres_pool, study_accession: str) -> None:
-    """Best-effort FK-reverse cleanup for one study this test created."""
+    """Best-effort FK-reverse cleanup for one study this test created,
+    looked up by either accession column."""
     study_idx = await postgres_pool.fetchval(
-        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1", study_accession
+        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1 OR ena_study_accession = $1",
+        study_accession,
     )
     if study_idx is None:
         return
@@ -1426,8 +1428,7 @@ async def test_import_refuses_a_study_no_import_created_matched_by_secondary_acc
 ):
     """Same guard as `test_import_refuses_a_study_no_import_created`, but the
     native study is matched via ena_study_accession (bioproject_accession
-    NULL) rather than bioproject_accession -- the case the lookup used to
-    miss."""
+    NULL) rather than bioproject_accession."""
     ena_accession = unique_accession("ERP")
     async with postgres_pool.acquire() as conn, conn.transaction():
         native = await create_study(
@@ -1474,9 +1475,7 @@ async def test_import_refuses_a_study_no_import_created_matched_by_secondary_acc
         == 0
     )
 
-    # _cleanup_study keys on bioproject_accession, NULL here, so it would no-op.
-    await postgres_pool.execute("DELETE FROM qiita.study_access WHERE study_idx = $1", native_idx)
-    await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", native_idx)
+    await _cleanup_study(postgres_pool, ena_accession)
 
 
 async def test_import_allows_a_study_an_earlier_batch_created(

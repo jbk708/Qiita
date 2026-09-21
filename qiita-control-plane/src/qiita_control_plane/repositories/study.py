@@ -309,8 +309,9 @@ async def create_study(
 
 class EnaStudyAccessionConflictError(Exception):
     """Raised when an incoming (bioproject_accession, ena_study_accession)
-    pair does not resolve to exactly one qiita.study row without
-    contradicting it.
+    pair resolves to two different qiita.study rows, or to one row whose
+    own recorded accession disagrees with it. A pair matching zero studies
+    is a miss, not an error -- the caller creates.
     """
 
     def __init__(
@@ -354,6 +355,9 @@ async def get_or_create_study_by_ena_accessions(
     it does not itself decide which resolved ENA field maps to which
     column.
 
+    A blank ena_study_accession is absence, stored as NULL rather than
+    occupying the unique column.
+
     Resolves an existing study by either accession before create, raising
     EnaStudyAccessionConflictError on an ambiguous or contradicting pair. On a
     miss, attempts create_study inside `async with conn.transaction():`
@@ -372,6 +376,7 @@ async def get_or_create_study_by_ena_accessions(
     Returns (row, created): row is the same RETURNING/fetch_study column
     shape either way; created is True only on the insert branch.
     """
+    ena_study_accession = (ena_study_accession or "").strip() or None
     existing_row = await _resolve_study_by_ena_accessions(
         conn,
         bioproject_accession=bioproject_accession,
@@ -419,8 +424,9 @@ async def _resolve_study_by_ena_accessions(
 
     Backs both the pre-check and the post-collision refetch in
     get_or_create_study_by_ena_accessions -- one call for both, so they
-    can't drift -- and raises EnaStudyAccessionConflictError when the
-    pair contradicts itself or the row it resolves to.
+    can't drift -- and raises EnaStudyAccessionConflictError when the two
+    accessions resolve to different studies, or when the one study either
+    accession resolves to has a recorded accession that disagrees with it.
     """
     by_bioproject_idxs = await fetch_study_idxs_by_accession(
         conn, values=[bioproject_accession], accession_field="bioproject_accession"
