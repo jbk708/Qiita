@@ -25,6 +25,7 @@ from .deps import get_db_pool
 from .dispatch import (
     build_compute_backend_client,
     build_dispatch_semaphore,
+    dispatch_semaphore,
     drain_running_dispatches,
     reconcile_inflight_tickets,
 )
@@ -84,6 +85,11 @@ async def lifespan(app: FastAPI):
     )
     app.state.running_dispatches = set()
     app.state.dispatch_semaphore = build_dispatch_semaphore()
+    # Boot-time read: if the assignment above was removed or reordered, fail
+    # here — before reconcile dispatches anything — rather than post-commit at
+    # the first route, or in the fan-out pump where a raise strands a released
+    # ticket that no later pump counts.
+    dispatch_semaphore(app)
     # Re-attach any tickets left in non-terminal state by a previous CP
     # process — they have no live owner. Resumed in-place (re-attach to a
     # live SLURM job, finalize one that finished while we were down, or fail

@@ -1,8 +1,12 @@
 """DB-bound guard for dispatch's process-wide concurrency cap.
 
-The sizing guard (`_DISPATCH_CONCURRENCY` vs the production pool) is pure and
-lives in test_dispatch.py; this one needs a real pool, because what it proves
-is pool behaviour while a dispatch burst is mid-run.
+The sizing guards (`_DISPATCH_CONCURRENCY` vs the production pool, and vs the
+fan-out default) are pure and live in test_dispatch.py. This one needs a real
+pool: it drives `schedule_dispatch` itself through a burst and shows a request
+can still take a connection while the cap's worth of dispatches hold theirs.
+The fakes are deliberately harsher than reality — each holds one connection
+for its whole run, where a real dispatch acquires per call — so a pass here
+covers the real shape too.
 """
 
 from __future__ import annotations
@@ -35,7 +39,6 @@ async def test_request_acquires_a_connection_while_many_tickets_dispatch(postgre
     # Sized from the constant rather than the shared fixture pool: that pool's
     # max_size sits below the production-shaped bound this exercises, so the
     # spare connection the assertion needs must be headroom over `bound`.
-    pool = await asyncpg.create_pool(postgres_url, min_size=1, max_size=bound + 2, timeout=5)
     holders = 0
     max_holders = 0
     all_slots_held = asyncio.Event()
@@ -60,8 +63,13 @@ async def test_request_acquires_a_connection_while_many_tickets_dispatch(postgre
         )
     )
 
-    tasks = [schedule_dispatch(app, work_ticket_idx=idx) for idx in range(1, bound + 5)]
+    pool: asyncpg.Pool | None = None
+    tasks: list[asyncio.Task] = []
     try:
+        # Inside the try: a raise while creating or scheduling must still close
+        # the pool below, or the session leaks `bound + 2` connections.
+        pool = await asyncpg.create_pool(postgres_url, min_size=1, max_size=bound + 2, timeout=5)
+        tasks = [schedule_dispatch(app, work_ticket_idx=idx) for idx in range(1, bound + 5)]
         # Hang guard only -- the assertions below are what prove the cap.
         await asyncio.wait_for(all_slots_held.wait(), timeout=10)
         assert max_holders == bound
@@ -86,4 +94,5 @@ async def test_request_acquires_a_connection_while_many_tickets_dispatch(postgre
         # test.
         release.set()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await pool.close()
+        if pool is not None:
+            await pool.close()

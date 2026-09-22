@@ -1870,12 +1870,12 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   `_STUDY_CONCURRENCY` releases its permit at submit, but the fire-and-forget
   `schedule_dispatch` that submit starts keeps running, and acquiring connections, for
   as long as the workflow does; `fanout_max_inflight` only caps fan-out cohorts, and an
-  ENA `download-ena-study` ticket is not one — the unbounded path #593's review raised.
-  Dispatch now runs under its own semaphore, `_DISPATCH_CONCURRENCY` (8, sized against
-  `PRODUCTION_POOL_MAX_SIZE` the way `_STUDY_CONCURRENCY` is). A task holds its slot
-  for its whole workflow, an hours-long download poll included, so this also caps
-  in-flight workflows process-wide: tickets past the limit dispatch when a slot frees
-  instead of all at once.
+  ENA `download-ena-study` ticket is not one. Dispatch now runs under its own
+  semaphore, `_DISPATCH_CONCURRENCY` (8, sized against `PRODUCTION_POOL_MAX_SIZE` the
+  way `_STUDY_CONCURRENCY` is). A task holds its slot for its whole workflow, an
+  hours-long download poll included, so this also caps in-flight workflows
+  process-wide: tickets past the limit dispatch when a slot frees instead of all at
+  once, and log the wait at INFO while they queue.
 - **Feature table: a de novo genome's pooled breadth of coverage counts other prep_samples' reads on contigs they also assembled, and both scopes call miint's coverage macros (#586).**
   With a de novo arm, pooled coverage joined the contig→genome map on the prep_sample as
   well as the contig, so a de novo genome saw only the reads of the prep_sample that
