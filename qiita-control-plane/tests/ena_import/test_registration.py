@@ -54,6 +54,7 @@ def _run(
     sample_alias: str | None = None,
     library_strategy: str | None = "WGS",
     library_source: str | None = "GENOMIC",
+    library_selection: str | None = None,
     instrument_platform: str | None = "ILLUMINA",
 ) -> EnaRunRecord:
     return EnaRunRecord(
@@ -65,8 +66,26 @@ def _run(
         library_layout=library_layout,
         library_strategy=library_strategy,
         library_source=library_source,
+        library_selection=library_selection,
         instrument_platform=instrument_platform,
     )
+
+
+async def _library_metadata_by_run(pool, run_accessions: list[str]) -> dict[str, dict[str, str]]:
+    """Study-local (non-global) prep_sample metadata keyed by run accession,
+    then by display name, for the given runs."""
+    rows = await pool.fetch(
+        "SELECT ss.ena_run_accession, psf.display_name, pm.value_text"
+        " FROM qiita.prep_sample_metadata pm"
+        " JOIN qiita.prep_sample_study_field psf ON psf.idx = pm.prep_sample_study_field_idx"
+        " JOIN qiita.sequenced_sample ss ON ss.prep_sample_idx = pm.prep_sample_idx"
+        " WHERE ss.ena_run_accession = ANY($1::text[]) AND pm.global_field_idx IS NULL",
+        run_accessions,
+    )
+    by_run: dict[str, dict[str, str]] = {}
+    for row in rows:
+        by_run.setdefault(row["ena_run_accession"], {})[row["display_name"]] = row["value_text"]
+    return by_run
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +109,15 @@ async def _cleanup(pool, tracker: _Tracker) -> None:
             study_idxs,
         )
         ps_idxs = [r["prep_sample_idx"] for r in ps_rows]
+        # prep_sample_metadata RESTRICTs its prep_sample and study field, so
+        # sweep both before prep_sample / prep_sample_study_field / study below.
         if ps_idxs:
             await pool.execute(
                 "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])",
+                ps_idxs,
+            )
+            await pool.execute(
+                "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
                 ps_idxs,
             )
         await pool.execute(
@@ -103,6 +128,10 @@ async def _cleanup(pool, tracker: _Tracker) -> None:
             await pool.execute(
                 "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
             )
+        await pool.execute(
+            "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = ANY($1::bigint[])",
+            study_idxs,
+        )
 
         bs_rows = await pool.fetch(
             "SELECT DISTINCT biosample_idx FROM qiita.biosample_to_study"
@@ -913,6 +942,91 @@ async def test_paired_and_single_layout_runs_each_get_one_sequenced_sample(reg):
     ]
     assert len(prep_sample_idxs) == 2
     assert all(idx >= 25000 for idx in prep_sample_idxs)
+
+
+async def test_library_fields_land_as_study_local_prep_sample_metadata(reg):
+    """All four ENA library_* fields persist verbatim on each run's prep_sample as
+    study-local TEXT; a field ENA left unset writes no row, and a re-import mints
+    neither a duplicate value nor a duplicate field."""
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    full_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+        library_layout="PAIRED",
+        # Stored exactly as deposited -- the protocol mapper uppercases internally,
+        # the metadata slot must not.
+        library_strategy="RNA-Seq",
+        library_source="TRANSCRIPTOMIC",
+        library_selection="cDNA",
+    )
+    # Default shape: library_selection is None, as ENA leaves it on many deposits.
+    sparse_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+
+    result = await _register(reg, study_header=header, ena_runs=[full_run, sparse_run])
+    assert {o.status for o in result.ena_runs} == {EnaRunRegistrationStatus.REGISTERED}
+
+    run_accessions = [full_run.run_accession, sparse_run.run_accession]
+    assert await _library_metadata_by_run(reg["pool"], run_accessions) == {
+        full_run.run_accession: {
+            "Library strategy": "RNA-Seq",
+            "Library source": "TRANSCRIPTOMIC",
+            "Library selection": "cDNA",
+            "Library layout": "PAIRED",
+        },
+        sparse_run.run_accession: {
+            "Library strategy": "WGS",
+            "Library source": "GENOMIC",
+            # No "Library selection" row: ENA deposited no value.
+            "Library layout": "SINGLE",
+        },
+    }
+
+    # One field row per display name for the whole study, purely local -- runs
+    # share the field, and none is linked to a prep_sample_global_field.
+    field_rows = await reg["pool"].fetch(
+        "SELECT display_name, prep_sample_global_field_idx"
+        " FROM qiita.prep_sample_study_field WHERE study_idx = $1",
+        result.study_idx,
+    )
+    assert {r["display_name"] for r in field_rows} == {
+        "Library strategy",
+        "Library source",
+        "Library selection",
+        "Library layout",
+    }
+    assert all(r["prep_sample_global_field_idx"] is None for r in field_rows)
+
+    # Re-import skips the runs, so it writes no second value and mints no field.
+    reimport = await _register(reg, study_header=header, ena_runs=[full_run, sparse_run])
+    assert {o.status for o in reimport.ena_runs} == {
+        EnaRunRegistrationStatus.SKIPPED_ALREADY_PRESENT
+    }
+    assert await _library_metadata_by_run(reg["pool"], run_accessions) == {
+        full_run.run_accession: {
+            "Library strategy": "RNA-Seq",
+            "Library source": "TRANSCRIPTOMIC",
+            "Library selection": "cDNA",
+            "Library layout": "PAIRED",
+        },
+        sparse_run.run_accession: {
+            "Library strategy": "WGS",
+            "Library source": "GENOMIC",
+            "Library layout": "SINGLE",
+        },
+    }
+    field_count = await reg["pool"].fetchval(
+        "SELECT count(*) FROM qiita.prep_sample_study_field WHERE study_idx = $1",
+        result.study_idx,
+    )
+    assert field_count == 4
 
 
 # ---------------------------------------------------------------------------

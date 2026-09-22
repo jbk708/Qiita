@@ -17,8 +17,9 @@ Order of operations:
      the biosample by ENA sample accession (cross-study de-dup; only the import
      writes metadata) and link it to the study. Skip if a sequenced_sample
      already carries this run's `ena_run_accession` (idempotent re-import), else
-     map library_strategy/library_source to a curated prep_protocol name and
-     import via `import_sequenced_prep_sample`.
+     map library_strategy/library_source to a curated prep_protocol name, import
+     via `import_sequenced_prep_sample`, and preserve all four ENA `library_*`
+     fields verbatim as study-local prep_sample metadata (`_library_metadata`).
 
 A per-run failure, harmonization included, is caught and reported on its
 `EnaRunRegistrationOutcome`. No read bytes or batch fan-out here -- those live
@@ -32,7 +33,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 import asyncpg
-from qiita_common.models import Platform, WorkTicketState
+from qiita_common.models import FieldDataType, Platform, WorkTicketState
 from qiita_common.models.ena import (
     EnaRunRecord,
     EnaSampleAttributes,
@@ -42,6 +43,7 @@ from qiita_common.models.ena import (
 from qiita_control_plane.repositories._sample_helpers import (
     fetch_metadata_checklist_idx_by_name,
     insert_entity_to_study,
+    write_local_metadata_or_diagnose,
 )
 from qiita_control_plane.repositories.biosample import (
     resolve_or_import_biosample_by_ena_accession,
@@ -51,6 +53,7 @@ from qiita_control_plane.repositories.ena_import_batch import (
     fetch_sequenced_pool_download_states,
 )
 from qiita_control_plane.repositories.prep_protocol import fetch_prep_protocol_idx_by_name
+from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_METADATA_SPEC
 from qiita_control_plane.repositories.sequenced_sample import (
     fetch_sequenced_sample_idxs_by_ena_run_accession,
     import_sequenced_prep_sample,
@@ -295,6 +298,23 @@ async def _resolve_platform_pools(
         return pools, target_pool_idx
 
 
+def _library_metadata(ena_run: EnaRunRecord) -> dict[str, str]:
+    """The run's four ENA `library_*` fields verbatim, keyed by study-local
+    display name. A field ENA left blank yields no entry: this slot records
+    what ENA deposited, and silence says it deposited nothing."""
+    deposited = {
+        "Library strategy": ena_run.library_strategy,
+        "Library source": ena_run.library_source,
+        "Library selection": ena_run.library_selection,
+        "Library layout": ena_run.library_layout,
+    }
+    return {
+        display_name: value.strip()
+        for display_name, value in deposited.items()
+        if value is not None and value.strip()
+    }
+
+
 async def _register_one_ena_run(
     conn: asyncpg.Connection,
     *,
@@ -389,6 +409,20 @@ async def _register_one_ena_run(
                 ena_experiment_accession=ena_run.experiment_accession,
                 ena_run_accession=ena_run.run_accession,
             )
+            # After the composer, whose study-link inserts arm the
+            # reject_if_link_retired trigger this metadata insert fires.
+            # Study-local, not the global slot: this is submitter free text.
+            for display_name, value in _library_metadata(ena_run).items():
+                await write_local_metadata_or_diagnose(
+                    conn,
+                    spec=PREP_SAMPLE_METADATA_SPEC,
+                    entity_idx=result.prep_sample_idx,
+                    study_idx=study_idx,
+                    display_name=display_name,
+                    data_type=FieldDataType.TEXT,
+                    value=value,
+                    caller_idx=caller_idx,
+                )
             return EnaRunRegistrationOutcome(
                 run_accession=ena_run.run_accession,
                 status=EnaRunRegistrationStatus.REGISTERED,

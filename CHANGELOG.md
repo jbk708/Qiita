@@ -21,6 +21,14 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Added
 
+- **ENA import preserves every deposited `library_*` field as prep_sample metadata
+  (#570).** `register_ena_study` now writes `library_strategy`, `library_source`,
+  `library_selection`, and `library_layout` verbatim onto each run's prep_sample as
+  study-local TEXT fields (get-or-create per study), so what ENA deposited survives
+  independently of the `prep_protocol` mapping, which consumes only strategy/source
+  and is slated for replacement. A field ENA left blank writes no row — the slot
+  records what ENA deposited, not a substitute.
+
 - **Deploy proves outbound HTTPS to the ENA archives, so a blocked host fails the deploy
   instead of every import (#584).** `deploy/verify.sh` gains an `ena-reachability` check
   (hatch `SKIP_ENA_REACHABILITY`, which covers that row only) that HEADs `www.ebi.ac.uk` as
