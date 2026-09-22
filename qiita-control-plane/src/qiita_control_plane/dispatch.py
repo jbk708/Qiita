@@ -44,6 +44,20 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+# Process-wide bound on concurrently-running dispatch tasks, shared by every
+# dispatch path (route submit, ENA batch submit, startup reconcile). Each
+# running task acquires pool connections per call only (runner._base), but each
+# is a concurrent acquirer — the count is what must stay well below
+# db.get_pool's max_size, sized the way ena_import._STUDY_CONCURRENCY is (the
+# guard test pins the ratio). What a slot covers, and the workflow cap that
+# follows from it, is documented on `schedule_dispatch`.
+_DISPATCH_CONCURRENCY = 8
+
+
+def build_dispatch_semaphore() -> asyncio.Semaphore:
+    """The process-wide cap `schedule_dispatch` binds every dispatch task to."""
+    return asyncio.Semaphore(_DISPATCH_CONCURRENCY)
+
 
 async def _run_and_log(app: FastAPI, work_ticket_idx: int, *, resume: bool = False) -> None:
     """Inner task body: call `run_workflow` and log task-level errors.
@@ -155,6 +169,16 @@ def schedule_dispatch(app: FastAPI, work_ticket_idx: int, *, resume: bool = Fals
     `app.state.running_dispatches` so the GC can't drop it mid-run, and removed
     by a done-callback when complete.
 
+    The task body runs under `app.state.dispatch_semaphore`, the process-wide
+    cap of `_DISPATCH_CONCURRENCY` concurrently-running dispatches: what keeps
+    a burst of submits from pressuring the connection pool through dispatch
+    alone, after `_STUDY_CONCURRENCY`'s permit has already been released at
+    submit. A task holds its slot for its whole workflow, an hours-long
+    download poll included, so this also caps in-flight workflows
+    process-wide, and tasks past the cap start when a slot frees. The
+    semaphore is read before the task exists, so a lifespan that never wired
+    it raises here instead of orphaning a task.
+
     Pre-conditions enforced by the caller, not here:
       * Without `resume`, the ticket must be PENDING. The runner enforces this
         via its own atomic transition; if it's not PENDING, the runner raises
@@ -171,8 +195,14 @@ def schedule_dispatch(app: FastAPI, work_ticket_idx: int, *, resume: bool = Fals
             " set COMPUTE_ORCHESTRATOR_URL or block this route at the dependency layer"
         )
 
+    semaphore = app.state.dispatch_semaphore
+
+    async def _bounded_run() -> None:
+        async with semaphore:
+            await _run_and_log(app, work_ticket_idx, resume=resume)
+
     task = asyncio.create_task(
-        _run_and_log(app, work_ticket_idx, resume=resume),
+        _bounded_run(),
         name=f"dispatch_ticket_{work_ticket_idx}",
     )
     app.state.running_dispatches.add(task)

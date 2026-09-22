@@ -24,6 +24,7 @@ from .db import PRODUCTION_POOL_MAX_SIZE, close_pool, get_pool
 from .deps import get_db_pool
 from .dispatch import (
     build_compute_backend_client,
+    build_dispatch_semaphore,
     drain_running_dispatches,
     reconcile_inflight_tickets,
 )
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
         token_path=settings.cp_to_co_token_path,
     )
     app.state.running_dispatches = set()
+    app.state.dispatch_semaphore = build_dispatch_semaphore()
     # Re-attach any tickets left in non-terminal state by a previous CP
     # process — they have no live owner. Resumed in-place (re-attach to a
     # live SLURM job, finalize one that finished while we were down, or fail

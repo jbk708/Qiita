@@ -15,8 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from qiita_control_plane.db import PRODUCTION_POOL_MAX_SIZE
 from qiita_control_plane.dispatch import (
+    _DISPATCH_CONCURRENCY,
     build_compute_backend_client,
+    build_dispatch_semaphore,
     drain_running_dispatches,
     schedule_dispatch,
 )
@@ -35,12 +38,13 @@ def _async_return(value):
 def _fake_app(*, compute_backend_client=object(), pool=object()) -> SimpleNamespace:
     """Build the minimum app.state surface schedule_dispatch reads. The
     dispatcher only touches `app.state.compute_backend_client`,
-    `app.state.running_dispatches`, `app.state.pool`, and
-    `app.state.settings`. Real values are not exercised — `_run_and_log`
-    is monkeypatched in each test."""
+    `app.state.running_dispatches`, `app.state.dispatch_semaphore`,
+    `app.state.pool`, and `app.state.settings`. Real values are not exercised
+    — `_run_and_log` is monkeypatched in each test."""
     state = SimpleNamespace(
         compute_backend_client=compute_backend_client,
         running_dispatches=set(),
+        dispatch_semaphore=build_dispatch_semaphore(),
         pool=pool,
         settings=SimpleNamespace(
             flight_signing_key=b"x" * 32,
@@ -65,6 +69,22 @@ def test_schedule_dispatch_raises_when_client_unconfigured():
     app = _fake_app(compute_backend_client=None)
     with pytest.raises(RuntimeError, match="compute_backend_client is not configured"):
         schedule_dispatch(app, work_ticket_idx=42)
+
+
+def test_schedule_dispatch_reads_the_semaphore_before_creating_a_task():
+    """Unwired lifespan state must fail here, not orphan a background task."""
+    app = SimpleNamespace(
+        state=SimpleNamespace(compute_backend_client=object(), running_dispatches=set())
+    )
+    with pytest.raises(AttributeError):
+        schedule_dispatch(app, work_ticket_idx=1)
+    assert app.state.running_dispatches == set()
+
+
+def test_dispatch_concurrency_stays_well_below_pool_max_size():
+    """Well below means at most half of `PRODUCTION_POOL_MAX_SIZE`, the same
+    constant main.py's `get_pool` call actually builds the pool with."""
+    assert _DISPATCH_CONCURRENCY * 2 <= PRODUCTION_POOL_MAX_SIZE
 
 
 @pytest.mark.asyncio

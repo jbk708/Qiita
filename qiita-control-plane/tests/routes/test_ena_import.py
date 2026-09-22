@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from qiita_common.api_paths import URL_ENA_IMPORT_BATCH_BY_IDX, URL_ENA_IMPORT_BATCH_PREFIX
 from qiita_common.auth_constants import Scope, SystemRole
 
+from qiita_control_plane.dispatch import build_dispatch_semaphore
 from qiita_control_plane.ena_import import (
     DOWNLOAD_ENA_STUDY_ACTION_ID,
     DOWNLOAD_ENA_STUDY_ACTION_VERSION,
@@ -122,6 +123,7 @@ async def eib_client(postgres_pool, stub_compute_backend_client):
     app.state.running_dispatches = set()
     app.state.running_ena_import_batches = set()
     app.state.ena_import_study_semaphore = build_ena_import_study_semaphore()
+    app.state.dispatch_semaphore = build_dispatch_semaphore()
 
     created_principals: list[int] = []
     created_batches: list[int] = []

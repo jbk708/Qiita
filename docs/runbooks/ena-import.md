@@ -37,6 +37,12 @@ to clear the gate first.
    one. This is the ticket that actually pulls read bytes; registration itself never
    touches read data.
 
+That gate ends at submit. The background dispatch each submitted ticket starts runs
+past it under its own process-wide bound: a cap on how many dispatch tasks run at once
+(download workflows included), sized so a large import queues its downloads rather
+than pressuring the control plane's connection pool. A ticket past the cap dispatches
+as soon as a slot frees; nothing fails while it waits.
+
 ### Re-importing, and studies we created ourselves
 
 Re-importing an accession is the supported way to pick up runs a bioproject gained
