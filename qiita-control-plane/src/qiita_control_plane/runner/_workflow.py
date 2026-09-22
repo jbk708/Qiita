@@ -362,7 +362,10 @@ async def run_workflow(
         if _workflow_declares_input(action.steps, ENA_RUN_MAP_BINDING):
             bound.update(
                 await _stage_ena_run_roster(
-                    pool, scope_target["sequenced_pool_idx"], workspace=workspace
+                    pool,
+                    scope_target["sequenced_pool_idx"],
+                    sequencing_run_idx=scope_target["sequencing_run_idx"],
+                    workspace=workspace,
                 )
             )
 

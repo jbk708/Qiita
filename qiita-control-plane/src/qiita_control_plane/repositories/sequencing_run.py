@@ -61,6 +61,29 @@ class PayloadMismatch(Exception):
         self.supplied_value = supplied_value
 
 
+# pg_advisory_xact_lock(class, key) class for sequencing_run pool writes vs the
+# download-roster read; distinct from fanout_dispatch's.
+POOL_RESOLVE_LOCK_CLASS = 0x0E4A_0001
+_INT4_MASK = 0x7FFF_FFFF
+
+
+async def lock_sequencing_run(conn: asyncpg.Connection, *, sequencing_run_idx: int) -> None:
+    """Take the sequencing_run pool-write advisory lock (held to transaction commit).
+
+    Both sides of the download-roster race take this key:
+    `ena_import.registration` holds it from pool resolution until its runs
+    commit, and `runner._read_ingest._stage_ena_run_roster` holds it across the
+    roster read it does once at dispatch. Either a registration sees a covering
+    download ticket and keeps its runs out of that pool, or the roster read
+    waits for the registration's runs to commit: a run can no longer land in a
+    pool whose ticket has already read the roster."""
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock($1, $2)",
+        POOL_RESOLVE_LOCK_CLASS,
+        sequencing_run_idx & _INT4_MASK,
+    )
+
+
 async def insert_sequencing_run(
     conn: asyncpg.Connection,
     *,

@@ -13,12 +13,17 @@ Order of operations:
      (`instrument_run_id = "{study_accession}:{platform}"`) and pick the pool new
      runs go into (see `_resolve_platform_pools`).
 
-  3. Per ENA run, in its own transaction (per-run atomicity): resolve or import
-     the biosample by ENA sample accession (cross-study de-dup; only the import
-     writes metadata) and link it to the study. Skip if a sequenced_sample
-     already carries this run's `ena_run_accession` (idempotent re-import), else
-     map library_strategy/library_source to a curated prep_protocol name and
-     import via `import_sequenced_prep_sample`.
+  3. Per ENA run, in its own savepoint inside the registration transaction
+     (per-run atomicity: a partial failure rolls back only this run): resolve
+     or import the biosample by ENA sample accession (cross-study de-dup; only
+     the import writes metadata) and link it to the study. Skip if a
+     sequenced_sample already carries this run's `ena_run_accession`
+     (idempotent re-import), else map library_strategy/library_source to a
+     curated prep_protocol name and import via `import_sequenced_prep_sample`.
+
+Steps 2-3 share one transaction so the advisory lock taken in step 2 is held
+until the runs commit; see `repositories.sequencing_run.lock_sequencing_run`
+for why the download-roster read needs that window closed.
 
 A per-run failure, harmonization included, is caught and reported on its
 `EnaRunRegistrationOutcome`. No read bytes or batch fan-out here -- those live
@@ -58,6 +63,7 @@ from qiita_control_plane.repositories.sequenced_sample import (
 from qiita_control_plane.repositories.sequencing_run import (
     insert_sequenced_pool,
     insert_sequencing_run,
+    lock_sequencing_run,
 )
 
 from .harmonization import HarmonizationResult, build_biosample_metadata
@@ -101,10 +107,6 @@ class EnaRunRegistrationOutcome:
     failure_reason: str | None = None
     harmonization: HarmonizationResult | None = None
 
-
-# pg_advisory_xact_lock(class, key) class; distinct from fanout_dispatch's.
-_POOL_RESOLVE_LOCK_CLASS = 0x0E4A_0001
-_INT4_MASK = 0x7FFF_FFFF
 
 # A pool whose latest download ticket ended in one of these is downloaded
 # afresh: a new ticket re-reads its roster, so it may still take new runs.
@@ -204,32 +206,38 @@ async def register_ena_study(
                 continue
             ena_runs_by_platform[platform].append(ena_run)
 
-        target_pool_idx_by_platform: dict[Platform, int | None] = {}
-        created_pools: list[CreatedPool] = []
-        for platform, platform_runs in ena_runs_by_platform.items():
-            platform_pools, target_pool_idx = await _resolve_platform_pools(
-                conn,
-                study_accession=study_header.study_accession,
-                platform=platform,
-                created_by_idx=caller_idx,
-                needs_pool=any(r.run_accession not in already_present for r in platform_runs),
-            )
-            target_pool_idx_by_platform[platform] = target_pool_idx
-            created_pools.extend(platform_pools)
-
-        for platform, platform_runs in ena_runs_by_platform.items():
-            for ena_run in platform_runs:
-                outcomes_by_accession[ena_run.run_accession] = await _register_one_ena_run(
+        # One transaction spans pool resolution and every run insert so the
+        # sequencing_run lock `_resolve_platform_pools` takes is held until the
+        # runs commit; sorted platform order keeps concurrent registrations
+        # acquiring those locks in the same order. Per-run work below nests as
+        # savepoints, so per-run rollback is preserved.
+        async with conn.transaction():
+            target_pool_idx_by_platform: dict[Platform, int | None] = {}
+            created_pools: list[CreatedPool] = []
+            for platform, platform_runs in sorted(ena_runs_by_platform.items()):
+                platform_pools, target_pool_idx = await _resolve_platform_pools(
                     conn,
-                    ena_run=ena_run,
-                    study_idx=study_idx,
+                    study_accession=study_header.study_accession,
                     platform=platform,
-                    sequenced_pool_idx=target_pool_idx_by_platform[platform],
-                    owner_idx=owner_idx,
-                    caller_idx=caller_idx,
-                    metadata_checklist_idx=metadata_checklist_idx,
-                    attrs_by_sample_accession=attrs_by_sample_accession,
+                    created_by_idx=caller_idx,
+                    needs_pool=any(r.run_accession not in already_present for r in platform_runs),
                 )
+                target_pool_idx_by_platform[platform] = target_pool_idx
+                created_pools.extend(platform_pools)
+
+            for platform, platform_runs in ena_runs_by_platform.items():
+                for ena_run in platform_runs:
+                    outcomes_by_accession[ena_run.run_accession] = await _register_one_ena_run(
+                        conn,
+                        ena_run=ena_run,
+                        study_idx=study_idx,
+                        platform=platform,
+                        sequenced_pool_idx=target_pool_idx_by_platform[platform],
+                        owner_idx=owner_idx,
+                        caller_idx=caller_idx,
+                        metadata_checklist_idx=metadata_checklist_idx,
+                        attrs_by_sample_accession=attrs_by_sample_accession,
+                    )
 
     # Return per-run outcomes in the caller's input order.
     outcomes = [outcomes_by_accession[ena_run.run_accession] for ena_run in ena_runs]
@@ -253,46 +261,44 @@ async def _resolve_platform_pools(
     on it, plus the pool new runs go into: the newest one no download ticket
     covers, else a new pool when `needs_pool`, else None.
 
-    Holds an advisory key on the sequencing_run idx until commit, so a
-    concurrent batch for the same (study, platform) reuses the pool rather than
-    minting a second: the no-preflight insert has no constraint to arbitrate
-    (see `insert_sequenced_pool`)."""
-    async with conn.transaction():
-        sequencing_run_idx, _ = await insert_sequencing_run(
+    Takes the sequencing_run advisory key (`lock_sequencing_run`) and returns
+    still holding it: the caller commits only after inserting its runs, so
+    selection-through-insertion is one critical section against the roster
+    read. That same lock also makes a concurrent batch for the same
+    (study, platform) reuse the pool rather than mint a second, since the
+    no-preflight insert has no constraint to arbitrate (see
+    `insert_sequenced_pool`)."""
+    sequencing_run_idx, _ = await insert_sequencing_run(
+        conn,
+        instrument_run_id=f"{study_accession}:{platform.value}",
+        platform=platform,
+        created_by_idx=created_by_idx,
+    )
+    await lock_sequencing_run(conn, sequencing_run_idx=sequencing_run_idx)
+    states = await fetch_download_pool_states(conn, sequencing_run_idx)
+    pool_idxs = [s["sequenced_pool_idx"] for s in states]
+    open_pool_idxs = [
+        s["sequenced_pool_idx"]
+        for s in states
+        if not download_ticket_covers_pool(s["work_ticket_state"])
+    ]
+    target_pool_idx = open_pool_idxs[-1] if open_pool_idxs else None
+    if target_pool_idx is None and needs_pool:
+        target_pool_idx, _ = await insert_sequenced_pool(
             conn,
-            instrument_run_id=f"{study_accession}:{platform.value}",
-            platform=platform,
+            sequencing_run_idx=sequencing_run_idx,
             created_by_idx=created_by_idx,
         )
-        await conn.execute(
-            "SELECT pg_advisory_xact_lock($1, $2)",
-            _POOL_RESOLVE_LOCK_CLASS,
-            sequencing_run_idx & _INT4_MASK,
+        pool_idxs.append(target_pool_idx)
+    pools = [
+        CreatedPool(
+            platform=platform.value,
+            sequenced_pool_idx=idx,
+            sequencing_run_idx=sequencing_run_idx,
         )
-        states = await fetch_download_pool_states(conn, sequencing_run_idx)
-        pool_idxs = [s["sequenced_pool_idx"] for s in states]
-        open_pool_idxs = [
-            s["sequenced_pool_idx"]
-            for s in states
-            if not download_ticket_covers_pool(s["work_ticket_state"])
-        ]
-        target_pool_idx = open_pool_idxs[-1] if open_pool_idxs else None
-        if target_pool_idx is None and needs_pool:
-            target_pool_idx, _ = await insert_sequenced_pool(
-                conn,
-                sequencing_run_idx=sequencing_run_idx,
-                created_by_idx=created_by_idx,
-            )
-            pool_idxs.append(target_pool_idx)
-        pools = [
-            CreatedPool(
-                platform=platform.value,
-                sequenced_pool_idx=idx,
-                sequencing_run_idx=sequencing_run_idx,
-            )
-            for idx in pool_idxs
-        ]
-        return pools, target_pool_idx
+        for idx in pool_idxs
+    ]
+    return pools, target_pool_idx
 
 
 async def _register_one_ena_run(
@@ -307,8 +313,9 @@ async def _register_one_ena_run(
     metadata_checklist_idx: int,
     attrs_by_sample_accession: dict[str, EnaSampleAttributes],
 ) -> EnaRunRegistrationOutcome:
-    """Register one ENA run inside its own transaction (per-run atomicity: a
-    partial failure rolls back only this run). Never raises: every failure mode
+    """Register one ENA run in its own savepoint within the registration
+    transaction (per-run atomicity: a partial failure rolls back only this
+    run). Never raises: every failure mode
     (platform/protocol-mapping, harmonization, composer/DB) is folded into a
     `failed` outcome. A harmonization gap is not a failure mode -- only a genuine
     parse/collision failure inside the biosample import raises, caught

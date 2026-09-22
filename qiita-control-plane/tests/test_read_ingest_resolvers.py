@@ -75,15 +75,40 @@ def test_resolve_sample_map_rejects_empty_roster(tmp_path):
 # --- ENA run roster (_stage_ena_run_roster) ---------------------------------
 
 
+class _NoopAsyncCtx:
+    """Async context manager yielding its value; lets the fake pool stand in
+    for `acquire()` / `transaction()` without a DB."""
+
+    def __init__(self, value):
+        self._value = value
+
+    async def __aenter__(self):
+        return self._value
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
 class _FakeRosterPool:
     """Minimal asyncpg.Pool stand-in: `.fetch()` returns canned
     (prep_sample_idx, ena_run_accession) rows regardless of the query text —
     the resolver's own SQL shape is exercised by
     repositories/tests/test_sequenced_sample.py; this fake only needs to hand
-    back rows in a stable, asserted order."""
+    back rows in a stable, asserted order. `acquire`/`transaction` hand back
+    no-op context managers and `execute` swallows the advisory-lock statement,
+    so the resolver's lock wrapper runs without a DB."""
 
     def __init__(self, rows: list[tuple[int, str | None]]):
         self._rows = [{"prep_sample_idx": p, "ena_run_accession": a} for p, a in rows]
+
+    def acquire(self):
+        return _NoopAsyncCtx(self)
+
+    def transaction(self):
+        return _NoopAsyncCtx(self)
+
+    async def execute(self, *_args, **_kwargs):
+        return "SET"
 
     async def fetch(self, *_args, **_kwargs):
         return self._rows
@@ -94,7 +119,9 @@ def test_stage_ena_run_roster_writes_ordered_parquet(tmp_path):
     to `ena_run_map.parquet`, ordered by prep_sample_idx (the repo fetch's own
     ORDER BY — this asserts the resolver preserves it verbatim)."""
     pool = _FakeRosterPool([(82, "ERR002"), (81, "ERR001")])
-    bound = asyncio.run(_stage_ena_run_roster(pool, 5, workspace=tmp_path / "ws"))
+    bound = asyncio.run(
+        _stage_ena_run_roster(pool, 5, sequencing_run_idx=5, workspace=tmp_path / "ws")
+    )
     out = bound[ENA_RUN_MAP_BINDING]
     assert out.exists()
     with duckdb.connect(":memory:") as conn:
@@ -110,7 +137,7 @@ def test_stage_ena_run_roster_rejects_empty_pool(tmp_path):
     and this must never silently produce a 0-row ena_run_map."""
     pool = _FakeRosterPool([])
     with pytest.raises(BackendFailure) as exc:
-        asyncio.run(_stage_ena_run_roster(pool, 5, workspace=tmp_path / "ws"))
+        asyncio.run(_stage_ena_run_roster(pool, 5, sequencing_run_idx=5, workspace=tmp_path / "ws"))
     assert exc.value.kind == FailureKind.BAD_INPUT
     assert "no sequenced_samples" in exc.value.reason
 
@@ -121,7 +148,7 @@ def test_stage_ena_run_roster_rejects_missing_accession(tmp_path):
     dropping it from the roster."""
     pool = _FakeRosterPool([(81, "ERR001"), (82, None)])
     with pytest.raises(BackendFailure) as exc:
-        asyncio.run(_stage_ena_run_roster(pool, 5, workspace=tmp_path / "ws"))
+        asyncio.run(_stage_ena_run_roster(pool, 5, sequencing_run_idx=5, workspace=tmp_path / "ws"))
     assert exc.value.kind == FailureKind.BAD_INPUT
     assert "82" in exc.value.reason
 

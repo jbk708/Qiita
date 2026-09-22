@@ -3,9 +3,9 @@ Postgres: study upsert, cross-study biosample de-dup, one sequenced_sample per r
 mixed-platform grouping, provenance columns, idempotent re-import, and per-run failure
 isolation.
 
-`register_ena_study` commits its own writes (one transaction per run), so nothing can be
-wrapped in an outer rolled-back transaction; `_cleanup` below removes tracked rows
-FK-reverse.
+`register_ena_study` commits its own writes (one registration transaction, savepoint
+isolation per run), so nothing can be wrapped in an outer rolled-back transaction;
+`_cleanup` below removes tracked rows FK-reverse.
 """
 
 from decimal import Decimal
@@ -755,7 +755,10 @@ async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
     from qiita_common.models import Platform
 
     from qiita_control_plane.ena_import import registration
-    from qiita_control_plane.repositories.sequencing_run import insert_sequencing_run
+    from qiita_control_plane.repositories.sequencing_run import (
+        POOL_RESOLVE_LOCK_CLASS,
+        insert_sequencing_run,
+    )
 
     study_accession = unique_accession("PRJNA")
     reg["tracker"].study_accessions.append(study_accession)
@@ -810,7 +813,7 @@ async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
                 " JOIN pg_locks l ON l.pid = a.pid"
                 " WHERE a.wait_event_type = 'Lock' AND l.locktype = 'advisory'"
                 "   AND NOT l.granted AND l.classid = $1 AND l.objid = $2)",
-                registration._POOL_RESOLVE_LOCK_CLASS,
+                POOL_RESOLVE_LOCK_CLASS,
                 run_idx,
             ):
                 return
@@ -858,6 +861,102 @@ async def test_concurrent_registration_same_study_platform_mints_one_pool(reg):
         )
     }
     assert sample_pool_idxs == {pool_idx}
+
+
+async def test_roster_staging_waits_out_inflight_registration(reg, tmp_path):
+    """A download ticket's roster read must never observe a pool mid-registration.
+
+    A is held open after it resolves its pool (a gated `_register_one_ena_run`
+    pauses before the insert) while B, standing in for the runner's
+    `_stage_ena_run_roster` at dispatch, reads the roster. The test polls
+    pg_stat_activity/pg_locks until B is observed WAITING on A's advisory lock,
+    then releases A and asserts B's staged roster carries A's run. Without the
+    resolve-through-insert lock the staging read never waits and the poll times
+    out."""
+    import asyncio
+    from unittest.mock import patch
+
+    from qiita_common.models import Platform
+
+    from qiita_control_plane.ena_import import registration
+    from qiita_control_plane.repositories.sequencing_run import (
+        POOL_RESOLVE_LOCK_CLASS,
+        insert_sequenced_pool,
+        insert_sequencing_run,
+    )
+    from qiita_control_plane.runner import ENA_RUN_MAP_BINDING, _stage_ena_run_roster
+
+    study_accession = unique_accession("PRJNA")
+    reg["tracker"].study_accessions.append(study_accession)
+    header = _study_header(study_accession=study_accession)
+    run_1 = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMD"),
+        study_accession=study_accession,
+    )
+    # Precondition, committed before either task: the sequencing_run and the
+    # pool A resolves into, so B can address the pool while A is held open.
+    async with reg["pool"].acquire() as conn:
+        seq_run_idx, _ = await insert_sequencing_run(
+            conn,
+            instrument_run_id=f"{study_accession}:{Platform.ILLUMINA.value}",
+            platform=Platform.ILLUMINA,
+            created_by_idx=reg["caller_idx"],
+        )
+        pool_idx, _ = await insert_sequenced_pool(
+            conn, sequencing_run_idx=seq_run_idx, created_by_idx=reg["caller_idx"]
+        )
+
+    a_in_insert = asyncio.Event()
+    release_a = asyncio.Event()
+    orig_register_one = registration._register_one_ena_run
+
+    async def gated_register_one(conn, **kwargs):
+        a_in_insert.set()
+        await release_a.wait()
+        return await orig_register_one(conn, **kwargs)
+
+    async def staging_blocked_on_lock():
+        while await reg["pool"].fetchval(
+            "SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity a"
+            " JOIN pg_locks l ON l.pid = a.pid"
+            " WHERE a.wait_event_type = 'Lock' AND l.locktype = 'advisory'"
+            "   AND NOT l.granted AND l.classid = $1 AND l.objid = $2)",
+            POOL_RESOLVE_LOCK_CLASS,
+            seq_run_idx,
+        ):
+            await asyncio.sleep(0.01)
+
+    results: list = []
+    with patch.object(registration, "_register_one_ena_run", gated_register_one):
+        task_a = asyncio.create_task(_register(reg, study_header=header, ena_runs=[run_1]))
+        task_b = None
+        try:
+            await asyncio.wait_for(a_in_insert.wait(), timeout=10)
+            task_b = asyncio.create_task(
+                _stage_ena_run_roster(
+                    reg["pool"],
+                    pool_idx,
+                    sequencing_run_idx=seq_run_idx,
+                    workspace=tmp_path / "ws",
+                )
+            )
+            await asyncio.wait_for(staging_blocked_on_lock(), timeout=10)
+        finally:
+            release_a.set()
+            tasks = [task_a] + ([task_b] if task_b is not None else [])
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=10
+            )
+    assert not any(isinstance(r, BaseException) for r in results), results
+    reg_result, bound = results
+    assert reg_result.ena_runs[0].status is EnaRunRegistrationStatus.REGISTERED
+
+    import pyarrow.parquet as pq
+
+    roster = pq.read_table(bound[ENA_RUN_MAP_BINDING]).column("ena_run_accession").to_pylist()
+    assert roster == [run_1.run_accession]
 
 
 # ---------------------------------------------------------------------------

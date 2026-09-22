@@ -23,6 +23,7 @@ from ..miint import connect_with_miint_staged
 from ..repositories.block import fetch_mask_sample_state
 from ..repositories.prep_sample import fetch_biosample_idx_for_prep_sample
 from ..repositories.sequenced_sample import fetch_sequenced_pool_ena_run_roster
+from ..repositories.sequencing_run import lock_sequencing_run
 from ._upload import _submission_bad_input, _submission_dp_fetch_failure
 
 _log = logging.getLogger(__name__)
@@ -321,6 +322,7 @@ async def _stage_ena_run_roster(
     pool: asyncpg.Pool,
     sequenced_pool_idx: int,
     *,
+    sequencing_run_idx: int,
     workspace: Path,
 ) -> dict[str, Path]:
     """Stage the download-ena-study pool's run roster before the step loop.
@@ -341,8 +343,17 @@ async def _stage_ena_run_roster(
     `ena_run_accession` is NULL: a download-ena-study ticket only makes sense
     against ENA-origin sequenced_samples, so a NULL accession is a
     misconfiguration (e.g. a non-ENA sample sharing the pool) that must never
-    be silently skipped out of the roster."""
-    rows = await fetch_sequenced_pool_ena_run_roster(pool, sequenced_pool_idx=sequenced_pool_idx)
+    be silently skipped out of the roster.
+
+    The read runs in a transaction holding the sequencing_run pool-write lock
+    (`lock_sequencing_run`), so it waits for an in-flight registration that
+    already picked this pool to commit its runs first: the roster is staged
+    exactly once at dispatch, and that ordering keeps the one read complete."""
+    async with pool.acquire() as conn, conn.transaction():
+        await lock_sequencing_run(conn, sequencing_run_idx=sequencing_run_idx)
+        rows = await fetch_sequenced_pool_ena_run_roster(
+            conn, sequenced_pool_idx=sequenced_pool_idx
+        )
     if not rows:
         raise _submission_bad_input(
             f"sequenced_pool {sequenced_pool_idx} has no sequenced_samples to build "
