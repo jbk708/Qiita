@@ -1893,6 +1893,15 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   the probe then exited 0 and printed nothing on exactly the drift it was checking
   for. Each now raises `RuntimeError` from an explicit `if`, independent of the
   interpreter's optimize level.
+- **ENA import: the batch concurrency bound is process-wide instead of per-batch, so several batches submitted together no longer starve the connection pool (#593).**
+  `_run_batch` built its own `asyncio.Semaphore(_STUDY_CONCURRENCY)` per call, so N
+  concurrently-scheduled batches could together claim up to N × `_STUDY_CONCURRENCY`
+  connections -- enough to take every connection the pool has, leaving unrelated
+  callers queued behind them. `schedule_ena_import_batch` now reads one semaphore off
+  `app.state`, shared first-come-first-served by every in-flight batch;
+  `_STUDY_CONCURRENCY` stays 4. The bound covers resolve, register, and ticket submit;
+  the fire-and-forget `schedule_dispatch` each submitted ticket starts still runs
+  outside it.
 - **Reference load: a genome map is checked against the reference FASTA before anything is minted, so a map whose read_ids match no FASTA sequence fails and a partial match logs what went unmatched (#577).**
   `_associate_genomes` INNER-JOINed the genome map onto the manifest's `read_id`, silently
   dropping every map row whose `read_id` isn't a FASTA sequence ID. `mint-features` now

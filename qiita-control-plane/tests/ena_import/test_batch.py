@@ -21,6 +21,7 @@ from qiita_control_plane.ena_import import (
     DOWNLOAD_ENA_STUDY_ACTION_VERSION,
 )
 from qiita_control_plane.ena_import.batch import (
+    build_ena_import_study_semaphore,
     create_ena_import_batch,
     fetch_batch_status,
     reconcile_inflight_batches,
@@ -33,6 +34,7 @@ from qiita_control_plane.testing.db_seeds import (
     retire_principal,
     seed_user_principal,
 )
+from qiita_control_plane.testing.postgres import POSTGRES_POOL_MAX_SIZE
 from qiita_control_plane.testing.unique_names import unique_accession
 
 pytestmark = pytest.mark.db
@@ -132,6 +134,7 @@ async def batch_app(postgres_pool):
     app.state.compute_backend_client = object()
     app.state.running_dispatches = set()
     app.state.running_ena_import_batches = set()
+    app.state.ena_import_study_semaphore = build_ena_import_study_semaphore()
 
     yield app
 
@@ -1820,3 +1823,116 @@ async def test_redrive_drops_a_ticket_it_replaced(
     assert status.items[0].state == BatchItemState.DONE
 
     await _cleanup_study(postgres_pool, accession)
+
+
+# ---------------------------------------------------------------------------
+# The concurrency bound is process-wide: three batches scheduled together must
+# never together hold more than _STUDY_CONCURRENCY connections.
+# ---------------------------------------------------------------------------
+
+
+async def test_concurrency_bound_is_shared_across_batches(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    """Three batches scheduled at once are throttled by ONE process-wide limit,
+    not one limit per batch. Gated at ticket submission -- the last thing
+    `_process_one_study` does -- so the semaphore permit must still be held
+    that far into the item's flow, not just across `register_ena_study`."""
+    from qiita_control_plane.ena_import import batch as batch_module
+    from qiita_control_plane.routes import work_ticket as work_ticket_module
+
+    concurrency = batch_module._STUDY_CONCURRENCY
+    # A misconfigured `_STUDY_CONCURRENCY` must fail here with a clear message,
+    # not as the spare-connection acquire timing out below.
+    assert concurrency <= POSTGRES_POOL_MAX_SIZE - 1, (
+        f"_STUDY_CONCURRENCY ({concurrency}) leaves the test pool"
+        f" (max_size={POSTGRES_POOL_MAX_SIZE}) no spare connection"
+    )
+
+    real_submit = work_ticket_module.submit_work_ticket_core
+    current_holders = 0
+    max_holders = 0
+    all_slots_held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _gated_submit_work_ticket_core(*, app, principal, body):
+        nonlocal current_holders, max_holders
+        async with postgres_pool.acquire():
+            current_holders += 1
+            max_holders = max(max_holders, current_holders)
+            if current_holders == concurrency:
+                all_slots_held.set()
+            await release.wait()
+            current_holders -= 1
+        return await real_submit(app=app, principal=principal, body=body)
+
+    monkeypatch.setattr(
+        work_ticket_module, "submit_work_ticket_core", _gated_submit_work_ticket_core
+    )
+
+    # Fewer items per batch than the concurrency limit, so saturating it draws
+    # from more than one batch -- proving the bound is shared, not per-batch --
+    # while the total leaves items pending behind the gate.
+    items_per_batch = concurrency - 1
+    num_batches = 3
+    total_items = items_per_batch * num_batches
+
+    batches: list[tuple[int, list, list[str]]] = []
+    for _ in range(num_batches):
+        accessions = [unique_accession("PRJNA") for _ in range(items_per_batch)]
+        batch_idx, items = await create_ena_import_batch(
+            postgres_pool, accessions=accessions, principal=admin_principal
+        )
+        batch_cleanup.append(batch_idx)
+        batches.append((batch_idx, items, accessions))
+
+    tasks = [
+        schedule_ena_import_batch(batch_app, items=items, principal=admin_principal)
+        for _, items, _ in batches
+    ]
+
+    batch_idxs = [batch_idx for batch_idx, _, _ in batches]
+    try:
+        # Hang guard only -- the assertions below are what proves the bound.
+        await asyncio.wait_for(all_slots_held.wait(), timeout=10)
+
+        assert max_holders == concurrency
+
+        # A saturated pool must still have a spare connection for an unrelated
+        # caller -- every query below uses an explicit short timeout so a bound
+        # that leaks past the pool's max_size fails fast here instead of hanging
+        # the test on an un-timed-out acquire.
+        async with postgres_pool.acquire(timeout=2) as conn:
+            pending_count = await conn.fetchval(
+                "SELECT count(*) FROM qiita.ena_import_batch_item"
+                " WHERE batch_idx = ANY($1::bigint[]) AND state = $2",
+                batch_idxs,
+                BatchItemState.PENDING.value,
+            )
+        assert pending_count == total_items - concurrency
+
+        async with postgres_pool.acquire(timeout=2) as conn:
+            assert await conn.fetchval("SELECT 1") == 1
+
+        release.set()
+        await asyncio.gather(*tasks)
+
+        assert max_holders == concurrency
+
+        item_states = await postgres_pool.fetch(
+            "SELECT state FROM qiita.ena_import_batch_item WHERE batch_idx = ANY($1::bigint[])",
+            batch_idxs,
+        )
+        assert len(item_states) == total_items
+        assert {r["state"] for r in item_states} == {BatchItemState.DOWNLOADING.value}
+    finally:
+        # Always unblock the gate and let the batch tasks run to completion,
+        # even on assertion failure -- otherwise they keep running past the
+        # test, and the cleanup below (needed so admin_principal's teardown FK
+        # delete doesn't fail against rows a still-running task just wrote)
+        # never happens.
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for _, _, accessions in batches:
+            for accession in accessions:
+                await _cleanup_study(postgres_pool, accession)
