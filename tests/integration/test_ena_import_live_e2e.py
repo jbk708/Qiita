@@ -31,6 +31,7 @@ from qiita_common.backend_failure import BackendFailure, FailureKind
 from qiita_common.models.ena_import import BatchItemState
 
 from qiita_control_plane.auth.principal import HumanUser
+from qiita_control_plane.dispatch import build_dispatch_semaphore
 from qiita_control_plane.ena_import import (
     DOWNLOAD_ENA_STUDY_ACTION_ID,
     DOWNLOAD_ENA_STUDY_ACTION_VERSION,
@@ -151,6 +152,7 @@ async def batch_app(postgres_pool):
     app.state.compute_backend_client = object()
     app.state.running_dispatches = set()
     app.state.running_ena_import_batches = set()
+    app.state.dispatch_semaphore = build_dispatch_semaphore()
 
     yield app
 
