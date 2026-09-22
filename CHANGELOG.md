@@ -1866,6 +1866,27 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **Feature table: a de novo genome's pooled breadth of coverage counts other prep_samples' reads on contigs they also assembled, and both scopes call miint's coverage macros (#586).**
+  With a de novo arm, pooled coverage joined the contig→genome map on the prep_sample as
+  well as the contig, so a de novo genome saw only the reads of the prep_sample that
+  assembled it and pooled breadth equalled per-sample breadth. The de novo arm now calls
+  `genome_coverage` like the reference arm: a contig two cohort prep_samples assembled
+  gives both prep_samples' covered bases to each one's genome, so a combined table built
+  with pooled scope and a threshold above 0 can keep de novo genomes it used to drop.
+  Each de novo placement still counts only toward its own prep_sample's genome. The
+  pooled merge does not reconcile orientation: when a later assembly run stores a shared
+  contig as its reverse complement, prep_samples aligned before it keep positions on the
+  other axis, and that contig's pooled breadth can come out too high or too low
+  (`survivor_table_sql` in `qiita_common.analytic.coverage`).
+  `estimate_feature_table` always uses pooled, and `qiita feature-table build` defaults
+  to it. Per-sample coverage calls `genome_coverage_per_sample` on both arms in place of
+  Qiita's own copy of the arithmetic, with the same results. `qiita feature-table build
+  --coverage-scope per-sample` therefore needs a miint build that has
+  `genome_coverage_per_sample` (duckdb-miint#220, merged 2026-08-18). The client installs
+  miint once and never refreshes it, so a cache filled from an older build fails on the
+  missing function until the cached extension file is deleted and the next run
+  re-installs it; its path is the `install_path` that `duckdb_extensions()` reports for
+  `miint`.
 - **ENA import: a study findable only by its secondary accession (`ena_study_accession`) is now reused instead of failing with an opaque error, and a pair that resolves to a contradicting study now fails loud instead of reusing the wrong one (#590).**
   `get_or_create_study_by_ena_accessions` looked up an existing study by
   `bioproject_accession` only. A study recorded with an `ena_study_accession` but no
