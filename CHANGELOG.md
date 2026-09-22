@@ -22,7 +22,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 ### Added
 
 - **ENA import preserves every deposited `library_*` field as prep_sample metadata
-  (#570).** `register_ena_study` now writes `library_strategy`, `library_source`,
+  (#599).** `register_ena_study` now writes `library_strategy`, `library_source`,
   `library_selection`, and `library_layout` verbatim onto each run's prep_sample as
   study-local TEXT fields (get-or-create per study), so what ENA deposited survives
   independently of the `prep_protocol` mapping, which consumes only strategy/source
