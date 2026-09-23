@@ -1866,6 +1866,17 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **Work-ticket dispatch now has its own process-wide concurrency bound, so a burst of ticket submits can no longer starve the connection pool through dispatch alone (#598).**
+  `_STUDY_CONCURRENCY` releases its permit at submit, but the fire-and-forget
+  `schedule_dispatch` that submit starts keeps running, and acquiring connections, for
+  as long as the workflow does; `fanout_max_inflight` only caps fan-out cohorts, and an
+  ENA `download-ena-study` ticket is not one. Dispatch now runs under its own
+  semaphore, `_DISPATCH_CONCURRENCY` (8, sized against `PRODUCTION_POOL_MAX_SIZE` the
+  way `_STUDY_CONCURRENCY` is). A task holds its slot for its whole workflow, an
+  hours-long download poll included, so this also caps in-flight workflows
+  process-wide: tickets past the limit dispatch when a slot frees instead of all at
+  once, and log the wait at INFO while they queue.
+
 - **ENA import: close the race where a run added after its pool's download ticket read
   the roster was never downloaded (#602)** — `register_ena_study` now holds the
   sequencing_run pool-write advisory lock from pool resolution until its run inserts

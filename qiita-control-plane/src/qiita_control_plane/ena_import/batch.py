@@ -78,6 +78,8 @@ _log = logging.getLogger(__name__)
 # to ~3 requests/second", with no stated scope -- duckdb-miint#276 asks miint to
 # document whether that cap is per ENAClient instance (today's per-query client
 # construction would then let N concurrent studies reach ~3N req/s) or global.
+# The dispatch each item's submit fires runs outside this permit, under
+# dispatch's own process-wide cap — see dispatch._DISPATCH_CONCURRENCY.
 _STUDY_CONCURRENCY = 4
 
 
