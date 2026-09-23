@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from qiita_common.models import FieldDataType
 from qiita_common.models.ena import (
     EnaRunRecord,
     EnaSampleAttributes,
@@ -19,9 +20,19 @@ from qiita_common.models.ena import (
 )
 
 from qiita_control_plane.ena_import.registration import (
+    ENA_LIBRARY_LAYOUT_FIELD_NAME,
+    ENA_LIBRARY_SELECTION_FIELD_NAME,
+    ENA_LIBRARY_SOURCE_FIELD_NAME,
+    ENA_LIBRARY_STRATEGY_FIELD_NAME,
     EnaRunRegistrationStatus,
     register_ena_study,
 )
+from qiita_control_plane.repositories._sample_helpers import (
+    StudyFieldDataTypeNotTextError,
+    StudyFieldUniqueInStudyError,
+    create_study_field,
+)
+from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_METADATA_SPEC
 from qiita_control_plane.repositories.study import get_or_create_study_by_ena_accessions
 from qiita_control_plane.testing.db_seeds import seed_user_principal
 from qiita_control_plane.testing.unique_names import unique_accession
@@ -54,6 +65,7 @@ def _run(
     sample_alias: str | None = None,
     library_strategy: str | None = "WGS",
     library_source: str | None = "GENOMIC",
+    library_selection: str | None = None,
     instrument_platform: str | None = "ILLUMINA",
 ) -> EnaRunRecord:
     return EnaRunRecord(
@@ -65,8 +77,26 @@ def _run(
         library_layout=library_layout,
         library_strategy=library_strategy,
         library_source=library_source,
+        library_selection=library_selection,
         instrument_platform=instrument_platform,
     )
+
+
+async def _library_metadata_by_run(pool, run_accessions: list[str]) -> dict[str, dict[str, str]]:
+    """Study-local (non-global) prep_sample metadata keyed by run accession,
+    then by display name, for the given runs."""
+    rows = await pool.fetch(
+        "SELECT ss.ena_run_accession, psf.display_name, pm.value_text"
+        " FROM qiita.prep_sample_metadata pm"
+        " JOIN qiita.prep_sample_study_field psf ON psf.idx = pm.prep_sample_study_field_idx"
+        " JOIN qiita.sequenced_sample ss ON ss.prep_sample_idx = pm.prep_sample_idx"
+        " WHERE ss.ena_run_accession = ANY($1::text[]) AND pm.global_field_idx IS NULL",
+        run_accessions,
+    )
+    by_run: dict[str, dict[str, str]] = {}
+    for row in rows:
+        by_run.setdefault(row["ena_run_accession"], {})[row["display_name"]] = row["value_text"]
+    return by_run
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +120,15 @@ async def _cleanup(pool, tracker: _Tracker) -> None:
             study_idxs,
         )
         ps_idxs = [r["prep_sample_idx"] for r in ps_rows]
+        # prep_sample_metadata RESTRICTs its prep_sample and study field, so
+        # sweep both before prep_sample / prep_sample_study_field / study below.
         if ps_idxs:
             await pool.execute(
                 "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])",
+                ps_idxs,
+            )
+            await pool.execute(
+                "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
                 ps_idxs,
             )
         await pool.execute(
@@ -103,6 +139,10 @@ async def _cleanup(pool, tracker: _Tracker) -> None:
             await pool.execute(
                 "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
             )
+        await pool.execute(
+            "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = ANY($1::bigint[])",
+            study_idxs,
+        )
 
         bs_rows = await pool.fetch(
             "SELECT DISTINCT biosample_idx FROM qiita.biosample_to_study"
@@ -174,10 +214,11 @@ async def reg(postgres_pool):
     await _cleanup(postgres_pool, tracker)
 
 
-async def _register(reg, *, study_header, ena_runs, sample_attributes=()):
-    """Resolve the study then register into it, the same two steps the batch
-    driver does. Records whether this call created the study in
-    `reg["study_created"]` -- the driver's import-created guard keys off it."""
+async def _resolve_tracked_study(reg, *, study_header) -> int:
+    """Resolve (creating if needed) and track the study for cleanup -- the
+    first half of `_register`, for a test that must pre-seed study state
+    before `register_ena_study` runs. Tracked up front so a register that
+    raises still cleans up after itself."""
     async with reg["pool"].acquire() as conn:
         study_row, study_created = await get_or_create_study_by_ena_accessions(
             conn,
@@ -188,18 +229,25 @@ async def _register(reg, *, study_header, ena_runs, sample_attributes=()):
             title=study_header.study_title or study_header.study_accession,
         )
     reg["study_created"] = study_created
-    result = await register_ena_study(
+    reg["tracker"].study_idxs.append(study_row["idx"])
+    reg["tracker"].study_accessions.append(study_header.study_accession)
+    return study_row["idx"]
+
+
+async def _register(reg, *, study_header, ena_runs, sample_attributes=()):
+    """Resolve the study then register into it, the same two steps the batch
+    driver does. Records whether this call created the study in
+    `reg["study_created"]` -- the driver's import-created guard keys off it."""
+    study_idx = await _resolve_tracked_study(reg, study_header=study_header)
+    return await register_ena_study(
         reg["pool"],
-        study_idx=study_row["idx"],
+        study_idx=study_idx,
         study_header=study_header,
         ena_runs=ena_runs,
         sample_attributes=list(sample_attributes),
         owner_idx=reg["owner_idx"],
         caller_idx=reg["caller_idx"],
     )
-    reg["tracker"].study_idxs.append(result.study_idx)
-    reg["tracker"].study_accessions.append(study_header.study_accession)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -913,6 +961,273 @@ async def test_paired_and_single_layout_runs_each_get_one_sequenced_sample(reg):
     ]
     assert len(prep_sample_idxs) == 2
     assert all(idx >= 25000 for idx in prep_sample_idxs)
+
+
+async def test_library_fields_land_as_study_local_prep_sample_metadata(reg):
+    """All four ENA library_* fields persist on each run's prep_sample as
+    study-local TEXT (trimmed, otherwise as deposited); a field ENA left unset
+    writes no row, and a re-import mints neither a duplicate value nor a
+    duplicate field."""
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    full_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+        library_layout="PAIRED",
+        # Stored exactly as deposited -- the protocol mapper uppercases internally,
+        # the metadata slot must not.
+        library_strategy="RNA-Seq",
+        library_source="TRANSCRIPTOMIC",
+        library_selection="cDNA",
+    )
+    # Default shape: library_selection is None, as ENA leaves it on many deposits.
+    sparse_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+
+    result = await _register(reg, study_header=header, ena_runs=[full_run, sparse_run])
+    assert {o.status for o in result.ena_runs} == {EnaRunRegistrationStatus.REGISTERED}
+
+    run_accessions = [full_run.run_accession, sparse_run.run_accession]
+    assert await _library_metadata_by_run(reg["pool"], run_accessions) == {
+        full_run.run_accession: {
+            ENA_LIBRARY_STRATEGY_FIELD_NAME: "RNA-Seq",
+            ENA_LIBRARY_SOURCE_FIELD_NAME: "TRANSCRIPTOMIC",
+            ENA_LIBRARY_SELECTION_FIELD_NAME: "cDNA",
+            ENA_LIBRARY_LAYOUT_FIELD_NAME: "PAIRED",
+        },
+        sparse_run.run_accession: {
+            ENA_LIBRARY_STRATEGY_FIELD_NAME: "WGS",
+            ENA_LIBRARY_SOURCE_FIELD_NAME: "GENOMIC",
+            # No ena library selection row: ENA deposited no value.
+            ENA_LIBRARY_LAYOUT_FIELD_NAME: "SINGLE",
+        },
+    }
+
+    # One field row per display name for the whole study, purely local -- runs
+    # share the field, and none is linked to a prep_sample_global_field.
+    field_rows = await reg["pool"].fetch(
+        "SELECT display_name, prep_sample_global_field_idx"
+        " FROM qiita.prep_sample_study_field WHERE study_idx = $1",
+        result.study_idx,
+    )
+    assert {r["display_name"] for r in field_rows} == {
+        ENA_LIBRARY_STRATEGY_FIELD_NAME,
+        ENA_LIBRARY_SOURCE_FIELD_NAME,
+        ENA_LIBRARY_SELECTION_FIELD_NAME,
+        ENA_LIBRARY_LAYOUT_FIELD_NAME,
+    }
+    assert all(r["prep_sample_global_field_idx"] is None for r in field_rows)
+
+    # Re-import skips the runs, so it writes no second value and mints no field.
+    reimport = await _register(reg, study_header=header, ena_runs=[full_run, sparse_run])
+    assert {o.status for o in reimport.ena_runs} == {
+        EnaRunRegistrationStatus.SKIPPED_ALREADY_PRESENT
+    }
+    assert await _library_metadata_by_run(reg["pool"], run_accessions) == {
+        full_run.run_accession: {
+            ENA_LIBRARY_STRATEGY_FIELD_NAME: "RNA-Seq",
+            ENA_LIBRARY_SOURCE_FIELD_NAME: "TRANSCRIPTOMIC",
+            ENA_LIBRARY_SELECTION_FIELD_NAME: "cDNA",
+            ENA_LIBRARY_LAYOUT_FIELD_NAME: "PAIRED",
+        },
+        sparse_run.run_accession: {
+            ENA_LIBRARY_STRATEGY_FIELD_NAME: "WGS",
+            ENA_LIBRARY_SOURCE_FIELD_NAME: "GENOMIC",
+            ENA_LIBRARY_LAYOUT_FIELD_NAME: "SINGLE",
+        },
+    }
+    field_count = await reg["pool"].fetchval(
+        "SELECT count(*) FROM qiita.prep_sample_study_field WHERE study_idx = $1",
+        result.study_idx,
+    )
+    assert field_count == 4
+
+
+async def test_library_field_wrong_data_type_fails_the_whole_study_first(reg):
+    """A pre-existing non-text field at a library display name fails
+    `register_ena_study` outright, before any run is written, naming the
+    field -- instead of each run failing separately against the field-contract
+    trigger while earlier runs of the study import and then roll back."""
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    run_a = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    run_b = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    study_idx = await _resolve_tracked_study(reg, study_header=header)
+    async with reg["pool"].acquire() as conn:
+        async with conn.transaction():
+            await create_study_field(
+                conn,
+                spec=PREP_SAMPLE_METADATA_SPEC,
+                study_idx=study_idx,
+                display_name=ENA_LIBRARY_STRATEGY_FIELD_NAME,
+                created_by_idx=reg["caller_idx"],
+                data_type=FieldDataType.NUMERIC,
+            )
+
+    with pytest.raises(StudyFieldDataTypeNotTextError) as excinfo:
+        await register_ena_study(
+            reg["pool"],
+            study_idx=study_idx,
+            study_header=header,
+            ena_runs=[run_a, run_b],
+            sample_attributes=[],
+            owner_idx=reg["owner_idx"],
+            caller_idx=reg["caller_idx"],
+        )
+    # The refusal names the field, since the fix (rename/clear the field) is
+    # the submitter's to make.
+    assert ENA_LIBRARY_STRATEGY_FIELD_NAME in str(excinfo.value)
+
+    # Nothing landed: no runs, no sequencing_run/pool minted (the field
+    # resolve runs ahead of pool resolution), and only the pre-seeded clash
+    # field remains -- the ensure's own rows rolled back with it.
+    assert (
+        await reg["pool"].fetchval(
+            "SELECT count(*) FROM qiita.sequenced_sample WHERE ena_run_accession = ANY($1::text[])",
+            [run_a.run_accession, run_b.run_accession],
+        )
+        == 0
+    )
+    assert (
+        await reg["pool"].fetchval(
+            "SELECT count(*) FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
+            f"{study_accession}:%",
+        )
+        == 0
+    )
+    assert (
+        await reg["pool"].fetchval(
+            "SELECT count(*) FROM qiita.prep_sample_study_field WHERE study_idx = $1",
+            study_idx,
+        )
+        == 1
+    )
+
+
+async def test_library_field_unique_in_study_fails_the_whole_study_first(reg):
+    """A pre-existing unique_in_study field at a library display name fails
+    the study before any run: library values repeat across runs by
+    construction, so without the up-front refusal the first run imports and
+    every later run with the same value is lost to a unique violation."""
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    run_a = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    run_b = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    study_idx = await _resolve_tracked_study(reg, study_header=header)
+    async with reg["pool"].acquire() as conn:
+        async with conn.transaction():
+            await create_study_field(
+                conn,
+                spec=PREP_SAMPLE_METADATA_SPEC,
+                study_idx=study_idx,
+                display_name=ENA_LIBRARY_STRATEGY_FIELD_NAME,
+                created_by_idx=reg["caller_idx"],
+                data_type=FieldDataType.TEXT,
+                unique_in_study=True,
+            )
+
+    with pytest.raises(StudyFieldUniqueInStudyError) as excinfo:
+        await register_ena_study(
+            reg["pool"],
+            study_idx=study_idx,
+            study_header=header,
+            ena_runs=[run_a, run_b],
+            sample_attributes=[],
+            owner_idx=reg["owner_idx"],
+            caller_idx=reg["caller_idx"],
+        )
+    assert ENA_LIBRARY_STRATEGY_FIELD_NAME in str(excinfo.value)
+
+    # Neither run imported -- not even the first one, whose value would have
+    # satisfied the unique policy alone.
+    assert (
+        await reg["pool"].fetchval(
+            "SELECT count(*) FROM qiita.sequenced_sample WHERE ena_run_accession = ANY($1::text[])",
+            [run_a.run_accession, run_b.run_accession],
+        )
+        == 0
+    )
+
+
+async def test_concurrent_same_study_registrations_share_the_library_fields(reg):
+    """Two concurrent registrations of the SAME study with disjoint runs both
+    land, resolving one shared set of four library fields -- the per-study
+    get-or-create race the two-study concurrency tests cannot show, since the
+    fields are per-study."""
+    import asyncio
+
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    run_a = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    run_b = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+
+    result_a, result_b = await asyncio.wait_for(
+        asyncio.gather(
+            _register(reg, study_header=header, ena_runs=[run_a]),
+            _register(reg, study_header=header, ena_runs=[run_b]),
+        ),
+        timeout=10,
+    )
+    assert {o.status for o in result_a.ena_runs} == {EnaRunRegistrationStatus.REGISTERED}
+    assert {o.status for o in result_b.ena_runs} == {EnaRunRegistrationStatus.REGISTERED}
+    assert result_a.study_idx == result_b.study_idx
+
+    # One set of four fields, no duplicates minted by the race...
+    field_count = await reg["pool"].fetchval(
+        "SELECT count(*) FROM qiita.prep_sample_study_field WHERE study_idx = $1",
+        result_a.study_idx,
+    )
+    assert field_count == 4
+    # ...and each run carries its values against the shared fields.
+    by_run = await _library_metadata_by_run(reg["pool"], [run_a.run_accession, run_b.run_accession])
+    assert by_run == {
+        run_a.run_accession: {
+            ENA_LIBRARY_STRATEGY_FIELD_NAME: "WGS",
+            ENA_LIBRARY_SOURCE_FIELD_NAME: "GENOMIC",
+            ENA_LIBRARY_LAYOUT_FIELD_NAME: "SINGLE",
+        },
+        run_b.run_accession: {
+            ENA_LIBRARY_STRATEGY_FIELD_NAME: "WGS",
+            ENA_LIBRARY_SOURCE_FIELD_NAME: "GENOMIC",
+            ENA_LIBRARY_LAYOUT_FIELD_NAME: "SINGLE",
+        },
+    }
 
 
 # ---------------------------------------------------------------------------

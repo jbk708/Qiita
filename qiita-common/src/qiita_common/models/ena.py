@@ -64,6 +64,16 @@ class EnaRunRecord(BaseModel):
     read_count: int | None = None
     base_count: int | None = None
 
+    @field_validator("library_layout", "library_strategy", "library_source", "library_selection")
+    @classmethod
+    def _normalize_blank_library_to_none(cls, v: str | None) -> str | None:
+        # read_ena reports a missing library field as "", not NULL -- normalize
+        # so a consumer's `is not None` means "ENA reported one", as on
+        # EnaStudyHeader.
+        if v is not None and not v.strip():
+            return None
+        return v
+
 
 class EnaSampleAttributes(BaseModel):
     """One BioSample's submitter-defined tag -> value attribute map —

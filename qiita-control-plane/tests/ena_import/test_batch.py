@@ -244,6 +244,12 @@ async def _cleanup_study(postgres_pool, study_accession: str) -> None:
         await postgres_pool.execute(
             "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])", ps_idxs
         )
+        # prep_sample_metadata RESTRICTs its prep_sample and study field, so
+        # sweep both before prep_sample / prep_sample_study_field / study below.
+        await postgres_pool.execute(
+            "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
+            ps_idxs,
+        )
     await postgres_pool.execute(
         "DELETE FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
     )
@@ -251,6 +257,9 @@ async def _cleanup_study(postgres_pool, study_accession: str) -> None:
         await postgres_pool.execute(
             "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
         )
+    await postgres_pool.execute(
+        "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = $1", study_idx
+    )
     bs_rows = await postgres_pool.fetch(
         "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
     )
@@ -330,6 +339,12 @@ async def _cleanup_two_studies_sharing_biosample(
                 "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])",
                 ps_idxs,
             )
+            # prep_sample_metadata RESTRICTs its prep_sample and study field, so
+            # sweep both before prep_sample / prep_sample_study_field / study below.
+            await postgres_pool.execute(
+                "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
+                ps_idxs,
+            )
         await postgres_pool.execute(
             "DELETE FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
         )
@@ -337,6 +352,9 @@ async def _cleanup_two_studies_sharing_biosample(
             await postgres_pool.execute(
                 "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
             )
+        await postgres_pool.execute(
+            "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = $1", study_idx
+        )
         await postgres_pool.execute(
             "DELETE FROM qiita.biosample_study_field WHERE study_idx = $1", study_idx
         )
