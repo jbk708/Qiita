@@ -1880,10 +1880,13 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 - **ENA import: close the race where a run added after its pool's download ticket read
   the roster was never downloaded (#602)** — `register_ena_study` now holds the
   sequencing_run pool-write advisory lock from pool resolution until its run inserts
-  commit (one transaction, savepoints per run), and the runner's one-time roster read
-  (`_stage_ena_run_roster`) takes the same lock, so a roster read either waits for the
-  in-flight registration or the registration sees the covering ticket and keeps its
-  runs out of that pool.
+  commit (one transaction, savepoints per run), and the runner's dispatch-time roster
+  read (`_stage_ena_run_roster`) takes the same lock, so a roster read either waits
+  for the in-flight registration or the registration sees the covering ticket and
+  keeps its runs out of that pool. One transaction also makes a study
+  **all-or-nothing per attempt**: a failure or shutdown mid-study discards every run
+  it had written so far — recoverable, because `reconcile_inflight_batches`
+  re-registers idempotently — where runs used to bank one COMMIT at a time.
 - **Feature table: a de novo genome's pooled breadth of coverage counts other prep_samples' reads on contigs they also assembled, and both scopes call miint's coverage macros (#586).**
   With a de novo arm, pooled coverage joined the contig→genome map on the prep_sample as
   well as the contig, so a de novo genome saw only the reads of the prep_sample that

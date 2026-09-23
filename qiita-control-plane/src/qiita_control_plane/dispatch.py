@@ -49,7 +49,10 @@ _log = logging.getLogger(__name__)
 # dispatch path (route submit, ENA batch submit, startup reconcile) and across
 # every fan-out cohort at once. Each running task acquires pool connections per
 # call only (runner._base), but each is a concurrent acquirer — the count is
-# what must stay well below db.get_pool's max_size, sized the way
+# what must stay well below db.get_pool's max_size. (The exception that can
+# outlast a call's usual budget: the runner's `_stage_ena_run_roster`, parked
+# on the registration lock, holds its connection for the whole bounded wait,
+# `POOL_LOCK_WAIT_TIMEOUT_S`, rather than cycling it.) Sized the way
 # ena_import._STUDY_CONCURRENCY is; test_dispatch pins both the ratio and the
 # two semaphores' joint draw on the pool. 8 equals fanout's
 # DEFAULT_FANOUT_MAX_INFLIGHT on purpose: a single cohort at its default cap

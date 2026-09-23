@@ -35,6 +35,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import StrEnum
+from operator import itemgetter
 
 import asyncpg
 from qiita_common.models import Platform, WorkTicketState
@@ -44,6 +45,7 @@ from qiita_common.models.ena import (
     EnaStudyHeader,
 )
 
+from qiita_control_plane.repositories import require_transaction
 from qiita_control_plane.repositories._sample_helpers import (
     fetch_metadata_checklist_idx_by_name,
     insert_entity_to_study,
@@ -194,6 +196,7 @@ async def register_ena_study(
             conn, values=[ena_run.run_accession for ena_run in ena_runs]
         )
         outcomes_by_accession: dict[str, EnaRunRegistrationOutcome] = {}
+        platform_by_accession: dict[str, Platform] = {}
         for ena_run in ena_runs:
             try:
                 platform = map_ena_platform(ena_run.instrument_platform)
@@ -205,16 +208,17 @@ async def register_ena_study(
                 )
                 continue
             ena_runs_by_platform[platform].append(ena_run)
+            platform_by_accession[ena_run.run_accession] = platform
 
         # One transaction spans pool resolution and every run insert so the
         # sequencing_run lock `_resolve_platform_pools` takes is held until the
-        # runs commit; sorted platform order keeps concurrent registrations
-        # acquiring those locks in the same order. Per-run work below nests as
-        # savepoints, so per-run rollback is preserved.
+        # runs commit (see `lock_sequencing_run`); savepoints below keep the
+        # per-run rollback. Platforms resolve in sorted order so concurrent
+        # registrations take those advisory keys in a common order.
         async with conn.transaction():
             target_pool_idx_by_platform: dict[Platform, int | None] = {}
             created_pools: list[CreatedPool] = []
-            for platform, platform_runs in sorted(ena_runs_by_platform.items()):
+            for platform, platform_runs in sorted(ena_runs_by_platform.items(), key=itemgetter(0)):
                 platform_pools, target_pool_idx = await _resolve_platform_pools(
                     conn,
                     study_accession=study_header.study_accession,
@@ -225,19 +229,29 @@ async def register_ena_study(
                 target_pool_idx_by_platform[platform] = target_pool_idx
                 created_pools.extend(platform_pools)
 
-            for platform, platform_runs in ena_runs_by_platform.items():
-                for ena_run in platform_runs:
-                    outcomes_by_accession[ena_run.run_accession] = await _register_one_ena_run(
-                        conn,
-                        ena_run=ena_run,
-                        study_idx=study_idx,
-                        platform=platform,
-                        sequenced_pool_idx=target_pool_idx_by_platform[platform],
-                        owner_idx=owner_idx,
-                        caller_idx=caller_idx,
-                        metadata_checklist_idx=metadata_checklist_idx,
-                        attrs_by_sample_accession=attrs_by_sample_accession,
-                    )
+            # Runs insert in one global (sample_accession, run_accession)
+            # order, not ENA's per-platform order: biosample de-dup holds
+            # unique-row locks study-wide now, so concurrent imports sharing
+            # NEW ENA samples must acquire those keys in a common order or
+            # Postgres deadlocks one of them -- an abort that folds into a
+            # per-run FAILED nothing redrives.
+            runs_in_insert_order = sorted(
+                (r for r in ena_runs if r.run_accession in platform_by_accession),
+                key=lambda r: (r.sample_accession, r.run_accession),
+            )
+            for ena_run in runs_in_insert_order:
+                platform = platform_by_accession[ena_run.run_accession]
+                outcomes_by_accession[ena_run.run_accession] = await _register_one_ena_run(
+                    conn,
+                    ena_run=ena_run,
+                    study_idx=study_idx,
+                    platform=platform,
+                    sequenced_pool_idx=target_pool_idx_by_platform[platform],
+                    owner_idx=owner_idx,
+                    caller_idx=caller_idx,
+                    metadata_checklist_idx=metadata_checklist_idx,
+                    attrs_by_sample_accession=attrs_by_sample_accession,
+                )
 
     # Return per-run outcomes in the caller's input order.
     outcomes = [outcomes_by_accession[ena_run.run_accession] for ena_run in ena_runs]
@@ -261,13 +275,18 @@ async def _resolve_platform_pools(
     on it, plus the pool new runs go into: the newest one no download ticket
     covers, else a new pool when `needs_pool`, else None.
 
-    Takes the sequencing_run advisory key (`lock_sequencing_run`) and returns
-    still holding it: the caller commits only after inserting its runs, so
-    selection-through-insertion is one critical section against the roster
-    read. That same lock also makes a concurrent batch for the same
-    (study, platform) reuse the pool rather than mint a second, since the
-    no-preflight insert has no constraint to arbitrate (see
-    `insert_sequenced_pool`)."""
+    Takes the sequencing_run advisory key and returns still holding it -- the
+    caller commits only after inserting its runs, so selection-through-
+    insertion is one critical section against the roster read (see
+    `lock_sequencing_run` for the race that closes). That same lock also makes
+    a concurrent batch for the same (study, platform) reuse the pool rather
+    than mint a second, since the no-preflight insert has no constraint to
+    arbitrate (see `insert_sequenced_pool`).
+
+    Requires a wrapping transaction at entry, before `insert_sequencing_run`
+    writes anything: without one, the advisory lock this function must return
+    holding would vanish with the statement."""
+    require_transaction(conn)
     sequencing_run_idx, _ = await insert_sequencing_run(
         conn,
         instrument_run_id=f"{study_accession}:{platform.value}",
@@ -315,11 +334,10 @@ async def _register_one_ena_run(
 ) -> EnaRunRegistrationOutcome:
     """Register one ENA run in its own savepoint within the registration
     transaction (per-run atomicity: a partial failure rolls back only this
-    run). Never raises: every failure mode
-    (platform/protocol-mapping, harmonization, composer/DB) is folded into a
-    `failed` outcome. A harmonization gap is not a failure mode -- only a genuine
-    parse/collision failure inside the biosample import raises, caught
-    here like any other."""
+    run). It never raises: every failure mode (platform/protocol-mapping,
+    harmonization, composer/DB) is folded into a `failed` outcome. A
+    harmonization gap is not a failure mode -- only a genuine parse/collision
+    failure inside the biosample import raises, caught here like any other."""
     try:
         async with conn.transaction():
             sample_attrs = attrs_by_sample_accession.get(ena_run.sample_accession)

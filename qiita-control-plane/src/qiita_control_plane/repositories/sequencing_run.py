@@ -32,7 +32,7 @@ from qiita_common.models import (
     WorkTicketState,
 )
 
-from . import gate_state_literal
+from . import INT4_MASK, gate_state_literal, require_transaction
 
 # Bound rather than typed as SQL literals, so a rename of the declared Literal
 # lights up this module at import instead of silently matching no rows. Same
@@ -62,9 +62,20 @@ class PayloadMismatch(Exception):
 
 
 # pg_advisory_xact_lock(class, key) class for sequencing_run pool writes vs the
-# download-roster read; distinct from fanout_dispatch's.
+# download-roster read; allocated in repositories/__init__'s registry, distinct
+# from fanout_dispatch's.
 POOL_RESOLVE_LOCK_CLASS = 0x0E4A_0001
-_INT4_MASK = 0x7FFF_FFFF
+
+# How long either side waits on POOL_RESOLVE_LOCK_CLASS before giving up.
+# Deliberately chosen, not inherited: get_pool's 10s command_timeout would
+# bound the wait instead, and the registration side holds the lock for its
+# whole study transaction (~27ms per run measured, so 10s crosses at a few
+# hundred runs) — a size at which every roster read fails on first attempt.
+# A waiter that times out raises TimeoutError: the runner classifies that as
+# transient (FAILED/RETRIABLE, healed by a `/run` redrive) and registration
+# folds it into the accession's failure. Same reasoning as actions/library.py's
+# SET LOCAL lock_timeout. 90s covers thousands of runs at the measured rate.
+POOL_LOCK_WAIT_TIMEOUT_S = 90.0
 
 
 async def lock_sequencing_run(conn: asyncpg.Connection, *, sequencing_run_idx: int) -> None:
@@ -76,11 +87,17 @@ async def lock_sequencing_run(conn: asyncpg.Connection, *, sequencing_run_idx: i
     roster read it does once at dispatch. Either a registration sees a covering
     download ticket and keeps its runs out of that pool, or the roster read
     waits for the registration's runs to commit: a run can no longer land in a
-    pool whose ticket has already read the roster."""
+    pool whose ticket has already read the roster.
+
+    Requires a wrapping transaction — in autocommit the lock is released with
+    the statement, silently protecting nothing — and waits at most
+    `POOL_LOCK_WAIT_TIMEOUT_S` for a competing holder."""
+    require_transaction(conn)
     await conn.execute(
         "SELECT pg_advisory_xact_lock($1, $2)",
         POOL_RESOLVE_LOCK_CLASS,
-        sequencing_run_idx & _INT4_MASK,
+        sequencing_run_idx & INT4_MASK,
+        timeout=POOL_LOCK_WAIT_TIMEOUT_S,
     )
 
 

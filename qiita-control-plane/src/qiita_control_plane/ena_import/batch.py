@@ -326,8 +326,10 @@ async def _process_one_study(
                 if not pool_state["has_sequenced_sample"]:
                     continue
                 if download_ticket_covers_pool(pool_state["work_ticket_state"]):
-                    # Safe to reuse: the roster read shares the lock we held
-                    # across our inserts, so it sees every run we registered.
+                    # Safe to reuse either way: a pool already covered when we
+                    # resolved excluded our runs from it entirely, and one
+                    # covered after our resolve read under the same lock and
+                    # therefore sees every run we registered.
                     ticket_idx = pool_state["work_ticket_idx"]
                 else:
                     body = build_download_ena_study_ticket(

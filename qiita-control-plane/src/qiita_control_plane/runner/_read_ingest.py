@@ -345,10 +345,11 @@ async def _stage_ena_run_roster(
     misconfiguration (e.g. a non-ENA sample sharing the pool) that must never
     be silently skipped out of the roster.
 
-    The read runs in a transaction holding the sequencing_run pool-write lock
-    (`lock_sequencing_run`), so it waits for an in-flight registration that
-    already picked this pool to commit its runs first: the roster is staged
-    exactly once at dispatch, and that ordering keeps the one read complete."""
+    The read runs in a transaction holding `lock_sequencing_run`, so it waits
+    for an in-flight registration that already picked this pool to commit its
+    runs first (see the helper for the race that closes). This resolver also
+    re-runs on a resume or a `/run` redrive, not only at first dispatch, and a
+    re-read can only add runs."""
     async with pool.acquire() as conn, conn.transaction():
         await lock_sequencing_run(conn, sequencing_run_idx=sequencing_run_idx)
         rows = await fetch_sequenced_pool_ena_run_roster(
@@ -370,6 +371,37 @@ async def _stage_ena_run_roster(
     out = workspace / "ena_run_map.parquet"
     _write_ena_run_map_parquet(roster, out)
     return {ENA_RUN_MAP_BINDING: out}
+
+
+async def _stage_ena_run_roster_binding(
+    pool: asyncpg.Pool,
+    *,
+    action_steps: list[Any],
+    scope_target: dict[str, Any],
+    workspace: Path,
+) -> dict[str, Path] | None:
+    """Stage the `ena_run_map` roster for a workflow that declares that input
+    (the download-ena-study workflow's `ingest_ena_reads` step); None when the
+    workflow declares no `ena_run_map` input.
+
+    The roster comes from a LIVE Postgres query (unlike `sample_map`, which the
+    CP composer embeds in action_context at submit time): reading it live keeps
+    the two ticket-creation paths from having to agree on a duplicated roster
+    shape, and picks up a post-submit registration correction rather than a
+    submit-time snapshot. Dispatched by DECLARED-INPUT NAME, not scope-kind:
+    bcl-convert is also sequenced_pool-scoped, so keying off scope-kind would
+    wire this resolver into its ticket too. Called inside run_workflow's
+    pre-loop try, so an empty-pool / missing-accession failure lands in the
+    outer FAILED handler.
+    """
+    if not _workflow_declares_input(action_steps, ENA_RUN_MAP_BINDING):
+        return None
+    return await _stage_ena_run_roster(
+        pool,
+        scope_target["sequenced_pool_idx"],
+        sequencing_run_idx=scope_target["sequencing_run_idx"],
+        workspace=workspace,
+    )
 
 
 def _do_action_export(action_type: str, data_plane_url: str, token: bytes) -> dict[str, Any]:

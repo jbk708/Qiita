@@ -868,11 +868,14 @@ async def test_roster_staging_waits_out_inflight_registration(reg, tmp_path):
 
     A is held open after it resolves its pool (a gated `_register_one_ena_run`
     pauses before the insert) while B, standing in for the runner's
-    `_stage_ena_run_roster` at dispatch, reads the roster. The test polls
-    pg_stat_activity/pg_locks until B is observed WAITING on A's advisory lock,
-    then releases A and asserts B's staged roster carries A's run. Without the
-    resolve-through-insert lock the staging read never waits and the poll times
-    out."""
+    `_stage_ena_run_roster` at dispatch, reads the roster. The pool already
+    holds one registered run, so without the lock B would stage a
+    plausible-but-short roster (the pre-existing run, missing A's) — the
+    silent loss shape the race actually had — rather than an obviously empty
+    one. The test polls pg_stat_activity/pg_locks until B is observed WAITING
+    on A's advisory lock, then releases A and asserts B's staged roster carries
+    both runs. Without the resolve-through-insert lock the staging read never
+    waits and the poll times out."""
     import asyncio
     from unittest.mock import patch
 
@@ -907,6 +910,17 @@ async def test_roster_staging_waits_out_inflight_registration(reg, tmp_path):
         pool_idx, _ = await insert_sequenced_pool(
             conn, sequencing_run_idx=seq_run_idx, created_by_idx=reg["caller_idx"]
         )
+
+    # One run registered and committed before either task starts, so the
+    # no-lock counterfactual is a truncated roster, not an empty one.
+    pre_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    pre_result = await _register(reg, study_header=header, ena_runs=[pre_run])
+    assert pre_result.ena_runs[0].status is EnaRunRegistrationStatus.REGISTERED
 
     a_in_insert = asyncio.Event()
     release_a = asyncio.Event()
@@ -956,7 +970,66 @@ async def test_roster_staging_waits_out_inflight_registration(reg, tmp_path):
     import pyarrow.parquet as pq
 
     roster = pq.read_table(bound[ENA_RUN_MAP_BINDING]).column("ena_run_accession").to_pylist()
-    assert roster == [run_1.run_accession]
+    # Both the pre-existing run and A's — the truncated-roster counterfactual.
+    assert roster == [pre_run.run_accession, run_1.run_accession]
+
+
+async def test_run_inserts_follow_one_global_sample_order(reg):
+    """Runs register in one global (sample_accession, run_accession) order,
+    across platforms: biosample de-dup holds unique-row locks study-wide, so
+    concurrent imports sharing new ENA samples must take those keys in a
+    common order or Postgres deadlocks one of them into a per-run FAILED that
+    nothing redrives.
+
+    The input is handed over DESCENDING by sample with platforms interleaved,
+    so neither the input order nor the old platform-grouped iteration can
+    produce the asserted order."""
+    from unittest.mock import patch
+
+    from qiita_control_plane.ena_import import registration
+
+    study_accession = unique_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    s1, s2, s3 = sorted(unique_accession("SAMN") for _ in range(3))
+    runs = [
+        _run(
+            run_accession=unique_accession("SRR"),
+            experiment_accession=unique_accession("SRX"),
+            sample_accession=s3,
+            study_accession=study_accession,
+            instrument_platform="ILLUMINA",
+        ),
+        _run(
+            run_accession=unique_accession("SRR"),
+            experiment_accession=unique_accession("SRX"),
+            sample_accession=s2,
+            study_accession=study_accession,
+            instrument_platform="OXFORD_NANOPORE",
+        ),
+        _run(
+            run_accession=unique_accession("SRR"),
+            experiment_accession=unique_accession("SRX"),
+            sample_accession=s1,
+            study_accession=study_accession,
+            instrument_platform="ILLUMINA",
+        ),
+    ]
+
+    recorded: list[str] = []
+    orig_register_one = registration._register_one_ena_run
+
+    async def recording_register_one(conn, **kwargs):
+        recorded.append(kwargs["ena_run"].run_accession)
+        return await orig_register_one(conn, **kwargs)
+
+    with patch.object(registration, "_register_one_ena_run", recording_register_one):
+        result = await _register(reg, study_header=header, ena_runs=runs)
+
+    assert {o.status for o in result.ena_runs} == {EnaRunRegistrationStatus.REGISTERED}
+    expected = [
+        r.run_accession for r in sorted(runs, key=lambda r: (r.sample_accession, r.run_accession))
+    ]
+    assert recorded == expected
 
 
 # ---------------------------------------------------------------------------
