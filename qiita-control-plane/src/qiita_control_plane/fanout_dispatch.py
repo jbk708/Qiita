@@ -363,7 +363,10 @@ async def top_up_dispatch(
             return []
 
         # Occupied slots = released (NOT held) tickets still in flight. A held
-        # ticket occupies no slot; a just-released-but-still-'pending' one does.
+        # ticket occupies no slot; a just-released-but-still-'pending' one does
+        # — including one still queued for a dispatch slot (see
+        # dispatch._DISPATCH_CONCURRENCY), so a cohort reading "at its cap" can
+        # be queued rather than executing; it is durably next in line either way.
         running = await conn.fetchval(
             f"SELECT count(*) FROM qiita.work_ticket"
             f" WHERE {where} AND NOT dispatch_held"

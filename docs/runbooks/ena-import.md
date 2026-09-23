@@ -37,6 +37,20 @@ to clear the gate first.
    one. This is the ticket that actually pulls read bytes; registration itself never
    touches read data.
 
+That gate ends at submit. The background dispatch each submitted ticket starts runs
+past it under its own process-wide bound: at most **8** dispatch tasks run at once
+(`_DISPATCH_CONCURRENCY` in `qiita-control-plane/src/qiita_control_plane/dispatch.py`,
+download workflows included), so a large import queues its downloads rather than
+pressuring the control plane's connection pool. A ticket past the cap dispatches as
+soon as a slot frees — nothing fails while it waits — and logs `queued behind the
+dispatch cap` at INFO when it starts waiting, `dispatched after waiting` when it gets
+one. The queue is a single FIFO shared by every dispatch path: ENA downloads, user-
+submitted tickets, a redrive through `POST /work-ticket/{idx}/run`, and a restart's
+re-attach all wait on the same 8 slots, so eight hours-long downloads can hold a user
+ticket until one finishes. Raising the cap is a joint decision with the connection
+pool and `FANOUT_MAX_INFLIGHT` — the sizing note on the constant says what it is
+weighed against.
+
 ### Re-importing, and studies we created ourselves
 
 Re-importing an accession is the supported way to pick up runs a bioproject gained
