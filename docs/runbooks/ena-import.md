@@ -30,7 +30,11 @@ to clear the gate first.
    runs go into a `sequenced_pool` on it — a multi-platform study yields more than one
    pool. Each run's ENA sample attributes are harmonized onto its biosample's metadata
    the first time that biosample is created (a re-import or a cross-study reuse does
-   not re-harmonize).
+   not re-harmonize). Each run also keeps ENA's four deposited `library_*` values as
+   study-local `ena library strategy` / `ena library source` /
+   `ena library selection` / `ena library layout` metadata on its prep_sample — new
+   imports only, since runs imported before that writer existed are not backfilled,
+   and a field ENA left blank writes no row.
 3. **Submit** — one `download-ena-study` work ticket per pool holding the study's
    runs, scoped to that `sequenced_pool`. A pool whose ticket is in flight or finished
    reuses it; one with no ticket, or whose ticket failed or was cancelled, gets a new
