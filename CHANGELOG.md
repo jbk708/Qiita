@@ -23,11 +23,17 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 - **ENA import preserves every deposited `library_*` field as prep_sample metadata
   (#599).** `register_ena_study` now writes `library_strategy`, `library_source`,
-  `library_selection`, and `library_layout` verbatim onto each run's prep_sample as
-  study-local TEXT fields (get-or-create per study), so what ENA deposited survives
+  `library_selection`, and `library_layout` onto each run's prep_sample as the
+  study-local TEXT fields `ena library strategy`, `ena library source`,
+  `ena library selection`, and `ena library layout` — whitespace-trimmed, otherwise
+  exactly as deposited (no case normalization), so what ENA deposited survives
   independently of the `prep_protocol` mapping, which consumes only strategy/source
-  and is slated for replacement. A field ENA left blank writes no row — the slot
-  records what ENA deposited, not a substitute.
+  and is slated for replacement. The four fields are resolved and vetted once per
+  study before any run is written, so a pre-existing field at one of those names that
+  is non-text, unique within the study, or globally linked fails the whole accession
+  loudly instead of run by run. A field ENA left blank writes no row. **New imports
+  only:** runs imported before this change are not backfilled, so a re-import of an
+  older study leaves those runs' slots empty.
 
 - **Deploy proves outbound HTTPS to the ENA archives, so a blocked host fails the deploy
   instead of every import (#584).** `deploy/verify.sh` gains an `ena-reachability` check

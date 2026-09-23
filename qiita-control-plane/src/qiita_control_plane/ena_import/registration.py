@@ -19,7 +19,10 @@ Order of operations:
      already carries this run's `ena_run_accession` (idempotent re-import), else
      map library_strategy/library_source to a curated prep_protocol name, import
      via `import_sequenced_prep_sample`, and preserve all four ENA `library_*`
-     fields verbatim as study-local prep_sample metadata (`_library_metadata`).
+     fields (whitespace-trimmed, otherwise as deposited) as study-local
+     prep_sample metadata. The four fields are resolved and vetted once for
+     the study, before any run is written (`_ensure_library_fields`); each run
+     then only fills values (`_library_metadata`).
 
 A per-run failure, harmonization included, is caught and reported on its
 `EnaRunRegistrationOutcome`. No read bytes or batch fan-out here -- those live
@@ -43,7 +46,8 @@ from qiita_common.models.ena import (
 from qiita_control_plane.repositories._sample_helpers import (
     fetch_metadata_checklist_idx_by_name,
     insert_entity_to_study,
-    write_local_metadata_or_diagnose,
+    resolve_local_study_field,
+    write_local_metadata_on_resolved_field,
 )
 from qiita_control_plane.repositories.biosample import (
     resolve_or_import_biosample_by_ena_accession,
@@ -76,6 +80,23 @@ _ERC000011_CHECKLIST_NAME = "ERC000011"
 # both cases: the alias is absent on some samples (DDBJ-brokered ones return it
 # empty), and the sample accession stands in.
 ENA_SAMPLE_ID_FIELD_NAME = "ena sample id"
+
+# Study-local display names for the four deposited ENA `library_*` fields.
+# Lowercase and "ena "-prefixed like ENA_SAMPLE_ID_FIELD_NAME: this import is
+# what writes them, and staying clear of the byte-identical names of the
+# globals prune_prep_sample_global_fields deleted keeps a re-seed of those
+# globals from shadowing these local fields with a conflicting global.
+ENA_LIBRARY_STRATEGY_FIELD_NAME = "ena library strategy"
+ENA_LIBRARY_SOURCE_FIELD_NAME = "ena library source"
+ENA_LIBRARY_SELECTION_FIELD_NAME = "ena library selection"
+ENA_LIBRARY_LAYOUT_FIELD_NAME = "ena library layout"
+
+_LIBRARY_FIELD_DISPLAY_NAMES = (
+    ENA_LIBRARY_STRATEGY_FIELD_NAME,
+    ENA_LIBRARY_SOURCE_FIELD_NAME,
+    ENA_LIBRARY_SELECTION_FIELD_NAME,
+    ENA_LIBRARY_LAYOUT_FIELD_NAME,
+)
 
 
 class EnaRunRegistrationStatus(StrEnum):
@@ -176,6 +197,10 @@ async def register_ena_study(
 
     Never raises for a per-run failure (see `EnaRunRegistrationOutcome`); an
     unmappable `instrument_platform` is one such isolated per-run failure.
+    It does raise -- before any run is written -- when a study-local field at
+    one of the four `library_*` display names cannot hold these values (see
+    `_ensure_library_fields`), so the whole accession fails loudly rather
+    than run by run.
     """
     # A run whose sample has no entry here harmonizes against an empty map
     # rather than failing.
@@ -207,6 +232,16 @@ async def register_ena_study(
                 continue
             ena_runs_by_platform[platform].append(ena_run)
 
+        # Resolve the four library_* fields once for the study, before any run
+        # is written -- but only when a run will be written: a pure re-import
+        # of already-present runs adds no values and so mints no fields. Ahead
+        # of pool resolution too, so a field-shape clash mints nothing at all.
+        library_field_idxs: dict[str, int] = {}
+        if any(ena_run.run_accession not in already_present for ena_run in ena_runs):
+            library_field_idxs = await _ensure_library_fields(
+                conn, study_idx=study_idx, created_by_idx=caller_idx
+            )
+
         target_pool_idx_by_platform: dict[Platform, int | None] = {}
         created_pools: list[CreatedPool] = []
         for platform, platform_runs in ena_runs_by_platform.items():
@@ -232,6 +267,7 @@ async def register_ena_study(
                     caller_idx=caller_idx,
                     metadata_checklist_idx=metadata_checklist_idx,
                     attrs_by_sample_accession=attrs_by_sample_accession,
+                    library_field_idxs=library_field_idxs,
                 )
 
     # Return per-run outcomes in the caller's input order.
@@ -299,20 +335,59 @@ async def _resolve_platform_pools(
 
 
 def _library_metadata(ena_run: EnaRunRecord) -> dict[str, str]:
-    """The run's four ENA `library_*` fields verbatim, keyed by study-local
-    display name. A field ENA left blank yields no entry: this slot records
-    what ENA deposited, and silence says it deposited nothing."""
+    """The run's four deposited `library_*` values, whitespace-trimmed, keyed
+    by the study-local display name.
+
+    A field ENA left blank yields no entry, and the reader cannot tell the
+    causes apart: ENA deposited nothing, ENA deposited only whitespace (the
+    model normalizes both to None), or the run was imported before this
+    writer existed -- already-present runs are skipped, so a re-import does
+    not backfill them. Writing no row rather than a placeholder is deliberate:
+    the slot is a record of the deposit, not a field to fill.
+    """
     deposited = {
-        "Library strategy": ena_run.library_strategy,
-        "Library source": ena_run.library_source,
-        "Library selection": ena_run.library_selection,
-        "Library layout": ena_run.library_layout,
+        ENA_LIBRARY_STRATEGY_FIELD_NAME: ena_run.library_strategy,
+        ENA_LIBRARY_SOURCE_FIELD_NAME: ena_run.library_source,
+        ENA_LIBRARY_SELECTION_FIELD_NAME: ena_run.library_selection,
+        ENA_LIBRARY_LAYOUT_FIELD_NAME: ena_run.library_layout,
     }
     return {
         display_name: value.strip()
         for display_name, value in deposited.items()
-        if value is not None and value.strip()
+        if value is not None
     }
+
+
+async def _ensure_library_fields(
+    conn: asyncpg.Connection, *, study_idx: int, created_by_idx: int
+) -> dict[str, int]:
+    """Get-or-create the study's four `library_*` fields once, before any run
+    is written; return {display_name: study_field_idx} for the per-run value
+    writes.
+
+    Resolving here instead of inside each run's transaction is what makes a
+    shape clash -- a pre-existing field at one of these names that is non-text,
+    unique within the study, or globally linked -- fail the whole study loudly
+    before the first run, instead of rolling runs back one by one mid-loop:
+    the run's own data is fine, only the slot is wrong, so the run must not
+    pay for it. The field rows are per-study constants and survive a later
+    failure; a retry re-resolves them identically.
+    """
+    field_idxs: dict[str, int] = {}
+    async with conn.transaction():
+        for display_name in _LIBRARY_FIELD_DISPLAY_NAMES:
+            field_idx, _created, _row = await resolve_local_study_field(
+                conn,
+                spec=PREP_SAMPLE_METADATA_SPEC,
+                study_idx=study_idx,
+                display_name=display_name,
+                created_by_idx=created_by_idx,
+                # Library values repeat across runs by construction, so a
+                # unique field would take the second identical value down.
+                enforce_unique_in_study=True,
+            )
+            field_idxs[display_name] = field_idx
+    return field_idxs
 
 
 async def _register_one_ena_run(
@@ -326,6 +401,7 @@ async def _register_one_ena_run(
     caller_idx: int,
     metadata_checklist_idx: int,
     attrs_by_sample_accession: dict[str, EnaSampleAttributes],
+    library_field_idxs: dict[str, int],
 ) -> EnaRunRegistrationOutcome:
     """Register one ENA run inside its own transaction (per-run atomicity: a
     partial failure rolls back only this run). Never raises: every failure mode
@@ -409,15 +485,17 @@ async def _register_one_ena_run(
                 ena_experiment_accession=ena_run.experiment_accession,
                 ena_run_accession=ena_run.run_accession,
             )
-            # After the composer, whose study-link inserts arm the
-            # reject_if_link_retired trigger this metadata insert fires.
-            # Study-local, not the global slot: this is submitter free text.
+            # Value writes only: _ensure_library_fields vetted the four
+            # fields before the loop. The composer's study-link insert above
+            # is what lets the unconditional reject_if_link_retired trigger
+            # pass on each of these inserts.
             for display_name, value in _library_metadata(ena_run).items():
-                await write_local_metadata_or_diagnose(
+                await write_local_metadata_on_resolved_field(
                     conn,
                     spec=PREP_SAMPLE_METADATA_SPEC,
                     entity_idx=result.prep_sample_idx,
                     study_idx=study_idx,
+                    study_field_idx=library_field_idxs[display_name],
                     display_name=display_name,
                     data_type=FieldDataType.TEXT,
                     value=value,
