@@ -55,6 +55,14 @@ ticket until one finishes. Raising the cap is a joint decision with the connecti
 pool and `FANOUT_MAX_INFLIGHT` — the sizing note on the constant says what it is
 weighed against.
 
+A download ticket's roster read also waits at most 90 s
+(`POOL_LOCK_WAIT_TIMEOUT_S`) for an in-flight registration of the same
+sequencing_run to commit, so a study of many hundreds of runs cannot fail the
+read by holding that lock past the pool's default 10 s statement budget. A
+download ticket that still fails there is FAILED/RETRIABLE: let the import
+finish, then redrive it with `POST /work-ticket/{idx}/run` — the re-read only
+adds runs.
+
 ### Re-importing, and studies we created ourselves
 
 Re-importing an accession is the supported way to pick up runs a bioproject gained
