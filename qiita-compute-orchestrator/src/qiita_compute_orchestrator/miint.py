@@ -88,7 +88,9 @@ PARQUET_OPTS_CHUNKED: str = f"{PARQUET_OPTS}, ROW_GROUP_SIZE {CHUNK_ROW_GROUP_SI
 # itself, so a job must set it BELOW the cgroup. The size each job wants is
 # resolved by `resolve_duckdb_memory_gb()` from the real cgroup
 # (`slurm_alloc_gb()` / `SLURM_MEM_PER_NODE`) so a per-run `--mem-gb` override
-# reaches DuckDB; a per-job literal is only the off-SLURM fallback.
+# reaches DuckDB; off SLURM the per-job literal is only the ceiling, itself
+# bounded by detected host RAM (`detected_ram_gb()`) so it can never exceed the
+# machine it runs on.
 # Threads are still passed as a literal (the cgroup cpu allocation) and also size
 # the headroom — see `duckdb_headroom_gb`.
 
@@ -197,16 +199,69 @@ def duckdb_headroom_gb(threads: int) -> int:
     return DUCKDB_BASE_HEADROOM_GB + math.ceil(threads * DUCKDB_PER_THREAD_HEADROOM_GB)
 
 
+# Off SLURM there is no `SLURM_MEM_PER_NODE` to read; the ceiling is the host
+# (or its container). cgroup files are read directly because a local backend
+# inside a container is still cgroup-bounded even though no SLURM exported the
+# limit — sysconf alone would report the host the container sits on.
+_CGROUP_V2_MEMORY_MAX = Path("/sys/fs/cgroup/memory.max")
+_CGROUP_V1_MEMORY_LIMIT = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+
+
+def _sysconf_ram_gb() -> int | None:
+    """The host's physical memory (GB) via sysconf, or None where unsupported."""
+    try:
+        gib = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") // 1024**3
+    except ValueError, OSError:
+        return None
+    return gib if gib >= 1 else None
+
+
+def detected_ram_gb() -> int | None:
+    """The RAM ceiling (GB) a native job may assume off SLURM, or None undetectable.
+
+    This is the ceiling `resolve_duckdb_memory_gb()` substitutes when
+    `slurm_alloc_gb()` is None: the tightest active cgroup limit (v2
+    `memory.max`, then v1 `memory.limit_in_bytes`), else the host's physical
+    memory. Without it a per-job literal like `load`'s 31 GB is handed to
+    DuckDB on any machine — on a 32 GB host that left no room for the rest of
+    the process, Postgres, and the OS, and `make test-system` OOM'd three runs.
+
+    Fail-soft by contract: a missing/unreadable file, cgroup v2's `max`
+    (unlimited), the v1 unlimited sentinel (a value at or above the host
+    total), and an unsupported sysconf each step to the next source; total
+    failure returns None and callers keep their literal, i.e. the pre-#588
+    behaviour. A cgroup limit below 1 GB floors to 1, matching
+    `resolve_duckdb_memory_gb`'s own floor."""
+    total = _sysconf_ram_gb()
+    total_bytes = None if total is None else total * 1024**3
+    for path in (_CGROUP_V2_MEMORY_MAX, _CGROUP_V1_MEMORY_LIMIT):
+        try:
+            raw = path.read_text().strip()
+        except OSError:
+            continue
+        if not raw.isdecimal():
+            continue
+        value = int(raw)
+        if total_bytes is not None and value >= total_bytes:
+            continue
+        return max(1, value // 1024**3)
+    return total
+
+
 def resolve_duckdb_memory_gb(
     fallback_gb: int, *, threads: int, reserve_gb: int = 0, cap_gb: int | None = None
 ) -> int:
-    """DuckDB `memory_limit` (GB) sized to the real SLURM allocation, not a literal.
+    """DuckDB `memory_limit` (GB) sized to the real allocation, not a literal.
 
     Under SLURM the limit tracks the cgroup: ``alloc - headroom(threads) -
-    reserve_gb``, which is how a `--mem-gb` override finally reaches DuckDB. Off
-    SLURM (`slurm_alloc_gb()` is None) it returns `fallback_gb` — the job's
-    existing YAML-baseline-derived literal — so the local backend and tests are
-    unchanged.
+    reserve_gb``, which is how a `--mem-gb` override finally reaches DuckDB.
+    Off SLURM (`slurm_alloc_gb()` is None) `fallback_gb` is a CEILING, not the
+    answer: it is bounded by ``detected_ram_gb() - headroom(threads)`` so a
+    host that can't back the literal (a 32 GB box running `load`'s 31 GB)
+    still leaves room for the rest of the machine. Detection failure keeps
+    the literal, and a host at or above ``fallback + headroom`` is unchanged.
+    `reserve_gb` is a shared-cgroup carve-out and does not apply off SLURM —
+    the literal already sizes the job's own share.
 
     `threads` sizes the headroom (DuckDB's above-limit RSS overshoot scales with
     parallelism — see `duckdb_headroom_gb`); pass the same value handed to
@@ -216,7 +271,13 @@ def resolve_duckdb_memory_gb(
     large — a co-consumer job wants DuckDB modest (it only feeds/reassembles
     chunks), not allocation-sized. Never returns < 1."""
     alloc = slurm_alloc_gb()
-    resolved = fallback_gb if alloc is None else alloc - duckdb_headroom_gb(threads) - reserve_gb
+    if alloc is not None:
+        resolved = alloc - duckdb_headroom_gb(threads) - reserve_gb
+    else:
+        ram = detected_ram_gb()
+        resolved = (
+            fallback_gb if ram is None else min(fallback_gb, ram - duckdb_headroom_gb(threads))
+        )
     if cap_gb is not None:
         resolved = min(resolved, cap_gb)
     return max(1, resolved)

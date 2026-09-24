@@ -1900,6 +1900,17 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **A native job's DuckDB memory cap is bounded by the RAM the host actually has, so `make test-system` no longer OOMs a 32 GB machine (#588).**
+  Off SLURM there was no ceiling: `resolve_duckdb_memory_gb` returned the job's
+  literal unchanged, so the `load` step handed DuckDB a 31 GB `memory_limit` on
+  any box — three `make test-system` runs on a 32 GB host died (DuckDB OOM,
+  docker idle-shutdown, host kill). The off-SLURM branch now bounds the literal
+  by `detected_ram_gb() - headroom(threads)`: the tightest active cgroup limit
+  (v2 `memory.max`, then v1 `memory.limit_in_bytes`), else physical memory from
+  sysconf. A host at or above `fallback + headroom` is unchanged, detection
+  failure keeps the literal, and every job carrying an off-SLURM literal
+  (including `stage_local_fasta`'s 30) is covered by the one change.
+
 - **Work-ticket dispatch now has its own process-wide concurrency bound, so a burst of ticket submits can no longer starve the connection pool through dispatch alone (#598).**
   `_STUDY_CONCURRENCY` releases its permit at submit, but the fire-and-forget
   `schedule_dispatch` that submit starts keeps running, and acquiring connections, for
