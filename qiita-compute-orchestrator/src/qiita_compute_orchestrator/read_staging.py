@@ -26,6 +26,7 @@ from qiita_common.parquet import validate_parquet_path
 from .miint import (
     PARQUET_OPTS,
     apply_duckdb_settings,
+    detected_ram_gb,
     duckdb_headroom_gb,
     open_conn,
     slurm_alloc_gb,
@@ -39,11 +40,18 @@ def per_slot_caps(concurrency: int, *, threads: int, fallback_memory_gb: int) ->
     slots). Under SLURM the memory is the cgroup allocation minus headroom for
     all ``concurrency * threads`` threads, split evenly across slots — so a
     per-run ``--mem-gb`` override reaches each slot. Off SLURM
-    (`slurm_alloc_gb()` is None — tests / local backend) it falls back to
-    `fallback_memory_gb`, the caller's YAML-baseline-derived literal."""
+    (`slurm_alloc_gb()` is None — tests / local backend) the pool total is
+    bounded the way `resolve_duckdb_memory_gb` bounds a single job: each slot
+    gets at most `fallback_memory_gb` (the caller's YAML-baseline literal) and
+    at most an even share of ``detected_ram_gb() - headroom``. Detection
+    failure keeps the literal."""
     alloc = slurm_alloc_gb()
     if alloc is None:
-        return fallback_memory_gb, threads
+        ram = detected_ram_gb()
+        if ram is None:
+            return fallback_memory_gb, threads
+        usable = ram - duckdb_headroom_gb(concurrency * threads)
+        return max(1, min(fallback_memory_gb, usable // concurrency)), threads
     usable = alloc - duckdb_headroom_gb(concurrency * threads)
     return max(1, usable // concurrency), threads
 
