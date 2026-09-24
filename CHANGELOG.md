@@ -1915,16 +1915,22 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
-- **A native job's DuckDB memory cap is bounded by the RAM the host actually has, so `make test-system` no longer OOMs a 32 GB machine (#588).**
+- **A native job's DuckDB memory cap is bounded by the RAM the host actually has (#606).**
   Off SLURM there was no ceiling: `resolve_duckdb_memory_gb` returned the job's
   literal unchanged, so the `load` step handed DuckDB a 31 GB `memory_limit` on
   any box — three `make test-system` runs on a 32 GB host died (DuckDB OOM,
-  docker idle-shutdown, host kill). The off-SLURM branch now bounds the literal
-  by `detected_ram_gb() - headroom(threads)`: the tightest active cgroup limit
-  (v2 `memory.max`, then v1 `memory.limit_in_bytes`), else physical memory from
-  sysconf. A host at or above `fallback + headroom` is unchanged, detection
-  failure keeps the literal, and every job carrying an off-SLURM literal
-  (including `stage_local_fasta`'s 30) is covered by the one change.
+  docker idle-shutdown, host kill). The off-SLURM branch now treats the literal
+  as a ceiling — `min(fallback, detected_ram_gb() - headroom(threads) -
+  reserve_gb)` — where `detected_ram_gb()` takes the tightest limit across this
+  process's own cgroup (resolved from `/proc/self/cgroup`) and every ancestor up
+  to the mount root (cgroup v2 `memory.max`, v1 `memory.limit_in_bytes`), else
+  physical memory from sysconf. The same bound now reaches the per-slot
+  read-staging caps (`ingest_reads` / `ingest_ena_reads`) and the rype/routing
+  budgets; `host_filter` and `fastq_to_parquet` keep their small fixed caps by
+  documented design. A host at or above `fallback + headroom + reserve` is
+  unchanged, detection failure keeps the literal, and SLURM behavior is
+  untouched. The host is no longer OOM-killed, but GG2's `load` still exceeds
+  the reduced cap on a 32 GB machine — that remainder is tracked in #612.
 
 - **`qiita submit-pacbio-ingest` no longer re-queues prep_samples whose reads already
   loaded (#461).** A re-run gave every such prep_sample a fresh `bam-to-parquet` ticket,

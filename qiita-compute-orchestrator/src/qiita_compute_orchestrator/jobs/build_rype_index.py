@@ -56,6 +56,7 @@ from ..config import get_settings
 from ..derived_store import rype_index_path
 from ..miint import (
     apply_duckdb_settings,
+    detected_ram_gb,
     duckdb_headroom_gb,
     duckdb_tmp_dir,
     open_miint_conn,
@@ -212,21 +213,34 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     # DuckDB share stays bounded (cap at `_DUCKDB_MEMORY_CAP_GB`); rype gets the
     # rest of the cgroup. The cap is small because `rype_index_create` windows its
     # chunk feed (see the split note above), so DuckDB's working set is bounded by
-    # window size, not corpus size. Off SLURM both fall back to their literals
-    # (4 + 30). The headroom subtracted from rype's share is the same margin DuckDB
-    # reserves under the cgroup, so the two stay in lockstep from one source.
+    # window size, not corpus size. Off SLURM both literals are ceilings, each
+    # bounded by detected host RAM. The headroom subtracted from rype's share is
+    # the same margin DuckDB reserves under the cgroup, so the two stay in
+    # lockstep from one source.
     duckdb_memory_gb = resolve_duckdb_memory_gb(
         _DUCKDB_MEMORY_GB, threads=_DUCKDB_THREADS, cap_gb=_DUCKDB_MEMORY_CAP_GB
     )
     alloc_gb = slurm_alloc_gb()
-    rype_max_memory_gb = (
-        _RYPE_MAX_MEMORY_GB
-        if alloc_gb is None
-        else max(
+    if alloc_gb is not None:
+        rype_max_memory_gb = max(
             _RYPE_MAX_MEMORY_GB,
             alloc_gb - duckdb_memory_gb - duckdb_headroom_gb(_DUCKDB_THREADS),
         )
-    )
+    else:
+        # The cgroup split's terms against the host: rype is capped at what the
+        # machine has left after DuckDB's share and the headroom.
+        ram_gb = detected_ram_gb()
+        rype_max_memory_gb = (
+            _RYPE_MAX_MEMORY_GB
+            if ram_gb is None
+            else max(
+                1,
+                min(
+                    _RYPE_MAX_MEMORY_GB,
+                    ram_gb - duckdb_memory_gb - duckdb_headroom_gb(_DUCKDB_THREADS),
+                ),
+            )
+        )
 
     with duckdb_tmp_dir(workspace) as duckdb_tmp, open_miint_conn() as conn:
         apply_duckdb_settings(conn, duckdb_tmp, memory_gb=duckdb_memory_gb, threads=_DUCKDB_THREADS)
