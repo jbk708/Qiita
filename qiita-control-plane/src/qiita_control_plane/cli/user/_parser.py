@@ -45,6 +45,9 @@ from qiita_common.models import (
     Tier,
     WorkTicketState,
 )
+from qiita_common.work_ticket_constants import (
+    FORCE_RESUBMIT_EXPLANATION,
+)
 
 from .. import _common
 from .._reference_exclusion import add_user_exclusion_subparsers
@@ -589,7 +592,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Per-pool unique item identifier (a well position or library"
             " barcode). MUST also be the filename prefix of every fastq this"
-            " sample's fastq-to-parquet ticket processes: the control plane"
+            " prep_sample's fastq-to-parquet ticket processes: the control plane"
             " rejects a submission whose fastq basename does not start with"
             " this value."
         ),
@@ -620,15 +623,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_seqsample_create.add_argument(
         "--metadata-checklist-name",
-        help="Checklist name the sample claims conformance to (e.g. ERC000015)",
+        help="Checklist name the prep_sample claims conformance to (e.g. ERC000015)",
     )
     p_seqsample_create.add_argument(
         "--ena-experiment-accession",
-        help="ENA experiment accession (ERX…), if this sample already has one",
+        help="ENA experiment accession (ERX…), if this sequenced_sample already has one",
     )
     p_seqsample_create.add_argument(
         "--ena-run-accession",
-        help="ENA run accession (ERR…), if this sample already has one",
+        help="ENA run accession (ERR…), if this sequenced_sample already has one",
     )
     p_seqsample_create.add_argument(
         "--global-internal-names",
@@ -736,13 +739,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mask_list = p_mask_sub.add_parser(
         "list",
         help=(
-            "List read-filtering masks with their per-mask sample tallies (GET /mask-definition)"
+            "List read-filtering masks with their per-mask prep_sample tallies"
+            " (GET /mask-definition)"
         ),
     )
     p_mask_list.add_argument(
         "--sequenced-pool-idx",
         type=int,
-        help="Only masks with at least one sample on this sequenced_pool",
+        help="Only masks with at least one prep_sample on this sequenced_pool",
     )
     p_mask_list.add_argument(
         "--prep-sample-idx",
@@ -761,7 +765,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mask_samples = p_mask_sub.add_parser(
         "samples",
         help=(
-            "List the samples masked under one mask, with their masking state"
+            "List the prep_samples masked under one mask, with their masking state"
             " (GET /mask-definition/{mask_idx}/prep-sample)"
         ),
     )
@@ -769,7 +773,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_mask_samples.add_argument(
         "--sequenced-pool-idx",
         type=int,
-        help="Only samples on this sequenced_pool",
+        help="Only prep_samples on this sequenced_pool",
     )
     p_mask_samples.set_defaults(handler=_handle_mask_samples)
 
@@ -779,12 +783,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_processing_sub = p_processing.add_subparsers(dest="processing_cmd", required=True)
     p_processing_list = p_processing_sub.add_parser(
         "list",
-        help="List assembly runs with their per-run sample tallies (GET /processing)",
+        help="List assembly runs with their per-run prep_sample tallies (GET /processing)",
     )
     p_processing_list.add_argument(
         "--sequenced-pool-idx",
         type=int,
-        help="Only runs with at least one sample on this sequenced_pool",
+        help="Only runs with at least one prep_sample on this sequenced_pool",
     )
     p_processing_list.add_argument(
         "--prep-sample-idx",
@@ -808,7 +812,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_processing_samples = p_processing_sub.add_parser(
         "samples",
         help=(
-            "List the samples assembled under one run, with their assembly state"
+            "List the prep_samples assembled under one run, with their assembly state"
             " (GET /processing/{processing_idx}/prep-sample)"
         ),
     )
@@ -816,7 +820,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_processing_samples.add_argument(
         "--sequenced-pool-idx",
         type=int,
-        help="Only samples on this sequenced_pool",
+        help="Only prep_samples on this sequenced_pool",
     )
     p_processing_samples.set_defaults(handler=_handle_processing_samples)
 
@@ -830,7 +834,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "list",
         help=(
             "List the alignments over a sequenced pool, each with the config params it"
-            " ran under and its completed / total sample counts"
+            " ran under and its completed / total prep_sample counts"
         ),
     )
     p_alignment_list.add_argument("--sequencing-run-idx", type=int, required=True)
@@ -892,7 +896,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         action="append",
         help=(
-            "Restrict the cohort to these samples; repeat for several. Omit to use the"
+            "Restrict the cohort to these prep_samples; repeat for several. Omit to use the"
             " pool's whole mintable cohort for this alignment (`qiita alignment cohort`)."
             " The cohort changes the table — breadth of coverage is measured over it."
         ),
@@ -903,7 +907,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=CoverageScope.POOLED.value,
         help=(
             "Whether breadth of coverage is measured over the whole cohort (pooled,"
-            " default) or per (sample, genome). Per-sample is strictly stricter."
+            " default) or per (prep_sample, genome). Per-prep_sample is strictly stricter."
         ),
     )
     p_ft_build.add_argument(
@@ -1129,7 +1133,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help=(
             "Only tickets that touch this sequenced_pool: pool-scoped, on one of its"
-            " samples, or on a block covering one of them."
+            " prep_samples, or on a block covering one of them."
         ),
     )
     p_ticket_list.add_argument(
@@ -1476,23 +1480,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         required=True,
         help=(
-            "Qiita prep_protocol_idx to FK every per-sample row to. Today"
-            " applied uniformly across the whole pool because the preflight"
-            " does not carry a Qiita prep_protocol identifier; a future"
-            " preflight column may let this flag come out of the file like"
-            " the per-row study_idx already does (project.qiita_id)."
+            "Qiita prep_protocol_idx to record on every prep_sample this"
+            " submission creates. Applied uniformly across the pool."
         ),
     )
     p_submit_bcl.add_argument(
         "--force",
         action="store_true",
         help=(
-            "Re-submit even when a COMPLETED bcl-convert ticket already exists"
-            " for this pool. Without it the submission is refused, because a"
-            " re-run re-registers the pool's reads into the lake (duplicate"
-            " rows — DuckLake has no uniqueness). Requires wet_lab_admin or"
-            " system_admin. The non-force recovery is delete-sequenced-pool"
-            " then resubmit."
+            "Submit anyway when a COMPLETED bcl-convert ticket already exists"
+            f" for this pool, instead of being refused. {FORCE_RESUBMIT_EXPLANATION}"
         ),
     )
     p_submit_bcl.set_defaults(handler=_handle_submit_bcl_convert)
@@ -1500,7 +1497,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_submit_reads = sub.add_parser(
         "submit-reads",
         help=(
-            "Load one sample's reads from THIS machine: upload the FASTQ(s) or BAM"
+            "Load one prep_sample's reads from THIS machine: upload the FASTQ(s) or BAM"
             " to the data plane, then submit the ingest work-ticket against them."
         ),
         description=(
@@ -1533,7 +1530,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "Unaligned basecaller uBAM (PacBio HiFi / ONT) on this machine."
-            " An aligned BAM is rejected by the loader."
+            " Declared unaligned to the loader, which trusts the declaration"
+            " rather than checking it — an aligned BAM is loaded, not refused."
         ),
     )
     p_submit_reads.add_argument(
@@ -1574,20 +1572,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Bundled operator gesture for PacBio HiFi ingest: mint (or reuse) a"
             " sequencing-run row, attach a sequenced-pool with the preflight blob,"
-            " and fan out one bam-to-parquet ingest ticket per demultiplexed sample."
+            " and fan out one bam-to-parquet ingest ticket per demultiplexed prep_sample."
         ),
         description=(
             "Submit PacBio HiFi ingest end-to-end. PacBio arrives already"
             " demultiplexed (one uBAM per barcode under"
             " {run_folder}/{smartcell}/hifi_reads/), so unlike bcl-convert there is"
-            " no in-workflow demux: each sample's BAM is located on disk by its"
+            " no in-workflow demux: each prep_sample's BAM is located on disk by its"
             " barcode and loaded by its own bam-to-parquet ticket. A barcode reused"
             " across SMRT cells fails fast (the preflight now carries a SMRT-cell"
             " field, but until it is populated the reuse cannot be disambiguated)."
             " The run + pool are"
-            " find-or-create and the per-sample roster is create-missing, so"
+            " find-or-create and the per-prep_sample roster is create-missing, so"
             " re-running after a partial failure converges without cleanup —"
-            " reusing what exists and retrying only the missing samples/tickets."
+            " reusing what exists and retrying only the missing prep_samples/tickets."
         ),
     )
     p_submit_pacbio.add_argument(
@@ -1598,7 +1596,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Absolute path to the PacBio run folder on the shared filesystem. Must"
             " contain per-SMRT-cell well subdirectories with"
             " hifi_reads/*.hifi_reads.<barcode>.bam demultiplexed reads. Each"
-            " sample's resolved BAM path is passed as action_context.bam_path on its"
+            " prep_sample's resolved BAM path is passed as action_context.bam_path on its"
             " bam-to-parquet ticket."
         ),
     )
@@ -1610,7 +1608,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Path to the local kl-run-preflight SQLite file. The CLI reads it"
             " (refuses empty), base64-encodes the bytes, and attaches the blob to"
             " the sequenced-pool row so a later read-mask submission can re-read the"
-            " per-sample protocol columns. Same content-addressed pool find-or-create"
+            " per-prep_sample protocol columns. Same content-addressed pool find-or-create"
             " as submit-bcl-convert."
         ),
     )
@@ -1636,21 +1634,13 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         required=True,
         help=(
-            "Qiita prep_protocol_idx to FK every per-sample row to. Applied"
-            " uniformly across the pool (the preflight carries no Qiita"
-            " prep_protocol identifier), mirroring submit-bcl-convert. NOT"
-            " validated against the platform — passing a non-PacBio/short-read"
-            " protocol here silently mislabels every sample, so double-check it is"
-            " the intended long-read protocol."
-        ),
-    )
-    p_submit_pacbio.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "Re-submit each sample's bam-to-parquet ticket even when a COMPLETED"
-            " one already exists (a re-run re-registers reads into the lake —"
-            " DuckLake has no uniqueness). Requires wet_lab_admin or system_admin."
+            "Qiita prep_protocol_idx to record on every prep_sample this"
+            " submission creates. Applied uniformly across the pool (the preflight"
+            " carries no Qiita prep_protocol identifier), mirroring"
+            " submit-bcl-convert. NOT validated against the platform — passing a"
+            " non-PacBio/short-read protocol here silently mislabels every"
+            " prep_sample in the run, so double-check it is the intended long-read"
+            " protocol."
         ),
     )
     p_submit_pacbio.set_defaults(handler=_handle_submit_pacbio_ingest)
@@ -1658,21 +1648,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_delete_pool = sub.add_parser(
         "delete-sequenced-pool",
         help=(
-            "Hard-delete a full sequenced-pool (one bcl-convert sample"
-            " sheet's worth of samples) and everything under it. Admin only."
+            "Hard-delete a full sequenced_pool (one bcl-convert sample"
+            " sheet's worth of prep_samples) and everything under it. Admin only."
         ),
         description=(
             "Fully purge a sequenced_pool: the pool row plus every"
-            " sequenced-sample / prep-sample under it, their metadata, study"
-            " links, and pool-/sample-scoped work tickets, PLUS the DuckLake"
-            " read/read_mask rows those prep-samples produced and their durable"
-            " staged read copies on disk. The parent sequencing-run and the"
-            " underlying biosamples are retained. Because each prep-sample is"
-            " exclusive to this pool, deleting it removes those samples from"
+            " sequenced_sample / prep_sample under it, their metadata, study"
+            " links, and pool- and prep_sample-scoped work tickets, PLUS the DuckLake"
+            " read/read_mask rows those prep_samples produced and their durable"
+            " staged read copies on disk. The parent sequencing_run and the"
+            " underlying biosamples are retained. Because each prep_sample is"
+            " exclusive to this pool, deleting it removes those prep_samples from"
             " EVERY study they link to, not only one. Requires system_admin"
             " (sequenced_pool:delete). In-flight work tickets block the delete"
             " unconditionally; terminal tickets (completed/no_data/failed),"
-            " published prep-samples, and ENA-submitted samples block it unless"
+            " published prep_samples, and ENA-submitted sequenced_samples block it unless"
             " --force is passed."
         ),
     )
@@ -1694,7 +1684,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Override the soft blocks: delete even when terminal"
             " (completed/no_data/failed) work tickets reference the pool,"
-            " prep-samples are published into a study, or samples carry an ENA"
+            " prep-samples are published into a study, or sequenced-samples carry an ENA"
             " accession. Does NOT override in-flight work tickets."
         ),
     )
@@ -1703,8 +1693,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_submit_hf = sub.add_parser(
         "submit-host-filter-pool",
         help=(
-            "Bundled operator gesture: create one read mask per sample over a"
-            " pool's already-stored reads, host-filtering every sample against"
+            "Bundled operator gesture: create one read mask per prep_sample over a"
+            " pool's already-stored reads, host-filtering every prep_sample against"
             " the host reference(s) given on THIS submission."
         ),
         description=(
@@ -1713,9 +1703,9 @@ def _build_parser() -> argparse.ArgumentParser:
             " adapter/polyG/length trimming) followed by host filtering, recorded"
             " as a read_mask over the reads bcl-convert already stored — this"
             " command does NOT parse FASTQ or re-store reads. The host reference"
-            " is a property of THIS filtering config, not of the sample:"
+            " is a property of THIS filtering config, not of the prep_sample:"
             " --host-rype-reference-idx (with optional --host-minimap2-reference-idx)"
-            " names the reference(s) every sample in the pool is depleted against."
+            " names the reference(s) every prep_sample in the pool is depleted against."
             " Omit them to run QC-only with host filtering disabled (a pass-through"
             " for the whole pool). Because reads are stored once and masks are"
             " separate, the SAME pool can be re-submitted later against a different"
@@ -1723,9 +1713,9 @@ def _build_parser() -> argparse.ArgumentParser:
             " re-runs ingest. Each given reference is checked for ACTIVE status +"
             " its required index up front, so a misconfiguration aborts with zero"
             " side effects. The run's instrument_model is read once (GET"
-            " /sequencing-run) and forwarded per sample so QC's polyG step is"
+            " /sequencing-run) and forwarded per prep_sample so QC's polyG step is"
             " gated correctly. The existing one-in-flight-per-prep_sample guard"
-            " serializes concurrent masks of one sample; submit a second"
+            " serializes concurrent masks of one prep_sample; submit a second"
             " host-reference mask once the first pool's tickets are terminal."
         ),
     )
@@ -1739,14 +1729,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sequenced-pool-idx",
         type=int,
         required=True,
-        help="sequenced_pool_idx whose samples to fan out over.",
+        help="sequenced_pool_idx whose prep_samples to fan out over.",
     )
     p_submit_hf.add_argument(
         "--host-rype-reference-idx",
         type=int,
         default=None,
         help=(
-            "ACTIVE host reference_idx whose rype (.ryxdi) index every sample in"
+            "ACTIVE host reference_idx whose rype (.ryxdi) index every prep_sample in"
             " the pool is depleted against for this submission. Omit to run the"
             " whole pool QC-only with host filtering disabled. Checked ACTIVE +"
             " carrying a rype index up front. Re-submitting the same pool against a"
@@ -1779,9 +1769,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help=(
-            "Bypass per-sample host-filter resolution entirely and apply the given"
+            "Bypass per-prep_sample host-filter resolution entirely and apply the given"
             " --host-*-reference-idx pool-wide, blanks included (with none given,"
-            " disable host filtering pool-wide). The escape hatch for when a sample's"
+            " disable host filtering pool-wide). The escape hatch for when a prep_sample's"
             " host_taxon_id metadata is wrong or absent and you know better."
         ),
     )
@@ -1789,7 +1779,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help=(
-            "Resolve the pool and print what WOULD be submitted, per sample, then"
+            "Resolve the pool and print what WOULD be submitted, per prep_sample, then"
             " exit without creating any ticket. The way to see a pool's host-filter"
             " plan before fanning out hundreds of tickets against it."
         ),
@@ -1798,7 +1788,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--only-missing",
         action="store_true",
         help=(
-            "Skip samples that already have a read-mask ticket (any state),"
+            "Skip prep_samples that already have a read-mask ticket (any state),"
             " submitting only those with none. Use to fill in a pool whose prior"
             " fan-out was interrupted, without duplicating already-submitted"
             " work. Off by default so re-submitting the whole pool against a"
@@ -1812,20 +1802,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Bulk-block variant of submit-host-filter-pool: mask a whole pool as"
             " fixed ~10M-read blocks (one work-ticket per block) instead of one"
-            " ticket per sample."
+            " ticket per prep_sample."
         ),
         description=(
             "Plan + submit a pool's read masking as bulk BLOCKS in a single server"
             " call. Same filtering semantics and preflight as"
             " submit-host-filter-pool — --host-rype-reference-idx (with optional"
-            " --host-minimap2-reference-idx) names the reference(s) every sample is"
+            " --host-minimap2-reference-idx) names the reference(s) every prep_sample is"
             " depleted against, or omit both for a QC-only pass-through; each is"
             " checked ACTIVE + carrying its index up front — but the server"
             " partitions the pool by mask identity, tiles each partition into fixed"
             " ~10M-read blocks, and dispatches one block work-ticket per block."
-            " Per-sample completion is reconciled afterward. This shrinks the"
+            " Per-prep_sample completion is reconciled afterward. This shrinks the"
             " fan-out surface and gives each job a predictable input size. The mask"
-            " a block produces is identical to the per-sample read-mask of the same"
+            " a block produces is identical to the per-prep_sample read-mask of the same"
             " config, so the two paths interoperate."
         ),
     )
@@ -1839,14 +1829,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sequenced-pool-idx",
         type=int,
         required=True,
-        help="sequenced_pool_idx whose samples to tile into blocks.",
+        help="sequenced_pool_idx whose prep_samples to tile into blocks.",
     )
     p_submit_block.add_argument(
         "--host-rype-reference-idx",
         type=int,
         default=None,
         help=(
-            "ACTIVE host reference_idx whose rype (.ryxdi) index every sample in the"
+            "ACTIVE host reference_idx whose rype (.ryxdi) index every prep_sample in the"
             " pool is depleted against. Omit to plan the whole pool QC-only."
         ),
     )
@@ -1863,7 +1853,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help=(
-            "Bypass per-sample host-filter resolution and apply the given"
+            "Bypass per-prep_sample host-filter resolution and apply the given"
             " --host-*-reference-idx pool-wide (with none given, disable host"
             " filtering pool-wide)."
         ),
@@ -1872,7 +1862,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--only-missing",
         action="store_true",
         help=(
-            "Skip samples already carrying a completion gate for their resolved"
+            "Skip prep_samples already carrying a completion gate for their resolved"
             " mask (applied server-side), so an interrupted plan re-runs only the"
             " gap. Off by default so a re-plan against a different host reference"
             " still tiles the whole pool."
@@ -1887,17 +1877,17 @@ def _build_parser() -> argparse.ArgumentParser:
             " work-ticket per block), in a single server call."
         ),
         description=(
-            "Plan + submit a pool's bulk-block sharded alignment. Aligns the samples"
+            "Plan + submit a pool's bulk-block sharded alignment. Aligns the prep_samples"
             " whose reads are masked-complete under --mask-idx against the sharded"
             " --reference-idx, tiling them into blocks and dispatching one"
             " work-ticket per block under the per-alignment fan-out throttle."
             " Alignment does NOT re-derive the mask config: you name the mask the"
-            " reads were produced under, so a pool masked any way (per-sample or"
+            " reads were produced under, so a pool masked any way (per-prep_sample or"
             " block; any host / adapter / lima / syndna config) aligns by pointing at"
             " its mask_idx. The ALIGNER is not a caller choice either — the server"
             " derives it from the run's sequencing platform (Illumina bowtie2,"
             " PacBio HiFi / Nanopore minimap2) and reports it back, as it does the"
-            " block size. Samples that cannot be planned are reported, not fatal."
+            " block size. prep_samples that cannot be planned are reported, not fatal."
         ),
     )
     p_submit_align.add_argument(
@@ -1910,7 +1900,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sequenced-pool-idx",
         type=int,
         required=True,
-        help="sequenced_pool_idx whose masked samples to align.",
+        help="sequenced_pool_idx whose masked prep_samples to align.",
     )
     p_submit_align.add_argument(
         "--reference-idx",
@@ -1927,7 +1917,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         required=True,
         help=(
-            "mask_idx the pool's reads were masked under. Only samples whose"
+            "mask_idx the pool's reads were masked under. Only prep_samples whose"
             " mask_sample gate is 'completed' under it are aligned; the rest are"
             " reported skipped."
         ),
@@ -1936,7 +1926,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--only-missing",
         action="store_true",
         help=(
-            "Skip samples already carrying an alignment gate for the resolved"
+            "Skip prep_samples already carrying an alignment gate for the resolved"
             " alignment (applied server-side), so an interrupted plan re-runs only"
             " the gap. Off by default, which makes an already-gated pool a 409"
             " rather than a silent partial re-plan."
@@ -1948,7 +1938,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "pool-completion",
         help=(
             "Read a sequenced-pool's end-to-end processing rollup: its demux"
-            " (bcl-convert) state and how many samples finished host-masking"
+            " (bcl-convert) state and how many sequenced_samples finished host-masking"
             " (read-mask)."
         ),
         description=(
@@ -1960,7 +1950,7 @@ def _build_parser() -> argparse.ArgumentParser:
             " terminal-accounted state (masked, or NO_DATA) and a"
             " `fully_processed` flag set when demux COMPLETED and host-masking is"
             " complete. It tells the operator whether host-masking has finished,"
-            " by either path — the per-sample read-mask fan-out from"
+            " by either path — the per-prep_sample read-mask fan-out from"
             " submit-host-filter-pool, or a block-mask plan —"
             " including sequenced_samples a partial fan-out never submitted"
             " (`samples_not_submitted`) and masking runs withdrawn after the fact"

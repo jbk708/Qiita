@@ -1447,6 +1447,27 @@ fn replace_key_tables_names_each_table_once() {
     }
 }
 
+/// `read` is NOT replace-keyed, so a registration of a prep_sample's reads by a
+/// different ticket APPENDS rather than superseding. (A ticket's own earlier
+/// `read` rows are replaced, through `ticket_read_files_in_lake`, not through
+/// this table; `register_files_leaves_reads_another_ticket_registered` pins the
+/// end-to-end behaviour against a real catalog.)
+///
+/// Pinned because `FORCE_RESUBMIT_EXPLANATION` (qiita-common
+/// `work_ticket_constants.py`) tells users a forced re-run stores the pool's
+/// reads a second time; adding `read` to `REPLACE_KEY_TABLES` would make that
+/// text wrong.
+#[test]
+fn read_is_not_replace_keyed_so_a_forced_rerun_appends() {
+    assert!(
+        !REPLACE_KEY_TABLES
+            .iter()
+            .any(|entry| entry.table == "read" || entry.key_source == "read"),
+        "`read` became replace-keyed — FORCE_RESUBMIT_EXPLANATION and the 409 that \
+         carries it now overstate the damage; update them together"
+    );
+}
+
 /// Every `key_source` is itself a registered table carrying the same key.
 /// The borrowing delete SELECTs this entry's key columns out of the source's
 /// Parquet, so a source keyed on anything else would name a column that file

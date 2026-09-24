@@ -1017,6 +1017,21 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   depend on, and the Postgres and DuckLake `assembly_membership` comments name it instead of
   enumerating members (a comment-only migration).
 
+- **A getting-started runbook for bringing a run in (#461).** `docs/runbooks/getting-started.md`
+  walks the path the bundled ingest gestures actually require: create the study with a
+  `bioproject_accession`, create its biosamples with `biosample_accession`s, build the
+  kl-run-preflight file outside Qiita naming both, then `submit-bcl-convert` or
+  `submit-pacbio-ingest`. That order is forced: `_provision_run_pool_roster` resolves every
+  pre-flight row against existing Qiita rows keyed on those two accessions and exits without
+  side effects when either lookup misses, so a study minted without an accession cannot be
+  reached from a sheet at all. No runbook stated that prerequisite. Pool identity is the
+  SHA-256 of the pre-flight's bytes, so a retry converges only if it submits the same file;
+  the runbook says to keep it unchanged. The 409 a same-name, different-bytes re-submit gets
+  (`sequenced_pool_one_per_run_and_filename`) told the caller to rename the pre-flight, which
+  is right for two distinct pools colliding on a name and wrong for one pool whose file was
+  edited after it was submitted, where renaming mints a second pool that only a system_admin
+  can remove. The server cannot tell the two apart, so the 409 now names both remedies.
+
 - **A published feature table's rows can now be labelled without our identifiers (#448).**
   `POST /exported-feature` mints the public handle for a feature-axis entity, the way
   `/exported-identifier` already does for the sample axis — so a table, its taxonomy sidecar
@@ -1911,6 +1926,12 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   failure keeps the literal, and every job carrying an off-SLURM literal
   (including `stage_local_fasta`'s 30) is covered by the one change.
 
+- **`qiita submit-pacbio-ingest` no longer re-queues prep_samples whose reads already
+  loaded (#461).** A re-run gave every such prep_sample a fresh `bam-to-parquet` ticket,
+  which then failed at read numbering; the runbooks told users to expect those failures.
+  The fan-out now looks up a COMPLETED `bam-to-parquet` ticket for each reused
+  prep_sample and reports it as `skipped`, naming that ticket.
+
 - **Work-ticket dispatch now has its own process-wide concurrency bound, so a burst of ticket submits can no longer starve the connection pool through dispatch alone (#598).**
   `_STUDY_CONCURRENCY` releases its permit at submit, but the fire-and-forget
   `schedule_dispatch` that submit starts keeps running, and acquiring connections, for
@@ -2750,6 +2771,12 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   a different tie-break stores a different strand and casing with every hash assertion
   unmoved. One happy-path fixture is no longer a reverse-complement palindrome, so its
   `_hash` comparison exercises the fold instead of the identity.
+
+- **`submit-bcl-convert --help` named a pre-flight column that does not exist (#461).** The
+  `--prep-protocol-idx` help told operators the per-row `study_idx` "comes out of the file"
+  via `project.qiita_id`. The pinned kl-run-preflight schema has no such column; the study is
+  resolved from `project.bioproject_accession` through `/study/lookup-by-accession`. The help
+  now says that, and drops the speculation about a future pre-flight column.
 
 - **A sequence two loads both produced was stored twice, and reassembled twice as long
   (#457).** `feature_idx` is minted from the canonical sequence hash, so identical bytes
@@ -4213,6 +4240,62 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   first token, which is why the key scopes `bin_id` rather than treating it as globally
   unique or as one contig per row. None of that is recoverable from the bare `TEXT` column.
 
+- **The messages a user hits at the terminal say what happened, not how we store it (#461).**
+  The 409 for re-submitting a finished pool, the `submit-bcl-convert --force` help, and the
+  read-loading failures a `qiita ticket status` reports asked the reader to know about the lake,
+  DuckLake's lack of uniqueness, and `ON DELETE CASCADE` in order to act. They now name what
+  happened to the reader's data and which command to run, keeping the identifiers, roles,
+  recovery commands and — since `failure_reason` is an ops-triage surface as much as a user
+  one — the detail that says which call failed. The `force` explanation now lives in
+  `qiita_common.work_ticket_constants` and is consumed by the CLI flags, the 409 body and
+  the wire model's field description, because four copies had to be edited to fix it once.
+  The user CLI's help and descriptions name objects by kind — `biosample`, `prep_sample`
+  or `sequenced_sample`, never a bare "sample" — outside external terms (ENA's sample
+  accession, the pre-flight's sample sheet and sample table), as do the error bodies and
+  failure reasons this PR touches; control-plane code that is generic over both kinds keeps
+  "sample".
+
+- **`--force`, the read-numbering refusals and the retry advice name a remedy their reader
+  can act on (#461).** A forced re-run of a `sequenced_pool` action stores the pool's reads a
+  second time: its read-storage step short-circuits on the durable per-prep_sample staging
+  copy (`compute_reads_staging_path`, keyed on `prep_sample_idx` alone) before the mint, and
+  `register_files` replaces only rows the *same* ticket registered, so the forced ticket's
+  registration appends. The `--force` help, the 409 that offers it and the `force` field's
+  description say so. Where these named a
+  recovery, it is now one the reader can run or request: `qiita delete-sequenced-pool
+  --force`, with the account it needs (`sequenced_pool:delete` is system_admin only, and the
+  COMPLETED ticket blocks the delete unless forced), through one `POOL_REMOVAL_RECOVERY`
+  constant — there is no prep_sample delete. A read-numbering refusal over a range another
+  ticket reserved no longer says the reads are loaded when that ticket failed or was
+  cancelled — it may have stored them or not — and names `qiita ticket run` for that
+  ticket first, ahead of the pool delete for a deliberate re-load; over a ticket still in
+  flight it names `qiita ticket status` for that ticket; and it says the reads are loaded
+  only when that ticket COMPLETED. `/run` admits exactly `REDRIVABLE_WORK_TICKET_STATES`
+  plus PENDING, the set the refusal reads to decide whether to offer a redrive. The
+  runbooks now say to re-drive a failed job rather than re-run the submit, which queues a new
+  ticket. A pure-unit Rust test pins that `read` is absent from `REPLACE_KEY_TABLES`, the
+  table-level half of the `--force` claim. `fastq-to-parquet-retry-recovery.md` quotes the
+  current failure reasons.
+
+- **The user-facing runbooks are written for the lab, not for us (#461).** `getting-started.md`
+  and `pacbio-ingest.md` are what a person with samples reads, so no longer explain themselves
+  in route paths, guard-function names, column constraints and HTTP status codes. What a reader
+  has to *do* differently is unchanged and every mechanism that changes an outcome is still
+  stated — in terms of what they will see. Identifiers they type or read back (CLI flags, ticket
+  states, pre-flight column names, `skipped`) stay verbatim.
+
+- **`user-cli-quickstart.md` is removed; `getting-started.md` is the quickstart and the landing
+  page points at it (#461).** The old page walked one prep_sample in by hand, which nobody
+  should do on a live system; its only remaining use was the post-deploy smoke, so that recipe
+  now lives in `first-deploy.md` §11, written for the operator (a path-fed `qiita ticket
+  submit`). Its login, profile, study and biosample steps are owned by `getting-started.md`.
+  `qiita submit-reads` is unchanged and is documented by its `--help` and the `docs/auth.md`
+  command table. `pacbio-ingest.md` drops where-to-run-the-CLI, the pre-flight writability trap
+  and the `--force` rule, keeping only what has no Illumina counterpart; the accession snippet
+  uses `load_db_file` / `save_db_file`. The `study_access` grant mechanism moves to
+  `docs/auth.md`, which owns the auth surface, and the runbooks point at it rather than
+  spelling out the INSERT.
+
 - **A feature-table build now reads its reference before it streams anything (#448).** The
   reference's name and version are only needed by the manifest, written last, so the read that
   fetches them ran last too — which meant a reference this alignment names but the caller cannot
@@ -4713,6 +4796,10 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 
 ### Removed
+
+- **`qiita submit-pacbio-ingest --force` (#461).** The refusal `force` waives is scoped to
+  `sequenced_pool` actions, and PacBio ingest submits prep_sample-scoped tickets, so the flag
+  changed nothing but requiring wet_lab_admin. Passing it is now an argument error.
 
 - **The single-end rype projections are gone (#478).** `align_sharded._ROUTING_QUERY` and
   `host_filter._RYPE_QUERY` narrowed the classify relation to `sequence1` so miint would not
