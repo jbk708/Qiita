@@ -6,7 +6,7 @@ before the first import on a new deploy — several boundaries here are hard lim
 not "not implemented yet."
 
 Auth and the general CLI/API flow are **not** repeated here — see
-[`user-cli-quickstart.md`](user-cli-quickstart.md). This runbook covers only what is
+[`getting-started.md`](getting-started.md), step 0. This runbook covers only what is
 specific to importing from ENA.
 
 ## What an import does

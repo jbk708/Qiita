@@ -72,6 +72,7 @@ from qiita_common.auth_constants import Scope, SystemRole
 from qiita_common.log_tail import read_text_tail
 from qiita_common.models import (
     NON_TERMINAL_WORK_TICKET_STATES,
+    REDRIVABLE_WORK_TICKET_STATES,
     FanoutCohortKind,
     FanoutListResponse,
     FanoutOverrideRequest,
@@ -91,6 +92,7 @@ from qiita_common.models import (
     WorkTicketStepLogs,
     WorkTicketSummary,
 )
+from qiita_common.work_ticket_constants import FORCE_RESUBMIT_EXPLANATION
 
 from ..actions.context_validator import validate_context
 from ..actions.reference import (
@@ -127,8 +129,8 @@ _STEP_LOGS_DEFAULT_TAIL_LINES = 200
 _STEP_LOGS_MAX_TAIL_LINES = 5000
 _STEP_LOGS_MAX_TAIL_BYTES = 256 * 1024
 
-# /run applies to a PENDING ticket that was never dispatched and the two redrivable
-# terminal states (FAILED, CANCELLED). Everything else is refused. The
+# /run applies to a PENDING ticket that was never dispatched and the redrivable
+# terminal states (REDRIVABLE_WORK_TICKET_STATES). Everything else is refused. The
 # not-applicable set is the COMPLEMENT of the applicable set, so a new
 # WorkTicketState defaults to REFUSED — the safe direction; listing the refused
 # states positively would silently make a new state runnable.
@@ -139,16 +141,9 @@ _STEP_LOGS_MAX_TAIL_BYTES = 256 * 1024
 # live with a real slurm_job_id. The redrive's step-row cleanup keys off exactly that
 # difference — see the DELETE in the redrive branch. PENDING just (re)dispatches a
 # lost create-time task.
-_RUN_APPLICABLE_STATES = frozenset(
-    {
-        WorkTicketState.PENDING.value,
-        WorkTicketState.FAILED.value,
-        WorkTicketState.CANCELLED.value,
-    }
+_RUN_APPLICABLE_STATES = frozenset({WorkTicketState.PENDING.value}) | (
+    REDRIVABLE_WORK_TICKET_STATES
 )
-# The two terminal states /run redrives by resetting to PENDING (vs. PENDING, which
-# just dispatches).
-_RUN_REDRIVE_STATES = frozenset({WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value})
 _RUN_NOT_APPLICABLE_STATES = tuple(
     state.value for state in WorkTicketState if state.value not in _RUN_APPLICABLE_STATES
 )
@@ -318,8 +313,9 @@ async def _check_disallow_without_delete(
     uniqueness — a naive re-run double-registers them. There is no
     result-deletion gate for a pool (the result is lake rows, not a single
     minted row), so this check itself refuses a re-submit over a COMPLETED pool
-    ticket unless `force=True` (gated to wet_lab_admin+ at the route). The
-    intended non-force recovery is `delete-sequenced-pool` then resubmit.
+    ticket unless `force=True` (gated to wet_lab_admin+ at the route). What
+    forcing costs, and the recovery that avoids it, are stated once in
+    `FORCE_RESUBMIT_EXPLANATION`, which the 409 below carries.
 
     Best-effort fast path. The atomic gate is the unique partial indexes
     `work_ticket_one_in_flight_per_{reference,study_prep,prep_sample,sequenced_pool}`;
@@ -433,10 +429,10 @@ async def _check_disallow_without_delete(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "reason": (
-                        "a COMPLETED ticket already exists for this (sequenced_pool, "
-                        "action); re-running re-registers the pool's reads into the "
-                        "lake. Delete the pool (delete-sequenced-pool) and resubmit, "
-                        "or pass force=true (wet_lab_admin+) to intentionally re-run."
+                        "a ticket for this pool and action has already COMPLETED, so "
+                        "the pool's reads are already stored. Pass force=true "
+                        "(`qiita submit-bcl-convert --force`) to submit anyway. "
+                        f"{FORCE_RESUBMIT_EXPLANATION}"
                     ),
                     "blocking_work_ticket_idx": completed,
                 },
@@ -1716,7 +1712,7 @@ async def run_work_ticket(
             },
         )
 
-    if current_state in _RUN_REDRIVE_STATES:
+    if current_state in REDRIVABLE_WORK_TICKET_STATES:
         # Manual restart: FAILED / CANCELLED → PENDING. Per arch.md spec, resets
         # retry_count to 0 (operator override of the auto-retry budget)
         # and clears the failure_* columns so the
