@@ -3791,6 +3791,31 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **CLAUDE.md: read DuckLake data through the catalog, never `read_parquet` over its files
+  (#611).** Ad-hoc scripts that globbed a table's Parquet read files the catalog does not
+  consider live — superseded `assembled_sequence_chunks` and `read_mask` runs left on disk —
+  and deduplicating did not recover the catalog's answer where the runs differed (#596).
+  CLAUDE.md now carries the rule — jobs and services read through the data plane, ad-hoc
+  inspection (one-off scripts included) through `make lake-shell`'s read-only attach — and
+  points at `docs/architecture/cross-cutting.md`, whose snapshot-visibility reason now
+  covers that case and points at `scripts/lake-gc.sh` for how such files arise. The
+  neighbouring bullet on file protection said jobs write final outputs straight into
+  `/data/parquet/<table>/` and that the data plane checks mode 440 before registering; it
+  now says that jobs write into their per-ticket workspace, the
+  orchestrator checks the mode (`slurm/verify.py`), and the data plane moves each file
+  into `PATH_PERSISTENT/ducklake/<table>/` when it registers it. The same claims are
+  corrected in `processing.md` (sequence diagram, orchestrator section, step-output
+  paths), `storage.md` (layout, same-filesystem note) and `overview.md`. Step logs are
+  documented where the orchestrator writes them (`<attempt>/logs/`, not an archive under
+  `PATH_PERSISTENT/logs/`), reference source staging as `PATH_SCRATCH/references/staging/`,
+  and the 45-day `/scratch/ephemeral/` retention is removed: no such directory or sweep
+  exists, and `PATH_SCRATCH/ticket/` and `PATH_SCRATCH/staging/` are not reclaimed.
+  `processing.md`'s upload flow now matches the code: the client marks an upload done
+  (`POST /upload/{idx}/done`) and a work ticket names it later; the data plane does not
+  call back and there is no `UPLOADED` ticket state. The per-attempt workspace is no
+  longer called ephemeral in docs and code comments, and `assemble.sh`'s comment no
+  longer cites the 45-day retention (this rebuilds the `assemble` SIF at the next deploy).
+
 - **The ENA ingestion path names the `biosample_global_field` display names it writes as
   constants instead of literals (#589).** `collection date`, the three geographic-location
   fields, `depth`, and `host taxon id` are now `BIOSAMPLE_DISPLAY_*` in

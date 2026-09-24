@@ -19,21 +19,25 @@ sequenceDiagram
     participant FS as Shared<br/>Filesystem
 
     Note over C,CP: 1. Upload request
-    C->>NX: REST: "upload amplicon data for study 42, prep 7" + JWT
+    C->>NX: POST /upload + JWT
     NX->>CP: route REST
-    CP->>PG_APP: validate access, create work ticket (PENDING)
-    CP-->>C: signed Flight ticket for DoPut
+    CP->>PG_APP: mint upload row (pending)
+    CP-->>C: upload_idx + signed Flight ticket for DoPut
 
     Note over C,DP: 2. Data upload
-    C->>NX: DoPut(signed_ticket) + JWT + FASTQ stream
+    C->>NX: DoPut(signed_ticket) + JWT + Arrow record-batch stream
     NX->>DP: route gRPC
     DP->>DP: verify JWT + ticket signature
-    DP->>FS: write FASTQ to /scratch/ephemeral/staging/ticket_001/
+    DP->>FS: write upload.parquet to PATH_SCRATCH/staging/uploads/<upload_idx>/
     DP-->>C: upload confirmed
 
-    Note over DP,CP: 3. Upload complete callback
-    DP->>CP: REST callback: upload complete, path=/scratch/ephemeral/staging/ticket_001/
-    CP->>PG_APP: update work ticket (UPLOADED)
+    Note over C,CP: 3. Upload done, work ticket submitted
+    C->>NX: POST /upload/{upload_idx}/done
+    NX->>CP: route REST
+    CP->>PG_APP: upload pending → ready
+    C->>NX: POST /work-ticket (action_context names the upload_idx)
+    NX->>CP: route REST
+    CP->>PG_APP: create work ticket (PENDING)
 
     Note over CP,CO: 4. Compute submission (CP drives; CO stateless)
     CP->>CO: POST /step/submit (work ticket X, step entry)
@@ -50,10 +54,10 @@ sequenceDiagram
     CP->>PG_APP: work_ticket_step (running); ticket PROCESSING
 
     Note over SL,FS: 6. SLURM execution
-    SL->>FS: read /scratch/ephemeral/staging/ticket_001/
+    SL->>FS: read PATH_SCRATCH/staging/uploads/<upload_idx>/
     SL->>SL: run amplicon processing workflow
-    SL->>FS: write /data/parquet/<table>/output.parquet
-    SL->>FS: stdout/stderr → /data/logs/ticket_001/step_n-98765.{out,err}
+    SL->>FS: write PATH_SCRATCH/ticket/<work_ticket_idx>/<step>/attempt-<N>/output/ (mode 440)
+    SL->>FS: stdout/stderr → PATH_SCRATCH/ticket/<work_ticket_idx>/<step>/attempt-<N>/logs/{stdout,stderr}
 
     Note over CP,CO: 7. Completion detection & file registration (CP-driven)
     CP->>CO: POST /step/status (handle)
@@ -61,10 +65,11 @@ sequenceDiagram
     SR-->>CO: state=COMPLETED, exit_code=0
     CO-->>CP: status=completed
     CP->>CO: POST /step/result (handle, status)
-    CO->>FS: verify output + manifest, collect log paths
+    CO->>FS: verify output + manifest + mode 440, collect log paths
     CO-->>CP: outputs={manifest, ...}
     CP->>PG_APP: work_ticket_step (completed)
     CP->>DP: register file into DuckLake
+    DP->>FS: move output into PATH_PERSISTENT/ducklake/<table>/<minted name>
     DP->>DP: CALL ducklake_add_data_files(catalog, T, path)<br/>(metadata only — no I/O, schema validated)
     DP-->>CP: file registered
     CP->>PG_APP: update work ticket (COMPLETED),<br/>record provenance + log paths
@@ -78,9 +83,9 @@ sequenceDiagram
 
 **Text flow:**
 
-1. **Upload request:** Client sends REST request to control plane with JWT. Control plane validates access, creates a work ticket (PENDING), and returns a signed Flight ticket authorizing a DoPut upload.
-2. **Data upload:** Client streams raw data (e.g., FASTQ) to the data plane via Arrow Flight DoPut through nginx. Data plane verifies JWT and ticket signature, writes data to the shared filesystem at a structured staging path.
-3. **Upload complete callback:** Data plane calls back to control plane with the staging path. Control plane updates the work ticket to UPLOADED.
+1. **Upload request:** Client calls `POST /upload` with its JWT. The control plane mints a `qiita.upload` row (`pending`) and returns its `upload_idx` with a signed Flight ticket authorizing one DoPut.
+2. **Data upload:** Client streams Arrow record batches to the data plane via Arrow Flight DoPut through nginx. The data plane verifies the JWT and ticket signature and writes `PATH_SCRATCH/staging/uploads/<upload_idx>/upload.parquet`.
+3. **Upload done, work ticket submitted:** The client calls `POST /upload/{upload_idx}/done` (`pending` → `ready`); the data plane does not call back. The client then submits a work ticket whose `action_context` names the `upload_idx`; the runner resolves it to the staged file before the first step and marks the upload `consumed` after the workflow succeeds (`runner/_upload.py`).
 4. **Compute submission:** Control plane calls `POST /step/submit`; the orchestrator `sbatch`es a SLURM job via slurmrestd. The job specifies a container image (e.g., `qiita-workflow-amplicon:v1.2.0`), input/output paths on the shared filesystem, and stdout/stderr log paths. SLURM jobs have no knowledge of the control plane — they are truly dumb (read input, process, write output, exit). The orchestrator returns a handle (SLURM job id + workspace paths) immediately; the CP persists it to `qiita.work_ticket_step` and updates the ticket to QUEUED. The orchestrator keeps no in-flight state.
 5. **Job monitoring:** The control plane polls `POST /step/status` (the orchestrator does a single slurmrestd read per call) at its own cadence. When the job transitions to RUNNING, the CP records it on `work_ticket_step` and updates the ticket to PROCESSING. A CO-unreachable error here is transient and retried in place, never failing the ticket.
 6. **SLURM execution:** The containerized workflow runs on the SLURM cluster, reading input from the staging path on the shared filesystem and writing Parquet results to the results path. Stdout/stderr are captured to log files on the shared filesystem.
@@ -188,7 +193,7 @@ walkthrough, the REST surface, and this surface's hard scope limits (INSDC only,
 
 Separate Python service responsible for the full compute job lifecycle. SLURM-backend operational setup — cluster prerequisites, identity model, the `qiita-job` JWT auto-refresh timer — lives in [`docs/runbooks/slurm-backend-setup.md`](../runbooks/slurm-backend-setup.md).
 
-**Lifecycle ownership (decoupled).** The orchestrator is a stateless pass-through over three calls: `submit_step` `sbatch`es the job and returns a handle (SLURM job id + workspace paths); `status_step` is a single non-looping slurmrestd read; `result_step` verifies the output and returns it (or raises a classified `BackendFailure`). The **control plane** owns the poll loop between submit and result — it polls `status_step` at its own cadence (a ~10s constant) and persists per-step progress to `qiita.work_ticket_step`, so a long job never holds the CP→CO connection open and a CP restart can re-attach. A CO-unreachable error (transport / HTTP 5xx) during any of the three is transient and retried in place, never failing the ticket. SLURM jobs have no knowledge of the control plane — they are truly dumb (read input, process, write output, exit). As their final act before exiting, jobs must `chmod 440` all output files and write a manifest (see Container Contract below). The data plane enforces the permission check as a pre-registration gate.
+**Lifecycle ownership (decoupled).** The orchestrator is a stateless pass-through over three calls: `submit_step` `sbatch`es the job and returns a handle (SLURM job id + workspace paths); `status_step` is a single non-looping slurmrestd read; `result_step` verifies the output and returns it (or raises a classified `BackendFailure`). The **control plane** owns the poll loop between submit and result — it polls `status_step` at its own cadence (a ~10s constant) and persists per-step progress to `qiita.work_ticket_step`, so a long job never holds the CP→CO connection open and a CP restart can re-attach. A CO-unreachable error (transport / HTTP 5xx) during any of the three is transient and retried in place, never failing the ticket. SLURM jobs have no knowledge of the control plane — they are truly dumb (read input, process, write output, exit). As their final act before exiting, jobs must `chmod 440` all output files and write a manifest (see Container Contract below). The orchestrator checks the mode after the job exits (gate 3 of the output verification); the data plane does not check it when it registers a file.
 
 **Multi-step workflows:** Workflows consist of one or more sequential steps, each with independent resource requirements and a step type of `map` or `reduce`. Steps are submitted as separate SLURM jobs so each is sized for its actual resource needs.
 
@@ -207,7 +212,7 @@ Execution (the CP runner drives the per-step loop — `submit_step` → poll `st
 4. Advance `current_step` on the work ticket and continue
 5. After the final step, call back to the control plane to trigger data plane registration
 
-Intermediate outputs: `/scratch/ephemeral/staging/{ticket_id}/step_{n}/{prep_sample_idx}/` (map), `/scratch/ephemeral/staging/{ticket_id}/step_{n}/` (reduce). Final-step outputs land directly in `/data/parquet/{table}/` so the data plane can register them via in-place `ducklake_add_data_files` without a cross-filesystem move.
+Step outputs, intermediate and final, land in the step's per-attempt workspace, `PATH_SCRATCH/ticket/<work_ticket_idx>/<step>/attempt-<N>/` (see [Data Storage](storage.md#data-storage)). Jobs never write into the lake: registration has the data plane move each registered file from there into `PATH_PERSISTENT/ducklake/<table>/` and then call `ducklake_add_data_files`.
 
 Failure records which step failed (`failed_stage=processing_step_{n}`). Manual restart resets to step 0.
 
@@ -271,7 +276,7 @@ A gate failure after exit code 0 is a permanent failure — the container return
 - Reports results back to control plane via REST callback after all steps pass
 - Shared filesystem assumed for all data I/O
 
-**Job logging:** SLURM captures stdout/stderr to files on the shared filesystem at `/data/logs/{study_id}/{prep_id}/{ticket_id}/step_{n}-{slurm_job_id}.{out,err}`. All step log paths are recorded on the work ticket.
+**Job logging:** SLURM captures stdout/stderr to `logs/stdout` and `logs/stderr` in the step attempt's workspace, `PATH_SCRATCH/ticket/<work_ticket_idx>/<step>/attempt-<N>/`. The path is derived from the workspace, not stored on the ticket; `GET /work-ticket/{idx}/step/{step_index}/logs` (`qiita ticket logs`) serves a bounded tail.
 
 **Workflow containerization:** Apptainer/Singularity for HPC compatibility. (Apptainer is the Linux Foundation continuation of Singularity; the `singularity` command is typically aliased to `apptainer`.)
 - Container images per workflow step, versioned (e.g., `qiita-workflow-amplicon:v1.2.0`)

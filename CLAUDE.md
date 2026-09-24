@@ -90,6 +90,17 @@ The duckdb-miint extension is the **foundation** of the compute/data system, not
 
 The **control plane** also LOADs miint in-process (the masked-read streamer that feeds `long-read-assembly`), so `MIINT_EXTENSION_DIRECTORY` must be set in `control-plane.env` too, byte-identical to the CO's — `make preflight` compares them and `make verify-deploy`'s `cp-miint` check LOADs it. It is deliberately **not** fail-fast at CP boot (the CP serves every other route without it; only assembly tickets fail, naming the var via `require_staged_extension_directory()`), because taking the whole REST API down for one workflow's input binding is the wrong trade. Service-side connects are **LOAD-only, never INSTALL**: `qiita-api`'s home is `/dev/null`, so an INSTALL resolves `$HOME/.duckdb/extensions` and dies with `Can't find the home directory`.
 
+## Reading DuckLake data
+
+Read DuckLake tables only through the catalog, never `read_parquet` over the lake's data
+path (`PATH_PERSISTENT/ducklake/<table>/`). Code — jobs and services — reads through the
+data plane. Ad-hoc inspection by hand — a one-off script or analysis included — uses a
+`READ_ONLY` attach of the catalog, `make lake-shell`, which is admin-only and not a
+data-access path (see the header of [`scripts/lake-shell.sh`](scripts/lake-shell.sh)). If
+the catalog is not reachable where the work runs, stop rather than fall back to the files. The reasons are in
+[`docs/architecture/cross-cutting.md`](docs/architecture/cross-cutting.md), under *Data
+plane horizontal scaling*.
+
 ## Workflow runtimes
 
 A step in a workflow YAML must declare **exactly one** of `container:` or `module:`. The `module:` form (a native step) runs in the orchestrator's Python environment under SLURM and may only use dependencies that already ship in `qiita-compute-orchestrator`'s `pyproject.toml`; anything heavier (bioinformatics deps, system packages) belongs in a container.
@@ -108,7 +119,7 @@ two-gate idempotency check, and why the deploy rebuilds SIFs automatically are i
 
 **DB tables, REST resource segments, scope strings, OpenAPI tags, and the source files that own them are always singular**, never plural — `reference` not `references`, `auth_event` not `auth_events`, `/user` not `/users`, `reference:read` not `references:read`, `routes/reference.py` not `routes/references.py`, `tests/test_user.py` not `tests/test_users.py`. This applies to junction tables (`user_identity`, not `user_identities`); use `_to_` for many-to-many junctions when both sides need to be named (e.g. `biosample_to_study`). Column names follow the same rule unless the column genuinely holds a list/array.
 
-**Carve-outs:** verb / action path segments stay plural where natural (`/admin/principal/{idx}/revoke-all-tokens` — `revoke-all-tokens` is a verb, not a resource). On-disk directory names (`/scratch/persistent-local/references/`, `references/incoming/`) are not REST resources and are not constrained by this rule. `/user/me` reads awkwardly but is the correct form — the alternative is a permanent carve-out for `/me`-suffixed paths.
+**Carve-outs:** verb / action path segments stay plural where natural (`/admin/principal/{idx}/revoke-all-tokens` — `revoke-all-tokens` is a verb, not a resource). On-disk directory names (`/scratch/persistent-local/references/`, `references/staging/`) are not REST resources and are not constrained by this rule. `/user/me` reads awkwardly but is the correct form — the alternative is a permanent carve-out for `/me`-suffixed paths.
 
 Fixed in #11 after the initial schema mixed both forms.
 
