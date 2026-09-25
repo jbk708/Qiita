@@ -46,6 +46,7 @@ from ..shard_orchestration import (
     expected_shard_index_types,
     plan_and_submit_shards,
 )
+from ..workspace import step_attempt_dir, step_logs_dir, step_output_dir
 from ._dispatch import _best_effort_record_failed, _result_with_infra_retry
 from ._mask import MASK_IDX_BINDING
 from ._read_ingest import (
@@ -171,7 +172,7 @@ async def _reconstruct_completed_outputs(
     recovery is a SLURM-backend concern (local steps are synchronous and don't
     survive a restart mid-flight), so this returns its outputs empty — a
     downstream consumer that needs a missing binding fails loudly via KeyError."""
-    attempt_workspace = workspace / entry.name / f"attempt-{completed.attempt}"
+    attempt_workspace = step_attempt_dir(workspace, entry.name, completed.attempt)
     if isinstance(entry, WorkflowAction):
         if entry.name == LibraryPrimitive.PLAN_SHARDS:
             return await _reconstruct_plan_shards_outputs(pool, scope_target, attempt_workspace)
@@ -183,8 +184,8 @@ async def _reconstruct_completed_outputs(
         step_name=entry.name,
         slurm_job_id=completed.slurm_job_id,
         job_name=completed.job_name,
-        output_path=str(attempt_workspace / "output"),
-        logs_path=str(attempt_workspace / "logs"),
+        output_path=str(step_output_dir(attempt_workspace)),
+        logs_path=str(step_logs_dir(attempt_workspace)),
     )
     status = StepStatusWire(status=StepStatus.COMPLETED, raw_state="RECOVERED")
     raw_outputs = await _result_with_infra_retry(
@@ -632,6 +633,27 @@ async def _run_action_primitive(
             pool,
             scope_target["prep_sample_idx"],
             Path(bound["read_mask"]),
+        )
+        return {}
+
+    if entry.name == LibraryPrimitive.PERSIST_SYNDNA_READ_COUNT:
+        # Per-insert SynDNA read counts from the `syndna` step's alignment output.
+        # mask_idx from the ticket (runner-bound for the prep_sample branch), the
+        # sample from the scope target.
+        if entry.inputs != ["alignment"]:
+            raise RuntimeError(
+                f"persist-syndna-read-count expects inputs [alignment]; got {entry.inputs!r}"
+            )
+        if scope_target["kind"] != ScopeTargetKind.PREP_SAMPLE.value:
+            raise RuntimeError(
+                "persist-syndna-read-count requires a prep_sample-scoped ticket; "
+                f"got {scope_target['kind']!r}"
+            )
+        await LIBRARY[LibraryPrimitive.PERSIST_SYNDNA_READ_COUNT](
+            pool,
+            mask_idx=bound[MASK_IDX_BINDING],
+            prep_sample_idx=scope_target["prep_sample_idx"],
+            alignment_path=Path(bound["alignment"]),
         )
         return {}
 

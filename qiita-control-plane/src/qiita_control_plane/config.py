@@ -9,6 +9,7 @@ from pathlib import Path
 from qiita_common.config import require_env
 
 from .fanout_dispatch import DEFAULT_FANOUT_MAX_INFLIGHT
+from .workspace import WORK_TICKET_SUBDIR
 
 # Local@domain.tld shape check for CONTACT_EMAIL. Deliberately loose —
 # the real test is whether mail reaches the address. See from_env().
@@ -336,7 +337,7 @@ class Settings:
         scratch = Path(scratch_raw)
         if not scratch.is_absolute():
             raise RuntimeError(f"PATH_SCRATCH must be an absolute path, got {scratch_raw!r}")
-        ws_root = scratch / "ticket"
+        ws_root = scratch / WORK_TICKET_SUBDIR
         upload_root = scratch / "staging"
 
         # Colon-separated roots a submitter may name a host path under.

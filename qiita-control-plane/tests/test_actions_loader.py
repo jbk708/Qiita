@@ -1374,10 +1374,10 @@ def test_load_actions_read_mask_audience_is_admin_only():
 
 
 def test_load_actions_read_mask_finalizes_gate_after_register_files():
-    """`finalize-mask-sample` (the per-sample mask_sample completion writer) must be
-    the LAST step and run strictly AFTER `register-files`: the gate must not read
-    'completed' until the masked reads are durable in DuckLake. Pins the terminal
-    ordering so a reorder that flips the gate before register-files surfaces here."""
+    """`finalize-mask-sample` (the per-sample mask_sample completion writer) must run
+    strictly AFTER `register-files`: the gate must not read 'completed' until the
+    masked reads are durable in DuckLake. Pins that ordering so a reorder that flips
+    the gate before register-files surfaces here."""
     from pathlib import Path
 
     from qiita_control_plane.actions import load_actions
@@ -1386,10 +1386,31 @@ def test_load_actions_read_mask_finalizes_gate_after_register_files():
     by_id = {a.action_id: a for a in load_actions(repo_root / "workflows")}
     names = [s.name for s in by_id["read-mask"].steps]
 
-    assert names[-1] == "finalize-mask-sample"
     assert names.index("register-files") < names.index("finalize-mask-sample")
     # persist-read-metrics still reads the local parquet before register-files moves it.
     assert names.index("persist-read-metrics") < names.index("register-files")
+
+
+def test_load_actions_read_mask_persists_syndna_counts_after_the_gate():
+    """`persist-syndna-read-count` consumes the `syndna` step's `alignment`, is gated
+    on the same `when:` as that step, and is the last entry: appended rather than
+    inserted, so no earlier entry's position moved for a ticket resumed across the
+    deploy (resume matches completed steps by position)."""
+    from pathlib import Path
+
+    from qiita_control_plane.actions import load_actions
+
+    repo_root = Path(__file__).resolve().parents[2]
+    steps = {a.action_id: a for a in load_actions(repo_root / "workflows")}["read-mask"].steps
+    names = [s.name for s in steps]
+    persist = steps[names.index("persist-syndna-read-count")]
+    syndna = steps[names.index("syndna")]
+
+    assert persist.inputs == ["alignment"]
+    assert "alignment" in syndna.outputs
+    assert persist.when == syndna.when == "syndna_enabled"
+    assert names.index("syndna") < names.index("persist-syndna-read-count")
+    assert names[-2:] == ["finalize-mask-sample", "persist-syndna-read-count"]
 
 
 def test_load_actions_fastq_to_parquet_v130_finalizes_gate_last():
