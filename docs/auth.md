@@ -343,13 +343,31 @@ The system principal (`idx=1`) is rejected by every mutation endpoint above (`di
 | `/api/v1/user/me` | GET | Returns the authenticated user's profile. `require_human` (rejects service-kind 403). |
 | `/api/v1/user/me` | PATCH | Updates profile fields (`affiliation`, `address`, `phone`, `orcid`, `receive_processing_emails`). Requires `self:profile`. `email` and status fields are absent from `UserUpdate` and are silently dropped — email-change requires re-verification via OIDC, status is admin-only. |
 
-What a user cannot self-serve is **access to someone else's study**. Creating
-a biosample, a prep_sample, or a sequenced_sample under a study you do not own
-requires an `ADMIN`-tier `qiita.study_access` row on it, and no route issues
-one: the owner's own row is auto-granted at study create
-(`repositories/study.py`), and every other row is inserted out-of-band by an
-operator (`INSERT INTO qiita.study_access (study_idx, principal_idx,
-access_tier, granted_by_idx)`).
+### Study access (`qiita.study_access`)
+
+Creating a biosample, a prep_sample, or a sequenced_sample under a study you do
+not own requires an `ADMIN`-tier `qiita.study_access` row on it. The owner's own
+row is auto-granted at study create (`repositories/study.py`); every other row
+goes through these routes (CLI: `qiita study access list|grant|set-tier|revoke`).
+
+| Route | Method | Notes |
+|---|---|---|
+| `/api/v1/study/{study_idx}/access` | GET | Every row on the study, highest tier first, with each grantee's email. `study:read`. |
+| `/api/v1/study/{study_idx}/access` | POST | Grant `{email, access_tier}`. `study:write`. The email must belong to an account that has logged in once and is not disabled or retired (`422` otherwise); an existing row is `409` naming its tier. |
+| `/api/v1/study/{study_idx}/access/{principal_idx}` | PATCH | Change one row's tier. `study:write`. Setting the tier the row already has, when the caller could have changed it, changes nothing. |
+| `/api/v1/study/{study_idx}/access/{principal_idx}` | DELETE | Remove one row and return it. `study:write`. |
+
+Who may list, grant, change and revoke is the table in the
+`auth/study_access_policy.py` docstring.
+
+Naming the grantee by email means any caller who may grant (a study `member` or
+higher) can learn from the `422`s whether an email has a Qiita account, and whether
+that account is disabled or retired. Two callers changing each other's rows at
+the same moment can deadlock; one gets a `409` to retry
+(`routes/study_access.py`). Each grant, tier change and revoke records an
+`auth_event` (`study_access_grant`, `study_access_tier_change`,
+`study_access_revoke`; `detail` carries `study_idx` and the tier(s)), for the
+reason given in `routes/study_access.py`.
 
 ### Reference exclusion (curation)
 
@@ -435,6 +453,10 @@ End-user companion to `qiita-admin`, installed as the `qiita` console script via
 | `whoami` | HTTP | Calls `GET /api/v1/auth/whoami`. |
 | `profile set [--affiliation ... --address ... --phone ... --orcid ... --[no-]receive-processing-emails]` | HTTP | Calls `PATCH /api/v1/user/me` with only the fields the caller actually supplied (matches the server's `exclude_unset` semantics). Used to fill `affiliation`/`address`/`phone` so `qiita.user.profile_complete` flips to true. |
 | `study create --title T [--alias … --description … …]` | HTTP | Calls `POST /api/v1/study`. Caller is always the owner; the `--owner-idx` (lab-tech-on-behalf) path is intentionally not exposed. |
+| `study access list --study-idx S` | HTTP | Calls `GET /api/v1/study/{S}/access`. |
+| `study access grant --study-idx S --email E --tier T` | HTTP | Calls `POST /api/v1/study/{S}/access`. `--tier` is `viewer`, `member` or `admin`. |
+| `study access set-tier --study-idx S --principal-idx P --tier T` | HTTP | Calls `PATCH /api/v1/study/{S}/access/{P}`. |
+| `study access revoke --study-idx S --principal-idx P` | HTTP | Calls `DELETE /api/v1/study/{S}/access/{P}`; prints the removed row. |
 | `reference load --fasta F --data-plane-url U [--name …/--version … or --reference-idx N] [--taxonomy/--tree/--jplace/--genome-map …] [--no-watch]` | HTTP | Uploads FASTA + optional inputs (Arrow `do_put` to the data plane) and submits the reference-add work-ticket, then watches it to terminal. Needs `reference:write` (wet_lab_admin tier) plus `ticket:doput`, not `admin:*` — a credentialed API call, so it lives here rather than in `qiita-admin`. |
 | `submit-reads --prep-sample-idx N --fastq F [--reverse-fastq R] \| --bam B --data-plane-url U [--no-watch]` | HTTP + Flight | Streams one prep_sample's reads from the caller's own machine (Arrow `do_put` to the data plane) and submits `fastq-to-parquet` / `bam-to-parquet` against the upload handle. Needs `ticket:doput` + `prep_sample:write`, both on the USER ceiling — this is the route a user takes instead of naming a host path in `action_context`, which is wet_lab_admin+. |
 | `reference exclusion list --reference-idx N` | HTTP | Calls `GET /reference/{idx}/exclusion` — what the global blocklist filters from one reference (blocked members + `reason` + external ids). A `reference:read` query any authenticated user can run, so it lives here; the `add`/`remove`/`sync` write surface is `qiita-admin`. |

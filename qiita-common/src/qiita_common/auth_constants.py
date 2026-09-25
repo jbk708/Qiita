@@ -244,6 +244,11 @@ class AuthEventType(StrEnum):
     PRINCIPAL_ENABLED = "principal_enabled"
     PRINCIPAL_RETIRED = "principal_retired"
     SYSTEM_ROLE_CHANGE = "system_role_change"
+    # qiita.study_access writes (routes/study_access.py). principal_idx is the
+    # grantee; detail carries study_idx and the tier(s).
+    STUDY_ACCESS_GRANT = "study_access_grant"
+    STUDY_ACCESS_TIER_CHANGE = "study_access_tier_change"
+    STUDY_ACCESS_REVOKE = "study_access_revoke"
 
 
 # The system principal occupies idx=1 in `qiita.principal`, seeded with

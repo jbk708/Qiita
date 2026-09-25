@@ -171,6 +171,7 @@ from qiita_common.models.reference import (
     INDEX_TYPE_RYPE_ROUTER,
     MAX_EXPORTED_FEATURE_ENTITIES,
     READ_MASK_BUCKET,
+    STORABLE_ACCESS_TIERS,
     VALID_STATUS_TRANSITIONS,
     AssemblyGenomeMapResponse,
     ExportedFeature,
@@ -305,7 +306,14 @@ from qiita_common.models.step import (
     StepStatusWire,
     StepSubmitRequest,
 )
-from qiita_common.models.study import StudyCreate, StudyPatchRequest, StudyResponse
+from qiita_common.models.study import (
+    StudyAccessGrant,
+    StudyAccessResponse,
+    StudyAccessTierUpdate,
+    StudyCreate,
+    StudyPatchRequest,
+    StudyResponse,
+)
 from qiita_common.models.terminology import (
     MAX_TERMINOLOGY_VERSION_LENGTH,
     VALID_TERMINOLOGY_STATUS_TRANSITIONS,
@@ -484,6 +492,7 @@ __all__ = [
     "ReferenceStatus",
     "ReferenceStatusUpdate",
     "Tier",
+    "STORABLE_ACCESS_TIERS",
     # Terminology.
     "MAX_TERMINOLOGY_VERSION_LENGTH",
     "TerminologyFilename",
@@ -588,6 +597,9 @@ __all__ = [
     "StudyCreate",
     "StudyPatchRequest",
     "StudyResponse",
+    "StudyAccessGrant",
+    "StudyAccessResponse",
+    "StudyAccessTierUpdate",
     # Auth.
     "ApiTokenMintRequest",
     "ApiTokenMintResponse",

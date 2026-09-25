@@ -2,10 +2,10 @@
 
 from typing import Annotated, ClassVar
 
-from pydantic import AwareDatetime, BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from qiita_common.models._base import PatchRequestModel
-from qiita_common.models.reference import Tier
+from qiita_common.models.reference import STORABLE_ACCESS_TIERS, Tier
 
 # Column-length budgets mirror the qiita.study schema; keeping the limits
 # here lets Pydantic reject oversized inputs before they hit Postgres.
@@ -103,3 +103,51 @@ class StudyResponse(BaseModel):
     created_by_idx: Annotated[int, Field(gt=0)]
     created_at: AwareDatetime
     updated_at: AwareDatetime
+
+
+def _reject_public_tier(tier: Tier) -> Tier:
+    """`public` is the implicit tier of a caller with no row, never a stored
+    value; reject it before the DB."""
+    if tier not in STORABLE_ACCESS_TIERS:
+        raise ValueError("access_tier cannot be 'public'; revoke the row instead")
+    return tier
+
+
+class StudyAccessGrant(BaseModel):
+    """Body for POST /api/v1/study/{study_idx}/access — grant a tier.
+
+    The grantee is named by the email on their qiita.user row; they must
+    have logged in once so that row exists. The email is only looked up, never
+    stored, so it is checked for shape alone: `EmailStr` would refuse addresses
+    an account can already carry (it rejects special-use domains such as
+    `.local`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: Annotated[str, Field(max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")]
+    access_tier: Tier
+
+    _no_public = field_validator("access_tier")(_reject_public_tier)
+
+
+class StudyAccessTierUpdate(BaseModel):
+    """Body for PATCH /api/v1/study/{study_idx}/access/{principal_idx}."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    access_tier: Tier
+
+    _no_public = field_validator("access_tier")(_reject_public_tier)
+
+
+class StudyAccessResponse(BaseModel):
+    """One qiita.study_access row, with the grantee's email (None when the
+    grantee is not a user-kind principal)."""
+
+    study_idx: Annotated[int, Field(gt=0)]
+    principal_idx: Annotated[int, Field(gt=0)]
+    email: str | None
+    access_tier: Tier
+    granted_by_idx: int | None
+    granted_at: AwareDatetime
