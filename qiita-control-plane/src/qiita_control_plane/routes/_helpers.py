@@ -91,8 +91,8 @@ async def require_reference_exists(pool: asyncpg.Pool, reference_idx: int) -> No
 ALIGNMENT_NOT_FOUND_DETAIL = "alignment not found"
 
 
-# Hard cap on a genome map, and the one place in the codebase where exceeding a cap
-# is a refusal rather than a truncation — see `get_reference_genome_map`. Sized from
+# Hard cap on a genome map, where exceeding the cap is a refusal rather than a
+# truncation — see `get_reference_genome_map`. Sized from
 # a response-body budget rather than by borrowing another route's number: an entry
 # serializes to roughly 90 bytes of JSON, so this is a ~22 MB worst case — large
 # but deliverable in one body.
@@ -1156,6 +1156,14 @@ def gate_roster_narrowing_idx(caller: HumanUser) -> int | None:
     if caller.has_role_at_least(SystemRole.WET_LAB_ADMIN):
         return None
     return caller.principal_idx
+
+
+# Hard cap on a per-(identity, prep_sample) gate roster: the /mask-definition and
+# /processing rosters and the /assembly export roster, each bounded by the number of
+# prep_samples one mask config or one assembly run was applied to. The first two return
+# `truncated` above it; the export roster refuses instead, because its caller writes one
+# file set from the whole roster.
+GATE_ROSTER_HARD_CAP = 100_000
 
 
 def cap_rows[T](rows: list[T], cap: int) -> tuple[list[T], bool]:

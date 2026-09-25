@@ -21,6 +21,26 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Added
 
+- **A viewer can export an assembly run's LCGs and MAGs as FASTA with their metadata
+  (#620).** `qiita assembly export --processing-idx N` with one of `--prep-sample-idx`,
+  `--sequenced-pool-idx` or `--study-idx` writes one gzipped FASTA per genome, named
+  `<biosample accession>_<bin_id>`, plus `genomes.tsv` (length, contig and circular
+  counts, GC, length-weighted depth, CheckM completeness/contamination/strain
+  heterogeneity/lineage; GC is computed in plain SQL because miint has no composition
+  scalar, duckdb-miint#282) and `contigs.tsv` (header, genome, length and the assembler's
+  `raw_name`, `circularity`, `depth`, `mult`). Filters: `--kind` (default LCG and MAG),
+  `--min-bp`/`--max-bp`, `--min-completeness`/`--max-contamination`. It refuses and
+  writes nothing on a pending or invalidated prep_sample, a prep_sample whose biosample
+  has no accession, a genome name repeated in one export, a run whose Postgres membership and streamed
+  contigs differ, or a record whose reassembled length is not its
+  `sequence_length_bp`. Three reads back it: `GET
+  /assembly/{prep_sample_idx}/{processing_idx}/membership[/parquet]` (every kind, with
+  the assembler's per-contig attributes), `GET /assembly/{processing_idx}/prep-sample`
+  (the prep_samples the caller may read, at `Tier.VIEWER`; the `/processing` roster narrows
+  at `Tier.ADMIN`), and `bin_quality` on the human run mint `POST
+  /assembly/{prep_sample_idx}/{processing_idx}/ticket/doget`, which it was previously
+  absent from. The service-account mint still does not sign `bin_quality`.
+
 - **Study access can be listed, granted, changed and revoked through the API and CLI
   (#614).** `GET/POST /study/{study_idx}/access` and `PATCH/DELETE
   /study/{study_idx}/access/{principal_idx}`, with `qiita study access
