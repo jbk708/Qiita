@@ -1963,7 +1963,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
-- **Native sequenced-sample import now locks its sequencing run and refuses pools whose download roster is already staged** — the POST route takes #602's sequencing_run advisory lock around the insert and 409s when the pool's latest download-ena-study ticket has already read its run roster, closing the silent never-downloaded gap for manual adds (#627).
+- **Native sequenced-sample import now locks its sequencing run and refuses pools whose download roster is already staged** — the POST route takes #602's sequencing_run advisory lock around the insert and 409s (covering a queued download ticket too) when the pool's latest download-ena-study ticket has already read its run roster, naming the run and telling the caller to add the sample to a new pool instead. The lock wait is bounded at 5s, well under the CLI's own HTTP timeout, and a wait that exhausts it answers 503 with Retry-After rather than an unbounded hang (#627).
 
 - **The `reference_load` tests pin the host RAM they assume (#616).** Off SLURM,
   `load`'s DuckDB limit is detected RAM minus its 8-thread headroom (#606), which is
