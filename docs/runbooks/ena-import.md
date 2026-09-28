@@ -71,7 +71,10 @@ and only the new ones are added. A download ticket reads its pool's run list onc
 it starts, so new runs never join a pool whose download is in flight or finished — they
 go into a new pool with its own ticket, and the accession reports `done` only once every
 pool's download has. A re-import is also how to retry a failed or cancelled download.
-Nothing schedules this — it is an operator gesture.
+Nothing schedules this — it is an operator gesture. A native `POST .../sequenced-sample`
+add to a pool whose download has already read (or is reading) its roster is refused the
+same way, 409: create a new `sequenced_pool` on the run and submit its own
+`download-ena-study` ticket instead.
 
 An import will only add to a study **an import created**. A study Qiita created
 natively and later deposited to ENA carries a `bioproject_accession` too, so
