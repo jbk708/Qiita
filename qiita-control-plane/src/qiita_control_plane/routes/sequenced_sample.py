@@ -204,16 +204,16 @@ async def import_sequenced_sample_from_run(
 
     After the authz/state gates the route takes the sequencing_run advisory
     lock (`lock_sequencing_run`, validated against the path's run by the
-    require_sequenced_pool_in_run dependency) and holds it until this
-    transaction commits, serializing the insert against a concurrent ENA
-    registration and the download roster read. Under that lock it refuses a
-    pool whose latest download-ena-study ticket has read -- or is reading --
-    its run roster, with a 409 naming the pool, ticket, and state: a sample
-    added after the roster read would be left out of the download. The proxy
-    rationale for judging the read by the ticket's state lives in
-    `download_ticket_read_roster`'s docstring. A lock wait that exhausts the
-    bounded wait answers 503 (busy, retry) instead of surfacing the wait's
-    TimeoutError as a 500.
+    require_sequenced_pool_in_run dependency -- see its docstring for the
+    other holders and the race it closes) and holds it until this
+    transaction commits. Under that lock it refuses a pool whose latest
+    download-ena-study ticket has read -- or is reading -- its run roster,
+    with a 409 naming the pool, ticket, state, and run: a sample added after
+    the roster read would be left out of the download. The proxy rationale
+    for judging the read by the ticket's state lives in
+    `download_ticket_read_roster`'s docstring. A lock wait bounded below the
+    CLI's HTTP timeout that exhausts answers 503 with Retry-After instead of
+    surfacing the wait's TimeoutError as a 500.
     """
     async with tx() as conn:
         await require_caller_has_admin_on_all_studies(

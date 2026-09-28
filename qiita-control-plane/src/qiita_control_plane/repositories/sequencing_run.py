@@ -79,13 +79,14 @@ async def lock_sequencing_run(
 ) -> None:
     """Take the sequencing_run pool-write advisory lock (held to transaction commit).
 
-    Both sides of the download-roster race take this key:
-    `ena_import.registration` holds it from pool resolution until its runs
-    commit, and `runner._read_ingest._stage_ena_run_roster` holds it across the
-    roster read it does once at dispatch. Either a registration sees a covering
-    download ticket and keeps its runs out of that pool, or the roster read
-    waits for the registration's runs to commit: a run can no longer land in a
-    pool whose ticket has already read the roster.
+    Three holders take this key: `ena_import.registration` from pool
+    resolution until its runs commit, `routes.sequenced_sample`'s native
+    insert around its own write, and `runner._read_ingest._stage_ena_run_roster`
+    across the roster read it does once at dispatch. Whichever of the first
+    two lands first, the roster read waits behind it and so either sees a
+    covering download ticket and is kept out of that pool, or commits before
+    the read starts and is picked up by it: a run or a native sample can no
+    longer land in a pool whose ticket has already read the roster.
 
     Requires a wrapping transaction — in autocommit the lock is released with
     the statement, silently protecting nothing. Waits at most `timeout`
