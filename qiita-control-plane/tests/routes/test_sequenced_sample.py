@@ -4460,6 +4460,7 @@ async def test_import_rejects_when_pool_roster_already_staged(ctx, state):
     assert f"sequenced_pool {pool_idx}" in detail
     assert str(ticket_idx) in detail
     assert f"'{state}'" in detail
+    assert f"sequencing_run {run_idx}" in detail
     assert (
         await ctx["pool"].fetchval(
             "SELECT count(*) FROM qiita.sequenced_sample WHERE sequenced_pool_idx = $1",

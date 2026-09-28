@@ -257,11 +257,12 @@ async def import_sequenced_sample_from_run(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"sequenced_pool {sequenced_pool_idx} cannot take a new sample:"
-                    f" its download ticket {staged_ticket['work_ticket_idx']} is in state"
-                    f" '{staged_ticket['work_ticket_state']}', so this pool's run roster"
-                    " has been (or is being) read and the sample would be left out of"
-                    " the download"
+                    f"sequenced_pool {sequenced_pool_idx} cannot take a new sample: its"
+                    f" latest download ticket {staged_ticket['work_ticket_idx']} is"
+                    f" '{staged_ticket['work_ticket_state']}', so this sample would be left"
+                    " out of that download. Add it to a new sequenced_pool on"
+                    f" sequencing_run {sequencing_run_idx} and submit a download-ena-study"
+                    " ticket for that pool."
                 ),
             )
 
