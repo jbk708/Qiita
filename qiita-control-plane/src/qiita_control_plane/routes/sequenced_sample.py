@@ -173,6 +173,11 @@ _SEQUENCED_SAMPLE_PATCH_UNIQUE_MESSAGES: dict[str, str] = {
 }
 _SEQUENCED_SAMPLE_GENERIC_UNIQUE_VIOLATION = "conflicts with an existing sequenced_sample"
 
+# Bounded under the CLI's CLI_HTTP_TIMEOUT_SECONDS (10s) so a lock wait this
+# route loses still answers before the client's own socket read times out.
+_ROSTER_LOCK_WAIT_TIMEOUT_S = 5.0
+_ROSTER_LOCK_RETRY_AFTER_S = str(int(_ROSTER_LOCK_WAIT_TIMEOUT_S))
+
 
 @router.post(
     PATH_SEQUENCED_SAMPLE_FROM_RUN,
@@ -233,7 +238,9 @@ async def import_sequenced_sample_from_run(
         )
 
         try:
-            await lock_sequencing_run(conn, sequencing_run_idx=sequencing_run_idx)
+            await lock_sequencing_run(
+                conn, sequencing_run_idx=sequencing_run_idx, timeout=_ROSTER_LOCK_WAIT_TIMEOUT_S
+            )
         except TimeoutError as exc:
             raise HTTPException(
                 status_code=503,
@@ -241,6 +248,7 @@ async def import_sequenced_sample_from_run(
                     f"sequencing_run {sequencing_run_idx} is busy with an ENA import"
                     " or roster read; retry shortly"
                 ),
+                headers={"Retry-After": _ROSTER_LOCK_RETRY_AFTER_S},
             ) from exc
         staged_ticket = await staged_roster_download_ticket(
             conn,

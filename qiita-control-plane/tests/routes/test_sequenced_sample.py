@@ -37,6 +37,7 @@ from qiita_common.api_paths import (
 from qiita_common.auth_constants import SYSTEM_PRINCIPAL_IDX, Scope, SystemRole
 from qiita_common.models import FieldDataType, Platform, ScopeTargetKind, WorkTicketState
 
+from qiita_control_plane.cli._common import CLI_HTTP_TIMEOUT_SECONDS
 from qiita_control_plane.ena_import.submit import (
     DOWNLOAD_ENA_STUDY_ACTION_ID,
     DOWNLOAD_ENA_STUDY_ACTION_VERSION,
@@ -4667,30 +4668,52 @@ async def test_native_insert_lands_in_staged_roster(ctx, monkeypatch, tmp_path):
     assert new_accession in staged_accessions
 
 
+def test_roster_lock_wait_is_bounded_below_the_cli_http_timeout():
+    """The route's lock wait must stay under the CLI's own HTTP timeout, or a
+    caller times out its own socket read before this route's 503 arrives."""
+    assert sequenced_sample_routes._ROSTER_LOCK_WAIT_TIMEOUT_S < CLI_HTTP_TIMEOUT_SECONDS
+
+
 async def test_import_lock_timeout_maps_to_503(ctx, monkeypatch):
-    """A lock wait that exhausts the bounded wait surfaces as TimeoutError;
-    the route maps it to 503 naming the sequencing_run (busy, retry) instead
-    of letting it escape as a 500. lock_sequencing_run is monkeypatched in
-    the routes.sequenced_sample namespace to raise TimeoutError directly."""
+    """A real, held advisory lock exhausts the route's (shrunk for the test)
+    wait: 503 names the sequencing_run and carries Retry-After at the
+    module's real constant, no row is written, and the lock's release lets a
+    follow-up POST succeed."""
+    monkeypatch.setattr(sequenced_sample_routes, "_ROSTER_LOCK_WAIT_TIMEOUT_S", 0.3)
     run_idx, pool_idx, study_idx, bs_idx, protocol_idx = await _seed_roster_case(ctx, "roster-busy")
-
-    async def raising_lock(conn, *, sequencing_run_idx: int) -> None:
-        raise TimeoutError("simulated lock wait timeout")
-
-    monkeypatch.setattr(sequenced_sample_routes, "lock_sequencing_run", raising_lock)
-    resp = await _post_sequenced_sample(
-        ctx["wet"],
+    body = _roster_case_body(
         ctx,
-        run_idx,
-        pool_idx,
-        **_roster_case_body(
-            ctx,
-            study_idx=study_idx,
-            bs_idx=bs_idx,
-            protocol_idx=protocol_idx,
-            suffix="ROSTER-BUSY",
-            accession=unique_accession("ERR"),
-        ),
+        study_idx=study_idx,
+        bs_idx=bs_idx,
+        protocol_idx=protocol_idx,
+        suffix="ROSTER-BUSY",
+        accession=unique_accession("ERR"),
     )
+    conn = await ctx["pool"].acquire()
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                POOL_RESOLVE_LOCK_CLASS,
+                run_idx & INT4_MASK,
+            )
+            resp = await asyncio.wait_for(
+                _post_sequenced_sample(ctx["wet"], ctx, run_idx, pool_idx, **body), timeout=10
+            )
+    finally:
+        await ctx["pool"].release(conn)
+
     assert resp.status_code == 503, resp.text
     assert f"sequencing_run {run_idx}" in resp.json()["detail"]
+    assert resp.headers.get("retry-after") == sequenced_sample_routes._ROSTER_LOCK_RETRY_AFTER_S
+    assert (
+        await ctx["pool"].fetchval(
+            "SELECT count(*) FROM qiita.sequenced_sample WHERE sequenced_pool_idx = $1",
+            pool_idx,
+        )
+        == 0
+    )
+
+    body["sequenced_pool_item_id"] = body["sequenced_pool_item_id"] + "-retry"
+    resp2 = await _post_sequenced_sample(ctx["wet"], ctx, run_idx, pool_idx, **body)
+    assert resp2.status_code == 201, resp2.text
