@@ -72,7 +72,7 @@ from ..auth.guards import (
 )
 from ..auth.principal import HumanUser, Principal
 from ..deps import TxConnFactory, get_db_pool, get_snapshot_conn_factory, get_tx_conn_factory
-from ..ena_import.registration import staged_roster_download_ticket
+from ..ena_import.registration import download_ticket_read_roster, fetch_pool_download_ticket
 from ..host_filter_resolver import resolve_host_filter_many
 from ..preflight import (
     PacbioProtocol,
@@ -250,11 +250,9 @@ async def import_sequenced_sample_from_run(
                 ),
                 headers={"Retry-After": _ROSTER_LOCK_RETRY_AFTER_S},
             ) from exc
-        staged_ticket = await staged_roster_download_ticket(
-            conn,
-            sequencing_run_idx=sequencing_run_idx,
-            sequenced_pool_idx=sequenced_pool_idx,
-        )
+        pool_ticket = await fetch_pool_download_ticket(conn, sequenced_pool_idx=sequenced_pool_idx)
+        roster_state = pool_ticket["work_ticket_state"] if pool_ticket is not None else None
+        staged_ticket = pool_ticket if download_ticket_read_roster(roster_state) else None
         if staged_ticket is not None:
             raise HTTPException(
                 status_code=409,

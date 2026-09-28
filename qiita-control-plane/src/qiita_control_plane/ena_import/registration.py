@@ -62,6 +62,7 @@ from qiita_control_plane.repositories.biosample import (
 )
 from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
 from qiita_control_plane.repositories.ena_import_batch import (
+    fetch_pool_latest_download_ticket,
     fetch_sequenced_pool_download_states,
 )
 from qiita_control_plane.repositories.prep_protocol import fetch_prep_protocol_idx_by_name
@@ -186,26 +187,16 @@ def download_ticket_read_roster(work_ticket_state: str | None) -> bool:
     return work_ticket_state in _ROSTER_READ_DOWNLOAD_TICKET_STATES
 
 
-async def staged_roster_download_ticket(
-    pool_or_conn: asyncpg.Pool | asyncpg.Connection,
-    *,
-    sequencing_run_idx: int,
-    sequenced_pool_idx: int,
+async def fetch_pool_download_ticket(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, *, sequenced_pool_idx: int
 ) -> asyncpg.Record | None:
-    """The pool's latest download-ena-study ticket when its run roster has (or
-    is being) read, else None.
-
-    Run-scoped read filtered to `sequenced_pool_idx` -- the same shape
-    `ena_import.batch._covering_download_ticket_idx` composes. The returned
-    row carries `work_ticket_idx` / `work_ticket_state` so the caller can name
-    the offending ticket to the submitter; see `download_ticket_read_roster`
-    for why the ticket state answers for the roster-read state."""
-    for pool_state in await fetch_download_pool_states(pool_or_conn, sequencing_run_idx):
-        if pool_state["sequenced_pool_idx"] == sequenced_pool_idx and (
-            download_ticket_read_roster(pool_state["work_ticket_state"])
-        ):
-            return pool_state
-    return None
+    """`fetch_pool_latest_download_ticket` for the download-ena-study action."""
+    return await fetch_pool_latest_download_ticket(
+        pool_or_conn,
+        sequenced_pool_idx=sequenced_pool_idx,
+        action_id=DOWNLOAD_ENA_STUDY_ACTION_ID,
+        action_version=DOWNLOAD_ENA_STUDY_ACTION_VERSION,
+    )
 
 
 @dataclass(frozen=True)
