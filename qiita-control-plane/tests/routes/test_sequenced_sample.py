@@ -35,7 +35,14 @@ from qiita_common.api_paths import (
     URL_SEQUENCED_SAMPLE_METADATA_BY_STUDY,
 )
 from qiita_common.auth_constants import SYSTEM_PRINCIPAL_IDX, Scope, SystemRole
-from qiita_common.models import FieldDataType, Platform, ScopeTargetKind, WorkTicketState
+from qiita_common.models import (
+    FailureType,
+    FieldDataType,
+    Platform,
+    ScopeTargetKind,
+    WorkTicketFailureStage,
+    WorkTicketState,
+)
 
 from qiita_control_plane.cli._common import CLI_HTTP_TIMEOUT_SECONDS
 from qiita_control_plane.ena_import.submit import (
@@ -4399,8 +4406,8 @@ async def _seed_download_ticket(ctx, *, pool_idx: int, state: str) -> int:
         ScopeTargetKind.SEQUENCED_POOL.value,
         pool_idx,
         state,
-        "permanent" if failed else None,
-        "submission" if failed else None,
+        FailureType.PERMANENT.value if failed else None,
+        WorkTicketFailureStage.SUBMISSION.value if failed else None,
         "seeded failure" if failed else None,
     )
     ctx["created"]["work_ticket"].append(ticket_idx)
