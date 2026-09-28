@@ -4427,6 +4427,7 @@ async def _observed_waiter_on_run_lock(pool, run_idx: int) -> None:
         WorkTicketState.PROCESSING.value,
         WorkTicketState.COMPLETED.value,
         WorkTicketState.NO_DATA.value,
+        WorkTicketState.QUEUED.value,
     ],
 )
 async def test_import_rejects_when_pool_roster_already_staged(ctx, state):
@@ -4472,22 +4473,20 @@ async def test_import_rejects_when_pool_roster_already_staged(ctx, state):
     "state",
     [
         WorkTicketState.PENDING.value,
-        WorkTicketState.QUEUED.value,
         WorkTicketState.FAILED.value,
         WorkTicketState.CANCELLED.value,
         None,
     ],
     ids=[
         WorkTicketState.PENDING.value,
-        WorkTicketState.QUEUED.value,
         WorkTicketState.FAILED.value,
         WorkTicketState.CANCELLED.value,
         "no-ticket",
     ],
 )
 async def test_import_allowed_states(ctx, state):
-    """States that do not mean the roster was read stay open: pending/queued
-    (the read has not run yet; the shared lock closes that window), failed or
+    """States that do not mean the roster was read stay open: pending (the
+    read has not run yet; the shared lock closes that window), failed or
     cancelled (the next dispatch re-reads the roster live), and a pool with no
     download ticket at all each accept the sample with 201."""
     run_idx, pool_idx, study_idx, bs_idx, protocol_idx = await _seed_roster_case(

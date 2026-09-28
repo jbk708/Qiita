@@ -16,18 +16,18 @@ from qiita_control_plane.ena_import.registration import (
 
 
 def test_roster_read_state_truth_table() -> None:
-    """processing / completed / no_data say the roster has been (or is being)
-    read; None (no ticket), pending, queued, failed, and cancelled say it has
-    not."""
+    """processing / completed / no_data / queued say the roster has been (or
+    is being) read; None (no ticket), pending, failed, and cancelled say it
+    has not."""
     read_states = (
         WorkTicketState.PROCESSING.value,
         WorkTicketState.COMPLETED.value,
         WorkTicketState.NO_DATA.value,
+        WorkTicketState.QUEUED.value,
     )
     not_read_states = (
         None,
         WorkTicketState.PENDING.value,
-        WorkTicketState.QUEUED.value,
         WorkTicketState.FAILED.value,
         WorkTicketState.CANCELLED.value,
     )
@@ -43,7 +43,7 @@ def test_every_work_ticket_state_classified() -> None:
     a state dropped from (or double-assigned to) a class, fails here."""
     all_states = {state.value for state in WorkTicketState}
     read_states = {state for state in all_states if download_ticket_read_roster(state)}
-    not_yet_read_states = {WorkTicketState.PENDING.value, WorkTicketState.QUEUED.value}
+    not_yet_read_states = {WorkTicketState.PENDING.value}
     assert read_states | not_yet_read_states | _RESUBMITTABLE_DOWNLOAD_TICKET_STATES == all_states
     assert read_states.isdisjoint(not_yet_read_states)
     assert read_states.isdisjoint(_RESUBMITTABLE_DOWNLOAD_TICKET_STATES)

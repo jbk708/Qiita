@@ -169,30 +169,20 @@ _ROSTER_READ_DOWNLOAD_TICKET_STATES = frozenset(
         WorkTicketState.PROCESSING.value,
         WorkTicketState.COMPLETED.value,
         WorkTicketState.NO_DATA.value,
+        WorkTicketState.QUEUED.value,
     }
 )
 
 
 def download_ticket_read_roster(work_ticket_state: str | None) -> bool:
     """Whether a pool's latest download ticket has read, or is reading, the
-    pool's run roster -- refuse a native sequenced-sample add into that pool.
-
-    The roster read itself records nothing DB-side: `_stage_ena_run_roster`
-    runs a live SELECT under `lock_sequencing_run` and writes the roster only
-    to the ticket's workspace file, so "already read" is not directly
-    queryable. The download ticket's lifecycle state is the closest queryable
-    trace: `run_workflow` transitions the ticket to PROCESSING before the
-    staging read runs, so processing/completed/no_data imply the read has run
-    or is running. pending/queued are excluded because the read has not run
-    yet -- and the shared sequencing_run lock closes that window (the roster
-    read waits for an in-flight native insert to commit, so it picks that
-    sample up). failed/cancelled are excluded because the next dispatch
-    re-reads the roster live, the same rule `download_ticket_covers_pool`
-    documents via `_RESUBMITTABLE_DOWNLOAD_TICKET_STATES`. The proxy can
-    false-reject conservatively: a ticket flipped to PROCESSING whose read has
-    not completed yet refuses an add even though the read would still include
-    it -- a loud 409 that fails safe rather than a silently missed download.
-    """
+    pool's run roster: processing/completed/no_data/queued (queued only
+    follows a staged ticket's retry requeue, never precedes the first read).
+    pending/None precede the read. failed/cancelled count as not-read since
+    the next dispatch re-reads the roster live -- but a `/run` redrive of a
+    ticket that already completed `ingest_ena_reads` fast-forwards straight
+    over the re-staged roster, so a sample added while failed can still be
+    missed."""
     return work_ticket_state in _ROSTER_READ_DOWNLOAD_TICKET_STATES
 
 
