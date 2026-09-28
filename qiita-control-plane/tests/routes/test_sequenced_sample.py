@@ -4584,6 +4584,48 @@ async def test_import_waits_out_held_sequencing_run_lock(ctx):
     assert resp.status_code == 201, resp.text
 
 
+async def test_import_staged_check_reads_under_the_run_lock(ctx):
+    """The staged-roster check must read the ticket's state AFTER the route
+    takes the run lock, not before: a ticket flipped to `processing` while
+    the POST is parked waiting for a held lock is still caught once the lock
+    is granted, 409, not a stale pre-lock read that would have let it
+    through."""
+    run_idx, pool_idx, study_idx, bs_idx, protocol_idx = await _seed_roster_case(
+        ctx, "roster-under"
+    )
+    ticket_idx = await _seed_download_ticket(ctx, pool_idx=pool_idx, state="pending")
+    body = _roster_case_body(
+        ctx,
+        study_idx=study_idx,
+        bs_idx=bs_idx,
+        protocol_idx=protocol_idx,
+        suffix="ROSTER-UNDER",
+        accession=unique_accession("ERR"),
+    )
+    conn = await ctx["pool"].acquire()
+    post_task = None
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                POOL_RESOLVE_LOCK_CLASS,
+                run_idx & INT4_MASK,
+            )
+            post_task = asyncio.create_task(
+                _post_sequenced_sample(ctx["wet"], ctx, run_idx, pool_idx, **body)
+            )
+            await asyncio.wait_for(_observed_waiter_on_run_lock(ctx["pool"], run_idx), timeout=10)
+            await conn.execute(
+                "UPDATE qiita.work_ticket SET state = 'processing' WHERE work_ticket_idx = $1",
+                ticket_idx,
+            )
+    finally:
+        await ctx["pool"].release(conn)
+        if post_task is not None:
+            resp = await asyncio.wait_for(post_task, timeout=30)
+    assert resp.status_code == 409, resp.text
+
+
 async def test_native_insert_lands_in_staged_roster(ctx, monkeypatch, tmp_path):
     """A native insert racing the download roster read lands in the staged
     roster. One sample is registered and committed first; a second POST is
