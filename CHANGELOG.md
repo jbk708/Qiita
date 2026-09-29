@@ -1978,7 +1978,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 ### Fixed
 
 - **`qiita submit-ena-import` and `POST /ena-import-batch` refuse a malformed accession
-  at submit (#PR).** The shared validator checked only the prefix, so a bare `PRJEB`,
+  at submit (#635).** The shared validator checked only the prefix, so a bare `PRJEB`,
   `PRJEBxyz` or `PRJEB11419,PRJNA1` was accepted and then failed item by item in the
   background resolve. An accession must now be a known prefix followed by digits;
   anything else exits 2 or answers 422 before a batch is created.
