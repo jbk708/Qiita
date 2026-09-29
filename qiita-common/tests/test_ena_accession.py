@@ -80,6 +80,43 @@ def test_detect_accession_kind_rejects_unknown_prefix(accession):
         detect_accession_kind(accession)
 
 
+@pytest.mark.parametrize(
+    "accession",
+    [
+        "PRJEB",
+        "PRJEBxyz",
+        "PRJEB11419,PRJNA1",
+        "PRJEB11419 PRJNA1",
+        "PRJEB١٢٣",
+        "SAMN",
+        "ERR12a",
+        "SRX",
+    ],
+)
+def test_detect_accession_kind_rejects_malformed_shape(accession):
+    from qiita_common.ena_accession import (
+        InvalidEnaAccessionError,
+        detect_accession_kind,
+    )
+
+    with pytest.raises(InvalidEnaAccessionError, match="does not match a known"):
+        detect_accession_kind(accession)
+
+
+@pytest.mark.parametrize(
+    "accession",
+    ["PRJEB", "PRJEB11419,PRJNA1", "PRJEB11419 PRJNA1"],
+)
+def test_validate_study_accession_rejects_malformed_shape(accession):
+    from qiita_common.ena_accession import (
+        InvalidEnaAccessionError,
+        validate_study_accession,
+    )
+
+    with pytest.raises(InvalidEnaAccessionError):
+        validate_study_accession(accession)
+
+
 def test_validate_study_accession_returns_trimmed():
     from qiita_common.ena_accession import validate_study_accession
 

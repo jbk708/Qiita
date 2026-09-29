@@ -21,6 +21,11 @@ def unique_accession(prefix: str = "BS") -> str:
     return _unique_with_hex(prefix, "-")
 
 
+def unique_ena_accession(prefix: str) -> str:
+    """Return prefix + 9 random digits, matching the INSDC accession shape."""
+    return f"{prefix}{secrets.randbelow(10**9):09d}"
+
+
 def unique_matrix_tube_id() -> str:
     """Return a 10-digit string; the leading digit is forced to 0 so each
     generated id exercises the column's leading-zero-preservation contract.
