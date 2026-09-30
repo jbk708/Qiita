@@ -433,6 +433,25 @@ async def test_submit_rejects_malformed_accession(eib_client, admin_token, postg
     assert count == 0
 
 
+async def test_submit_rejects_bare_prefix_without_creating_batch(
+    eib_client, admin_token, postgres_pool
+):
+    token, pidx = admin_token
+    resp = await eib_client.post(
+        URL_ENA_IMPORT_BATCH_PREFIX,
+        json={"accessions": [unique_ena_accession("PRJNA"), "PRJEB"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422, resp.text
+    assert "followed by digits" in resp.json()["detail"]
+
+    count = await postgres_pool.fetchval(
+        "SELECT count(*) FROM qiita.ena_import_batch WHERE submitted_by_principal_idx = $1",
+        pidx,
+    )
+    assert count == 0
+
+
 @pytest.mark.parametrize("unknown_field", ["backend", "source"])
 async def test_submit_rejects_unknown_request_fields(eib_client, admin_token, unknown_field):
     """`BatchImportRequest` pins extra="forbid" like every other *Request model

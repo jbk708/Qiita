@@ -17,7 +17,8 @@ def unique_field_name(prefix: str = "owner_biosample_id") -> str:
 
 
 def unique_accession(prefix: str = "BS") -> str:
-    """Return prefix + '-' + 8 hex chars; for biosample/ENA accession columns."""
+    """Return prefix + '-' + 8 hex chars; not a valid INSDC accession, so use
+    `unique_ena_accession` wherever an accession is validated (e.g. study accessions)."""
     return _unique_with_hex(prefix, "-")
 
 
