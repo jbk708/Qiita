@@ -25,6 +25,7 @@ from qiita_control_plane.backfill.host_taxon import (
     HostTaxonSource,
     apply_backfill,
     classify,
+    implied_hosts,
     plan_backfill,
 )
 from qiita_control_plane.repositories._sample_helpers import (
@@ -43,6 +44,10 @@ from qiita_control_plane.testing.db_seeds import (
 _HUMAN_GUT_METAGENOME = "408170"
 _SEAWATER_METAGENOME = "1561972"
 _GENERIC_METAGENOME = "256318"  # the bare root — names no environment
+_HUMAN_METAGENOME = "646099"
+_MOUSE_GUT_METAGENOME = "410661"
+_SOIL_METAGENOME = "410658"
+_MOUSE = "10090"
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +80,52 @@ def test_seawater_metagenome_implies_no_host():
     assert a.source is HostTaxonSource.NO_HOST
     assert a.missing_reason == "not applicable"
     assert a.host_term_id is None
+
+
+@pytest.mark.parametrize(
+    ("sample_taxon", "host"),
+    [
+        (_HUMAN_METAGENOME, NCBI_TAXONOMY_HUMAN_TERM_ID),
+        ("539655", NCBI_TAXONOMY_HUMAN_TERM_ID),
+        (_MOUSE_GUT_METAGENOME, _MOUSE),
+        ("540485", _MOUSE),
+    ],
+)
+def test_host_associated_metagenome_implies_its_host(sample_taxon, host):
+    a = _classify(sample_taxon_term_id=sample_taxon)
+    assert a.source is HostTaxonSource.TAXON
+    assert a.host_term_id == host
+
+
+@pytest.mark.parametrize(
+    "sample_taxon",
+    [
+        _SOIL_METAGENOME,
+        "412755",
+        "556182",
+        "408172",
+        "1504975",
+        "1671699",
+        "527640",
+        "496921",
+        "942017",
+        "1076179",
+        "1260732",
+        "1768876",
+    ],
+)
+def test_hostless_environment_implies_no_host(sample_taxon):
+    a = _classify(sample_taxon_term_id=sample_taxon)
+    assert a.source is HostTaxonSource.NO_HOST
+    assert a.missing_reason == "not applicable"
+
+
+def test_implied_hosts_restricts_the_table_to_the_given_taxa():
+    """An absent key is unresolved; None is a decision that the environment has no host."""
+    assert implied_hosts([_HUMAN_GUT_METAGENOME, _SEAWATER_METAGENOME, _GENERIC_METAGENOME]) == {
+        _HUMAN_GUT_METAGENOME: NCBI_TAXONOMY_HUMAN_TERM_ID,
+        _SEAWATER_METAGENOME: None,
+    }
 
 
 def test_control_wins_over_its_taxon():

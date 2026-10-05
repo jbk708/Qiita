@@ -255,7 +255,18 @@ metadata if it doesn't parse (including an INSDC missing-value marker like
 `"missing"`, which real DDBJ submissions do use for `lat_lon`). The three
 environmental-context tags (`env_broad_scale`/`env_local_scale`/`env_medium`, and
 their GSC-MIxS display-name twins) stay unmapped in either vocabulary — see
-"No ENVO / taxon-ontology harmonization" below.
+"No ENVO harmonization or free-text host matching" below.
+
+**Taxon ids come from ENA.** A new biosample's `taxon id` is the run's `tax_id` and its
+`host taxon id` is the run's `host_tax_id`; when ENA gives no host, the host implied by
+`tax_id` in the curated table (`_HOST_BY_SAMPLE_TAXON`, shared with
+`qiita-admin backfill host-taxon-id`) is used, and `not applicable` is written for a
+hostless environment. An id is written only if it is a loaded NCBI Taxonomy term
+(`qiita-admin terminology prepare-taxdump` loads more); anything else is written as
+`not provided` and listed in the run's `metadata_warnings`, as is a `host_tax_id` that
+disagrees with the table. A warning appears only on the run that created the biosample,
+so after a re-import or for a later run on the same sample, check the creating batch.
+The stored `not provided` still stops host filtering at submit.
 
 ## Scope and limits
 
@@ -278,9 +289,9 @@ gaps expected to close soon (except where noted):
   platform string can fail platform mapping for that run alone (isolated, per the
   per-run failure model above) rather than importing correctly. Filling out DDBJ
   coverage is deferred to the backlog.
-- **No ENVO / taxon-ontology harmonization.** Free-text environment and taxonomy
-  fields ENA supplies are kept as study-local text as given; there is no ENVO term
-  resolution or NCBI taxon-id cross-referencing in this path. Also deferred to the
+- **No ENVO harmonization or free-text host matching.** Free-text environment and host
+  fields ENA supplies are kept as study-local text as given; only ENA's numeric
+  `tax_id` and `host_tax_id` are cross-referenced to NCBI Taxonomy. Also deferred to the
   backlog.
 
 ## The duckdb-miint dependency

@@ -77,12 +77,34 @@ _HOST_BY_SAMPLE_TAXON: dict[str, str | None] = {
     # still be removed from a host-LESS sample for contamination/privacy reasons
     # is a separate question this table cannot express; it is tracked separately.
     "1561972": None,
+    "646099": NCBI_TAXONOMY_HUMAN_TERM_ID,
+    "539655": NCBI_TAXONOMY_HUMAN_TERM_ID,  # human skin metagenome
+    "410661": "10090",  # mouse gut metagenome
+    "540485": "10090",  # mouse skin metagenome
+    # Abiotic or engineered environments, hostless like seawater.
+    "410658": None,  # soil
+    "412755": None,  # marine sediment
+    "556182": None,  # freshwater sediment
+    "408172": None,  # marine
+    "1504975": None,  # salt marsh
+    "1671699": None,  # sand
+    "527640": None,  # microbial mat
+    "496921": None,  # stromatolite
+    "942017": None,  # activated sludge
+    "1076179": None,  # bioreactor
+    "1260732": None,  # coal
+    "1768876": None,  # oil field
     # Deliberately ABSENT: '256318' (the bare `metagenome` root). It names no
     # environment, so it implies no host. On the live data these are almost
     # entirely blanks, which rule 1 catches before this table is consulted; what
     # is left over is genuinely under-specified metadata and must be curated, not
     # guessed at here.
 }
+
+
+def implied_hosts(sample_term_ids: Iterable[str]) -> dict[str, str | None]:
+    """The curated table restricted to `sample_term_ids`; absent means unresolved, None no host."""
+    return {t: _HOST_BY_SAMPLE_TAXON[t] for t in sample_term_ids if t in _HOST_BY_SAMPLE_TAXON}
 
 
 @dataclass

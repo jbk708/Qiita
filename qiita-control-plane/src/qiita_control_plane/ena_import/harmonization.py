@@ -10,16 +10,19 @@ separate dicts; this module holds no SQL.
 from __future__ import annotations
 
 import json
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
-from qiita_common.models import BIOSAMPLE_DISPLAY_HOST_TAXON_ID
+from qiita_common.models import (
+    BIOSAMPLE_DISPLAY_HOST_TAXON_ID,
+    BIOSAMPLE_DISPLAY_TAXON_ID,
+    MISSING_REASON_NOT_APPLICABLE,
+)
+from qiita_common.models.ena import EnaRunRecord
 
 from .attribute_mapping import map_ena_attributes
 
-# The import composer requires the `host taxon id` global field. ENA carries no NCBI
-# host taxon id -- its `host` is submitter free text -- so the honest value is
-# the missing-value marker rather than a guess or a weakened gate.
-HOST_TAXON_ID_UNKNOWN = "not provided"
+NOT_PROVIDED = "not provided"
 
 
 @dataclass(frozen=True)
@@ -29,14 +32,64 @@ class HarmonizationResult:
     `mapped_count`: attributes written as globally-linked metadata.
     `retained_unmapped`: raw ENA tags written as study-local metadata (not
     dropped).
+    `warnings`: taxon fields written as `not provided`, or ENA data that disagrees.
     """
 
     mapped_count: int
     retained_unmapped: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+def _host_taxon_id(
+    run: EnaRunRecord,
+    implied_hosts: Mapping[str, str | None],
+    loaded_term_ids: Collection[str],
+) -> tuple[str, list[str]]:
+    who = run.sample_accession
+    warnings: list[str] = []
+    implied = run.tax_id in implied_hosts
+    implied_host = implied_hosts.get(run.tax_id) if run.tax_id else None
+
+    if run.host_tax_id is not None:
+        if implied and implied_host != run.host_tax_id:
+            warnings.append(
+                f"{who}: ENA host_tax_id {run.host_tax_id} differs from host"
+                f" {implied_host or 'none'} implied by tax_id {run.tax_id}"
+            )
+        if run.host_tax_id in loaded_term_ids:
+            return run.host_tax_id, warnings
+        warnings.append(f"{who}: host_tax_id {run.host_tax_id} is not a loaded NCBI Taxonomy term")
+        return NOT_PROVIDED, warnings
+
+    if implied and implied_host is None:
+        return MISSING_REASON_NOT_APPLICABLE, warnings
+    if implied_host is not None:
+        if implied_host in loaded_term_ids:
+            return implied_host, warnings
+        warnings.append(
+            f"{who}: host {implied_host} implied by tax_id {run.tax_id} is not a loaded"
+            " NCBI Taxonomy term"
+        )
+        return NOT_PROVIDED, warnings
+
+    warnings.append(f"{who}: ENA gives no host_tax_id (host text: {run.host!r})")
+    return NOT_PROVIDED, warnings
+
+
+def _taxon_id(run: EnaRunRecord, loaded_term_ids: Collection[str]) -> tuple[str, list[str]]:
+    if run.tax_id in loaded_term_ids:
+        return run.tax_id, []
+    return NOT_PROVIDED, [
+        f"{run.sample_accession}: tax_id {run.tax_id!r} is not a loaded NCBI Taxonomy term"
+    ]
 
 
 def build_biosample_metadata(
     attributes: dict[str, list[str]],
+    *,
+    ena_run: EnaRunRecord,
+    implied_hosts: Mapping[str, str | None],
+    loaded_term_ids: Collection[str],
 ) -> tuple[dict[str, str], dict[str, str], HarmonizationResult]:
     """Split one BioSample's ENA attributes into `(global_metadata,
     local_metadata, result)` for the import.
@@ -46,7 +99,8 @@ def build_biosample_metadata(
     are), and the import resolves any key naming a global to that global.
 
     A tag with several values never reaches a typed handler: it is kept study-local as
-    a JSON array.
+    a JSON array. Only taxon ids in `loaded_term_ids` are written; anything else is
+    `not provided` with a warning.
     """
     mapped, unmapped = map_ena_attributes(
         {tag: values[0] for tag, values in attributes.items() if len(values) == 1}
@@ -58,9 +112,19 @@ def build_biosample_metadata(
             if len(values) != 1
         }
     )
-    global_metadata = {**mapped, BIOSAMPLE_DISPLAY_HOST_TAXON_ID: HOST_TAXON_ID_UNKNOWN}
+    host, host_warnings = _host_taxon_id(ena_run, implied_hosts, loaded_term_ids)
+    taxon, taxon_warnings = _taxon_id(ena_run, loaded_term_ids)
+    global_metadata = {
+        **mapped,
+        BIOSAMPLE_DISPLAY_HOST_TAXON_ID: host,
+        BIOSAMPLE_DISPLAY_TAXON_ID: taxon,
+    }
     return (
         global_metadata,
         dict(unmapped),
-        HarmonizationResult(mapped_count=len(mapped), retained_unmapped=sorted(unmapped)),
+        HarmonizationResult(
+            mapped_count=len(mapped),
+            retained_unmapped=sorted(unmapped),
+            warnings=host_warnings + taxon_warnings,
+        ),
     )
