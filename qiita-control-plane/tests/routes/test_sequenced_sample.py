@@ -78,6 +78,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_prep_sample_global_field,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_accession
 
 from .conftest import (
@@ -108,83 +109,35 @@ def _unique_item_id(prefix: str = "ITEM") -> str:
 
 
 async def _cleanup_tracked(pool, created: dict) -> None:
-    """Drop tracked rows in FK-reverse order.
+    """Drop the work tickets, then the sample entity graph, then everything the
+    sweep does not own.
 
-    Order matters because of ON DELETE RESTRICT FKs throughout the chain:
-      prep_sample_metadata
-      prep_sample_study_field (bulk-scoped to test-owned studies)
-      prep_sample_to_study (composite PK)
-      sequenced_sample
-      work_ticket
-      prep_sample
-      sequenced_pool
-      sequencing_run
-      biosample_to_study (composite PK)
-      biosample
-      study_access (composite of study_idx + principal_idx)
-      study
-      principals
-
-    prep_sample_study_field rows are bulk-deleted by parent study because
-    each test seeds its own study (see _seed_study) — no other test can
-    plant fields on a study this test owns, so the parent-FK delete is
-    safe and avoids the per-row snapshot bookkeeping the response payload
-    used to enable.
+    A standing work ticket references its study and prep_sample under RESTRICT,
+    so it has to go before the sweep rather than after it.
     """
-    await delete_idxs(pool, "prep_sample_metadata", created["prep_sample_metadata"])
-    if created["study"]:
-        await pool.execute(
-            "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = ANY($1::bigint[])",
-            created["study"],
-        )
-    for ps, st in created["prep_sample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1 AND study_idx = $2",
-            ps,
-            st,
-        )
-    await delete_idxs(pool, "sequenced_sample", created["sequenced_sample"])
+    # work_ticket's PK is work_ticket_idx (not idx), so delete_idxs does not apply.
+    await pool.execute(
+        "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",
+        created["work_ticket"],
+    )
+    await teardown_entity_graph(
+        pool,
+        study_idxs=created["study"],
+        biosample_idxs=created["biosample"],
+        prep_sample_idxs=created["prep_sample"],
+    )
     # host_filter_profile FKs the reference with ON DELETE RESTRICT, so the
     # profiles must go before the references they point at, just below.
     await delete_idxs(pool, "host_filter_profile", created["host_filter_profile"])
-    # References are FK'd by sequenced_sample.host_*_reference_idx (ON DELETE
-    # RESTRICT), so drop them only after the samples above are gone. The
-    # reference PK is reference_idx (not idx), so delete_idxs does not apply.
+    # The reference PK is reference_idx (not idx), so delete_idxs does not apply.
     if created["reference"]:
         await pool.execute(
             "DELETE FROM qiita.reference WHERE reference_idx = ANY($1::bigint[])",
             created["reference"],
         )
-    # work_ticket's PK is work_ticket_idx (not idx), so delete_idxs does not
-    # apply; its rows must go before the pool/principal they reference.
-    await pool.execute(
-        "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",
-        created["work_ticket"],
-    )
-    await delete_idxs(pool, "prep_sample", created["prep_sample"])
     await delete_idxs(pool, "sequenced_pool", created["sequenced_pool"])
     await delete_idxs(pool, "sequencing_run", created["sequencing_run"])
-    for bs, st in created["biosample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-            bs,
-            st,
-        )
-    # biosample_metadata references the biosample and its study field; the
-    # field references the (seeded, shared) global field, which we never own.
-    await delete_idxs(pool, "biosample_metadata", created["biosample_metadata"])
-    await delete_idxs(pool, "biosample_study_field", created["biosample_study_field"])
-    await delete_idxs(pool, "biosample", created["biosample"])
-    for st, pr in created["study_access"]:
-        await pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-            st,
-            pr,
-        )
-    await delete_idxs(pool, "study", created["study"])
-    # No inbound FKs left at this point: prep_sample_metadata has been
-    # deleted, so missing_value_reason is unreferenced; prep_sample_study_field
-    # has been bulk-deleted, so prep_sample_global_field is unreferenced.
+    # Both are referenced only by metadata and study-field rows the sweep removed.
     await delete_idxs(pool, "prep_sample_global_field", created["prep_sample_global_field"])
     await delete_idxs(pool, "missing_value_reason", created["missing_value_reason"])
     all_principals = created["user_principals"] + created["service_account_principals"]
@@ -193,17 +146,12 @@ async def _cleanup_tracked(pool, created: dict) -> None:
             "DELETE FROM qiita.api_token WHERE principal_idx = ANY($1::bigint[])",
             all_principals,
         )
-    if created["user_principals"]:
-        await pool.execute(
-            "DELETE FROM qiita.user WHERE principal_idx = ANY($1::bigint[])",
-            created["user_principals"],
-        )
     if created["service_account_principals"]:
         await pool.execute(
             "DELETE FROM qiita.service_account WHERE principal_idx = ANY($1::bigint[])",
             created["service_account_principals"],
         )
-    await delete_idxs(pool, "principal", all_principals)
+    await delete_principal(pool, all_principals)
 
 
 # ---------------------------------------------------------------------------

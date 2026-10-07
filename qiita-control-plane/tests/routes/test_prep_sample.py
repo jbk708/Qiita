@@ -22,6 +22,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_prep_sample_global_field,
     seed_sequenced_prep_sample,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_field_name
 
 from .conftest import (
@@ -47,34 +48,15 @@ pytestmark = pytest.mark.db
 
 
 async def _cleanup_tracked(pool, created: dict) -> None:
-    """Drop tracked rows in FK-reverse order (ON DELETE RESTRICT throughout):
-    prep_sample_to_study, prep_sample, biosample_to_study, biosample,
-    prep_sample_study_field, prep_sample_global_field, study_access, study."""
-    for ps, st in created["prep_sample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1 AND study_idx = $2",
-            ps,
-            st,
-        )
-    await delete_idxs(pool, "prep_sample", created["prep_sample"])
-    for bs, st in created["biosample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-            bs,
-            st,
-        )
-    await delete_idxs(pool, "biosample", created["biosample"])
-    # Study fields reference both their study and, when linked, a global field,
-    # so they drop before either.
-    await delete_idxs(pool, "prep_sample_study_field", created["prep_sample_study_field"])
+    """Drop the sample entity graph, then the global fields that outlive it."""
+    await teardown_entity_graph(
+        pool,
+        study_idxs=created["study"],
+        biosample_idxs=created["biosample"],
+        prep_sample_idxs=created["prep_sample"],
+    )
+    # A global field is referenced by the study-local fields the sweep removed.
     await delete_idxs(pool, "prep_sample_global_field", created["prep_sample_global_field"])
-    for st, principal in created["study_access"]:
-        await pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-            st,
-            principal,
-        )
-    await delete_idxs(pool, "study", created["study"])
 
 
 @pytest_asyncio.fixture

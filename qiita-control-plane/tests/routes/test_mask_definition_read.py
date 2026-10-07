@@ -34,6 +34,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from .conftest import (  # noqa: F401
     _grant_study_access,
@@ -188,39 +189,17 @@ async def ctx(role_keyed_clients):  # noqa: F811
         "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",
         created["work_ticket"],
     )
-    for mask_idx, prep_sample_idx in created["mask_sample"]:
-        await pool.execute(
-            "DELETE FROM qiita.mask_sample WHERE mask_idx = $1 AND prep_sample_idx = $2",
-            mask_idx,
-            prep_sample_idx,
-        )
+    await teardown_entity_graph(
+        pool,
+        study_idxs=created["study"],
+        biosample_idxs=created["biosample"],
+        prep_sample_idxs=created["prep_sample"],
+    )
     await pool.execute(
         "DELETE FROM qiita.mask_definition WHERE mask_idx = ANY($1::bigint[])", created["mask"]
     )
-    await delete_idxs(pool, "sequenced_sample", created["sequenced_sample"])
     await delete_idxs(pool, "sequenced_pool", created["sequenced_pool"])
     await delete_idxs(pool, "sequencing_run", created["sequencing_run"])
-    for prep_sample_idx, study_idx in created["prep_sample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1 AND study_idx = $2",
-            prep_sample_idx,
-            study_idx,
-        )
-    await delete_idxs(pool, "prep_sample", created["prep_sample"])
-    for biosample_idx, study_idx in created["biosample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-            biosample_idx,
-            study_idx,
-        )
-    await delete_idxs(pool, "biosample", created["biosample"])
-    for study_idx, principal_idx in created["study_access"]:
-        await pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-            study_idx,
-            principal_idx,
-        )
-    await delete_idxs(pool, "study", created["study"])
     for action_id, was_created in actions_created.items():
         await delete_action_if_created(
             pool, action_id=action_id, version=_MASK_ACTION_VERSION, created=was_created

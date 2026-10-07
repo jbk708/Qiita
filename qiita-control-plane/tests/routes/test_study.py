@@ -35,11 +35,8 @@ from qiita_common.api_paths import (
 )
 from qiita_common.auth_constants import Scope
 
-from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
-    seed_service_principal,
-    seed_user_principal,
-)
+from qiita_control_plane.testing.db_seeds import seed_service_principal, seed_user_principal
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_accession
 
 from .conftest import (
@@ -68,27 +65,18 @@ def _unique_title(prefix: str = "study") -> str:
 
 
 async def _cleanup_tracked(pool, created: dict) -> None:
-    """Drop every test-created row in FK-reverse order: study_access →
-    study → user / service subtype rows → principal."""
-    for st, p in created["study_access"]:
-        await pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-            st,
-            p,
-        )
-    await delete_idxs(pool, "study", created["study"])
-    if created["user_principals"]:
-        await pool.execute(
-            "DELETE FROM qiita.user WHERE principal_idx = ANY($1::bigint[])",
-            created["user_principals"],
-        )
+    """Drop every test-created row: the study graph, then the service subtype
+    rows, then the principals."""
+    await teardown_entity_graph(
+        pool, study_idxs=created["study"], biosample_idxs=[], prep_sample_idxs=[]
+    )
     if created["service_account_principals"]:
         await pool.execute(
             "DELETE FROM qiita.service_account WHERE principal_idx = ANY($1::bigint[])",
             created["service_account_principals"],
         )
     all_principals = created["user_principals"] + created["service_account_principals"]
-    await delete_idxs(pool, "principal", all_principals)
+    await delete_principal(pool, all_principals)
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from qiita_common.models import FieldDataType
 
 from qiita_control_plane.routes import _helpers as route_helpers
 from qiita_control_plane.testing.db_seeds import delete_idxs, seed_terminology
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_field_name
 
 from .conftest import (
@@ -65,34 +66,12 @@ async def ctx(role_keyed_clients):
     yield {**role_keyed_clients, "created": created}
 
     pool = role_keyed_clients["pool"]
-    # FK-reverse. Metadata references both its sample and its study field, so
-    # it goes first; the links and the prep go before the biosample they name.
-    await delete_idxs(pool, "biosample_metadata", created["biosample_metadata"])
-    await delete_idxs(pool, "prep_sample_metadata", created["prep_sample_metadata"])
-    for prep_sample_idx, study_idx in created["prep_sample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1 AND study_idx = $2",
-            prep_sample_idx,
-            study_idx,
-        )
-    for biosample_idx, study_idx in created["biosample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-            biosample_idx,
-            study_idx,
-        )
-    await delete_idxs(pool, "prep_sample", created["prep_sample"])
-    await delete_idxs(pool, "biosample", created["biosample"])
-    # Fields and access grants both reference study.
-    await delete_idxs(pool, "biosample_study_field", created["biosample_study_field"])
-    await delete_idxs(pool, "prep_sample_study_field", created["prep_sample_study_field"])
-    for study_idx, principal_idx in created["study_access"]:
-        await pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-            study_idx,
-            principal_idx,
-        )
-    await delete_idxs(pool, "study", created["study"])
+    await teardown_entity_graph(
+        pool,
+        study_idxs=created["study"],
+        biosample_idxs=created["biosample"],
+        prep_sample_idxs=created["prep_sample"],
+    )
     # Global fields outlive the study-local rows that link to them.
     await delete_idxs(pool, "biosample_global_field", created["biosample_global_field"])
     await delete_idxs(pool, "prep_sample_global_field", created["prep_sample_global_field"])
