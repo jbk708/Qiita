@@ -37,6 +37,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_sequenced_prep_sample,
     seed_study,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_field_name
 
 # Both stacks run every test parameterized over this; pytest reports ids as
@@ -53,26 +54,6 @@ METADATA_WRITE_LOCK_TIMEOUT = "3s"
 def _spec_id(spec):
     """Pytest id for the parametrize decorator: spec.entity_kind value."""
     return spec.entity_kind.value
-
-
-def _bare_table_name(qualified_table):
-    """Return the table name alone from a spec field naming it `schema.table`.
-
-    The cleanup buckets are keyed by bare table name while the spec fields carry
-    the qualified form, so the two are bridged in one place rather than at each
-    key.
-    """
-    return qualified_table.split(".")[-1]
-
-
-def _study_field_tracking_key(spec):
-    """Cleanup-dict key for the *_study_field rows seeded by a test."""
-    return _bare_table_name(spec.study_field_table)
-
-
-def _metadata_tracking_key(spec):
-    """Cleanup-dict key for the *_metadata rows seeded by a test."""
-    return _bare_table_name(spec.metadata_table)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +79,6 @@ async def _create_plain_field(
             required=False,
             terminology_idx=terminology_idx,
         )
-    ctx["created"][_study_field_tracking_key(spec)].append(field_idx)
     return field_idx
 
 
@@ -127,7 +107,6 @@ async def _write_value(ctx, spec, *, entity_idx, field_idx, data_type, value):
             value=value,
             created_by_idx=ctx["principal_idx"],
         )
-    ctx["created"][_metadata_tracking_key(spec)].append(meta_idx)
     return meta_idx
 
 
@@ -179,57 +158,17 @@ async def _seed_metadata_checklist(pool, name):
 
 
 async def _cleanup_tracked(pool, created):
-    """FK-reverse cleanup of every row tracked in `created`.
+    """Delete the tracked rows that hang off no entity.
 
-    The order encodes FK dependencies; do not reorder. biosample_to_study
-    is composite-keyed so it is handled separately from the idx-keyed sweep.
-    Empty lists for tables a given test does not seed are no-ops via
-    `_delete_idxs`, so the sweep is free for tests that only touch the
-    common biosample surface.
+    Anything belonging to a study, biosample or prep_sample is swept by
+    `teardown_entity_graph` before this runs. What is left is FK-reverse among
+    itself: the global fields and terms reference terminology.
     """
-    # Sweep the EAV value rows first; they reference everything else.
-    await delete_idxs(pool, "biosample_metadata", created["biosample_metadata"])
-    # Field rows reference biosample_global_field and terminology.
-    await delete_idxs(pool, "biosample_study_field", created["biosample_study_field"])
-    for bs, st in created["biosample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-            bs,
-            st,
-        )
-    # prep_sample side, FK-reverse: EAV value rows, then field rows, then
-    # the composite-keyed link, then the prep_sample itself — which must
-    # go before its biosample (prep_sample.biosample_idx FK) is swept just
-    # below. prep_sample_to_study is composite-keyed like biosample_to_study.
-    await delete_idxs(pool, "prep_sample_metadata", created["prep_sample_metadata"])
-    await delete_idxs(pool, "prep_sample_study_field", created["prep_sample_study_field"])
-    for ps, st in created["prep_sample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1 AND study_idx = $2",
-            ps,
-            st,
-        )
-    # Subtype rows (sequenced_sample) reference prep_sample with ON DELETE
-    # RESTRICT, so they must go before the prep_sample sweep below. Tests
-    # that don't seed a subtype leave this list empty and the call is a
-    # no-op via _delete_idxs.
-    await delete_idxs(pool, "sequenced_sample", created["sequenced_sample"])
-    await delete_idxs(pool, "prep_sample", created["prep_sample"])
-    await delete_idxs(pool, "biosample", created["biosample"])
-    # study_access references study with ON DELETE RESTRICT, so any
-    # study_access rows seeded by tests must go before the auto-seeded
-    # study row deletion at the end of the fixture.
-    await delete_idxs(pool, "study_access", created["study_access"])
-    # biosample_global_field and terminology_term both reference terminology;
-    # missing_value_reason has no inbound refs left after biosample_metadata.
     await delete_idxs(pool, "biosample_global_field", created["biosample_global_field"])
-    # prep_sample_study_field and prep_sample_metadata were swept above, so
-    # prep_sample_global_field has no inbound refs left at this tier.
     await delete_idxs(pool, "prep_sample_global_field", created["prep_sample_global_field"])
     await delete_idxs(pool, "terminology_term", created["terminology_term"])
     await delete_idxs(pool, "missing_value_reason", created["missing_value_reason"])
     await delete_idxs(pool, "terminology", created["terminology"])
-    await delete_idxs(pool, "study", created["studies"])
 
 
 # ---------------------------------------------------------------------------
@@ -272,23 +211,27 @@ async def ctx(postgres_pool):
     # `studies` holds idxs of any extra studies the test seeds beyond the
     # one auto-seeded above; they are deleted after the biosample-side rows
     # are swept and before the auto-seeded study row is dropped.
+    # The three entity lists feed the sweep; the rest hang off no entity. A row
+    # belonging to an entity needs no entry here — the sweep finds it by parent FK.
     created: dict = {
+        "biosample": [],
+        "prep_sample": [],
+        "studies": [],
+        # Entity-family buckets nothing reads any more: the sweep finds these
+        # rows by parent FK. Retained only until their writers are removed.
         "biosample_metadata": [],
         "biosample_study_field": [],
         "biosample_to_study": [],
-        "biosample": [],
-        "biosample_global_field": [],
         "prep_sample_metadata": [],
         "prep_sample_study_field": [],
-        "prep_sample": [],
         "prep_sample_to_study": [],
         "sequenced_sample": [],
+        "study_access": [],
+        "biosample_global_field": [],
         "prep_sample_global_field": [],
         "terminology_term": [],
         "missing_value_reason": [],
         "terminology": [],
-        "study_access": [],
-        "studies": [],
     }
 
     yield {
@@ -301,23 +244,17 @@ async def ctx(postgres_pool):
         "created": created,
     }
 
-    # Sweep test-populated rows then the auto-seeded support rows.
+    # The fixture's own study and any the test added go in one list: the sweep
+    # keys on the parent FK, so both must be in range before either is deleted.
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[study_idx, *created["studies"]],
+        biosample_idxs=created["biosample"],
+        prep_sample_idxs=created["prep_sample"],
+    )
     await _cleanup_tracked(postgres_pool, created)
     await delete_idxs(postgres_pool, "metadata_checklist", checklist_idx)
-    await delete_idxs(postgres_pool, "study", study_idx)
-    # qiita.user → qiita.principal is ON DELETE RESTRICT, so the user rows
-    # must go before the principals they reference. The role-typed
-    # user_no_delete_if_study_owner and user_no_delete_if_biosample_owner
-    # triggers pass because the study and biosample rows above have already
-    # been removed.
-    await postgres_pool.execute(
-        "DELETE FROM qiita.user WHERE principal_idx = ANY($1::bigint[])",
-        [principal_idx, biosample_owner_idx],
-    )
-    # principal FK is DEFERRABLE INITIALLY DEFERRED, so deleting both rows in
-    # one statement is fine — the biosample_owner_idx → principal_idx
-    # reference is checked at commit, after both rows are gone.
-    await delete_idxs(postgres_pool, "principal", [biosample_owner_idx, principal_idx])
+    await delete_principal(postgres_pool, [principal_idx, biosample_owner_idx])
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +301,6 @@ async def _create_biosample_with_link(ctx):
                 created_by_idx=ctx["principal_idx"],
             )
     ctx["created"]["biosample"].append(bs_idx)
-    ctx["created"]["biosample_to_study"].append((bs_idx, ctx["study_idx"]))
     return bs_idx
 
 
@@ -379,7 +315,6 @@ async def _create_local_field(ctx, suffix=""):
         created_by_idx=ctx["principal_idx"],
         required=True,
     )
-    ctx["created"]["biosample_study_field"].append(idx)
     return idx
 
 
@@ -408,7 +343,6 @@ async def _create_prep_sample_with_link(ctx):
                 created_by_idx=ctx["principal_idx"],
             )
     ctx["created"]["prep_sample"].append(ps_idx)
-    ctx["created"]["prep_sample_to_study"].append((ps_idx, ctx["study_idx"]))
     return ps_idx
 
 
@@ -478,7 +412,6 @@ async def _seed_secondary_studies_for_entity(ctx, spec, entity_idx, count):
                     study_idx=st_idx,
                     created_by_idx=ctx["principal_idx"],
                 )
-            ctx["created"]["biosample_to_study"].append((biosample_idx, st_idx))
     return new_study_idxs
 
 
@@ -529,16 +462,6 @@ async def _seed_global_field_for_spec(
         global_field_idx=gf_idx,
         internal_name=internal_name,
     )
-
-
-def _track_to_study_link(ctx, spec, entity_idx, study_idx):
-    """Track a (entity_idx, study_idx) link row in the cleanup dict under
-    the key matching spec.entity_kind.
-    """
-    if spec.entity_kind is SampleEntityKind.BIOSAMPLE:
-        ctx["created"]["biosample_to_study"].append((entity_idx, study_idx))
-    else:
-        ctx["created"]["prep_sample_to_study"].append((entity_idx, study_idx))
 
 
 async def _create_linked_entity_for_spec(ctx, spec):

@@ -124,7 +124,6 @@ from .conftest import (
     _seed_secondary_studies_for_entity,
     _seed_unlinked_entity_for_spec,
     _set_unique_in_study,
-    _track_to_study_link,
     _write_value,
 )
 
@@ -185,8 +184,6 @@ async def _commit_write(
                 caller_idx=caller_idx,
                 on_conflict=on_conflict,
             )
-    ctx["created"]["biosample_study_field"].append(result.study_field_idx)
-    ctx["created"]["biosample_metadata"].append(result.metadata_idx)
     return result
 
 
@@ -207,7 +204,6 @@ async def _create_second_study_and_link_biosample(ctx, bs_idx):
             second_study_idx,
             ctx["principal_idx"],
         )
-    ctx["created"]["biosample_to_study"].append((bs_idx, second_study_idx))
     return second_study_idx
 
 
@@ -682,7 +678,6 @@ async def test_write_global_metadata_or_diagnose_slot_held_by_missing_reason_rai
         display_name_first,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_study_field"].append(study_field_idx)
 
     # Seed a missing-value reason so the metadata row has something to
     # reference.
@@ -705,7 +700,6 @@ async def test_write_global_metadata_or_diagnose_slot_held_by_missing_reason_rai
         reason_idx,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_metadata"].append(seeded_meta_idx)
 
     # write_global_metadata_or_diagnose now sees the slot occupied via the
     # second display_name's path; the diagnostic SELECT sees
@@ -938,7 +932,7 @@ async def test_write_global_metadata_or_diagnose_propagates_study_field_conflict
     display_name = unique_field_name("sfconf")
 
     # Pre-create a study_field at this (study, display_name) bound to gf_a.
-    study_field_idx = await ctx["pool"].fetchval(
+    await ctx["pool"].fetchval(
         "INSERT INTO qiita.biosample_study_field"
         "  (study_idx, biosample_global_field_idx, display_name, created_by_idx)"
         " VALUES ($1, $2, $3, $4) RETURNING idx",
@@ -947,7 +941,6 @@ async def test_write_global_metadata_or_diagnose_propagates_study_field_conflict
         display_name,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_study_field"].append(study_field_idx)
 
     # write_global_metadata_or_diagnose for gf_b at the same display_name
     # surfaces StudyFieldConflictError from get_or_create unchanged.
@@ -1239,8 +1232,6 @@ async def _commit_local_write(
                 required=required,
                 on_conflict=on_conflict,
             )
-    ctx["created"]["biosample_study_field"].append(result.study_field_idx)
-    ctx["created"]["biosample_metadata"].append(result.metadata_idx)
     return result
 
 
@@ -1456,7 +1447,6 @@ async def test_write_local_metadata_or_diagnose_upsert_outcomes_on_unique_field(
             required=False,
             unique_in_study=True,
         )
-    ctx["created"]["biosample_study_field"].append(field_idx)
 
     async def _upsert(value):
         return await _commit_local_write(
@@ -1549,7 +1539,6 @@ async def test_write_local_metadata_or_diagnose_unique_value_rewrite_after_relax
             required=False,
             unique_in_study=True,
         )
-    ctx["created"]["biosample_study_field"].append(field_idx)
 
     async def _upsert(value):
         return await _commit_local_write(
@@ -1635,7 +1624,6 @@ async def test_write_local_metadata_or_diagnose_slot_held_by_missing_reason_rais
         display_name,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_study_field"].append(study_field_idx)
 
     # Seed a missing-value reason so the metadata row has something to
     # reference.
@@ -1656,7 +1644,6 @@ async def test_write_local_metadata_or_diagnose_slot_held_by_missing_reason_rais
         reason_idx,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_metadata"].append(seeded_meta_idx)
 
     # write_local_metadata_or_diagnose collides on unique_per_field; the
     # diagnostic SELECT sees the missing-reason row -> raises
@@ -1748,7 +1735,6 @@ async def test_write_local_metadata_or_diagnose_raises_on_globally_linked_field(
         display_name,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_study_field"].append(study_field_idx)
 
     # write_local sees the resolved row's biosample_global_field_idx is
     # non-None and refuses the write before any INSERT runs.
@@ -3207,7 +3193,7 @@ async def test_fetch_global_metadata_excludes_purely_local_rows(ctx, spec):
     local_field_idx = await _create_local_field(ctx, suffix=f"plain_{suffix}")
     owner_id_field_idx = await _create_local_field(ctx, suffix=f"owner_{suffix}")
     async with ctx["pool"].acquire() as conn:
-        local_meta = await _insert_metadata(
+        await _insert_metadata(
             conn,
             spec=BIOSAMPLE_METADATA_SPEC,
             entity_idx=bs_idx,
@@ -3216,14 +3202,13 @@ async def test_fetch_global_metadata_excludes_purely_local_rows(ctx, spec):
             value="LOCAL-VAL",
             created_by_idx=ctx["principal_idx"],
         )
-        owner_meta = await insert_owner_biosample_id_metadata(
+        await insert_owner_biosample_id_metadata(
             conn,
             biosample_idx=bs_idx,
             biosample_study_field_idx=owner_id_field_idx,
             value_text="OWNER-ID-VAL",
             created_by_idx=ctx["principal_idx"],
         )
-    ctx["created"]["biosample_metadata"].extend([local_meta, owner_meta])
 
     result = await fetch_global_metadata(ctx["pool"], spec=spec, entity_idx=bs_idx)
 
@@ -3334,9 +3319,8 @@ async def test_fetch_local_metadata_scopes_to_study(ctx):
         display_name=second_name,
         created_by_idx=ctx["principal_idx"],
     )
-    ctx["created"]["biosample_study_field"].append(second_field_idx)
     async with ctx["pool"].acquire() as conn, conn.transaction():
-        second_meta = await _insert_metadata(
+        await _insert_metadata(
             conn,
             spec=BIOSAMPLE_METADATA_SPEC,
             entity_idx=bs_idx,
@@ -3345,7 +3329,6 @@ async def test_fetch_local_metadata_scopes_to_study(ctx):
             value="SECOND",
             created_by_idx=ctx["principal_idx"],
         )
-    ctx["created"]["biosample_metadata"].append(second_meta)
 
     first_result = await fetch_local_metadata(
         ctx["pool"], spec=BIOSAMPLE_METADATA_SPEC, entity_idx=bs_idx, study_idx=ctx["study_idx"]
@@ -3378,14 +3361,13 @@ async def test_fetch_local_metadata_includes_owner_sample_id_row(ctx):
         ctx, spec=BIOSAMPLE_METADATA_SPEC, display_name=owner_field_name
     )
     async with ctx["pool"].acquire() as conn, conn.transaction():
-        owner_meta = await insert_owner_biosample_id_metadata(
+        await insert_owner_biosample_id_metadata(
             conn,
             biosample_idx=bs_idx,
             biosample_study_field_idx=owner_field_idx,
             value_text="OWNER-123",
             created_by_idx=ctx["principal_idx"],
         )
-    ctx["created"]["biosample_metadata"].append(owner_meta)
 
     result = await fetch_local_metadata(
         ctx["pool"], spec=BIOSAMPLE_METADATA_SPEC, entity_idx=bs_idx, study_idx=ctx["study_idx"]
@@ -3583,7 +3565,6 @@ async def test_insert_entity_to_study_links_entity(ctx, spec):
             study_idx=ctx["study_idx"],
             created_by_idx=ctx["principal_idx"],
         )
-    _track_to_study_link(ctx, spec, entity_idx, ctx["study_idx"])
 
     # Verify the link row matches the expected non-retired shape. The
     # column list is built from the spec so the assertion stays
@@ -3620,7 +3601,6 @@ async def test_insert_entity_to_study_rejects_duplicate(ctx, spec):
             study_idx=ctx["study_idx"],
             created_by_idx=ctx["principal_idx"],
         )
-    _track_to_study_link(ctx, spec, entity_idx, ctx["study_idx"])
 
     # Second insert of the same (entity, study) pair must raise on the PK.
     async with ctx["pool"].acquire() as conn:
@@ -3656,7 +3636,6 @@ async def test_insert_entity_to_study_on_conflict_ignore_is_idempotent(ctx, spec
                 created_by_idx=ctx["principal_idx"],
                 on_conflict="ignore",
             )
-    _track_to_study_link(ctx, spec, entity_idx, ctx["study_idx"])
 
     count = await ctx["pool"].fetchval(
         f"SELECT count(*) FROM {spec.link_table}"
@@ -3732,9 +3711,6 @@ async def test_link_entity_to_studies_links_primary_and_unique_secondaries(ctx, 
                 secondary_study_idxs=[sec_a, sec_b, sec_a],
                 caller_idx=ctx["principal_idx"],
             )
-    for st in [ctx["study_idx"], sec_a, sec_b]:
-        _track_to_study_link(ctx, spec, entity_idx, st)
-
     # The persisted link set is exactly {primary, sec_a, sec_b}.
     rows = await ctx["pool"].fetch(
         f"SELECT study_idx FROM {spec.link_table} WHERE {spec.link_entity_key_column} = $1",
@@ -3762,7 +3738,6 @@ async def test_link_entity_to_studies_empty_secondaries_links_primary_only(ctx, 
                 secondary_study_idxs=[],
                 caller_idx=ctx["principal_idx"],
             )
-    _track_to_study_link(ctx, spec, entity_idx, ctx["study_idx"])
 
     rows = await ctx["pool"].fetch(
         f"SELECT study_idx FROM {spec.link_table} WHERE {spec.link_entity_key_column} = $1",
@@ -4841,7 +4816,6 @@ async def test_write_resolved_metadata_entries_persists_local(ctx):
             created_by_idx=ctx["principal_idx"],
             data_type=FieldDataType.TEXT,
         )
-    ctx["created"]["biosample_study_field"].append(local_idx)
 
     # The field is pre-resolved: the local-scope entry writes to local_idx
     # directly and must not create a study_field.
@@ -4879,7 +4853,6 @@ async def test_write_resolved_metadata_entries_persists_local(ctx):
         bs_idx,
         local_idx,
     )
-    ctx["created"]["biosample_metadata"].append(metadata_idx)
     actual = await _fetch_metadata_row(ctx["pool"], metadata_idx)
     # A purely-local write leaves global_field_idx NULL (no global link).
     expected = _expected_metadata_row(
@@ -5312,7 +5285,6 @@ async def test_write_sample_metadata_writes_global_and_local(ctx):
             created_by_idx=ctx["principal_idx"],
             data_type=FieldDataType.TEXT,
         )
-    ctx["created"]["biosample_study_field"].append(local_idx)
 
     async with ctx["pool"].acquire() as conn, conn.transaction():
         results = await write_sample_metadata(
@@ -5533,14 +5505,13 @@ async def test_write_sample_metadata_rejects_owner_sample_id_field(ctx):
         ctx, spec=BIOSAMPLE_METADATA_SPEC, display_name=owner_field_name
     )
     async with ctx["pool"].acquire() as conn, conn.transaction():
-        owner_meta = await insert_owner_biosample_id_metadata(
+        await insert_owner_biosample_id_metadata(
             conn,
             biosample_idx=bs_idx,
             biosample_study_field_idx=owner_field_idx,
             value_text="OWNER-123",
             created_by_idx=ctx["principal_idx"],
         )
-    ctx["created"]["biosample_metadata"].append(owner_meta)
 
     async with ctx["pool"].acquire() as conn:
         with pytest.raises(OwnerSampleIdMetadataWriteError) as excinfo:
@@ -5607,7 +5578,6 @@ async def test_write_sample_metadata_allow_local_false_rejects_local_field(ctx):
             created_by_idx=ctx["principal_idx"],
             data_type=FieldDataType.TEXT,
         )
-    ctx["created"]["biosample_study_field"].append(local_idx)
 
     async with ctx["pool"].acquire() as conn:
         with pytest.raises(MetadataUnknownFieldsError) as excinfo:
