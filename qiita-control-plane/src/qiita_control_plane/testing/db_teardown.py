@@ -64,7 +64,8 @@ SWEEP_TIERS = (
 ENTITY_DELETE_ORDER = (PREP_SAMPLE, BIOSAMPLE, STUDY)
 
 # Carries an entity idx column but is deliberately not swept: a work ticket is
-# the caller's to delete, ahead of its own parents.
+# the caller's own, and teardown_entity_graph's docstring states when it has to
+# be gone.
 UNSWEPT_ENTITY_TABLES = frozenset({"work_ticket"})
 
 _ENTITY_KEY_COLUMNS = {
@@ -162,8 +163,12 @@ async def teardown_entity_graph(
     """Delete these entities and everything hanging off them.
 
     Sweeps each tier in order, verifies nothing survived, then deletes the
-    entities themselves. The caller keeps its own parents — work tickets, pools,
-    runs, masks, references — and deletes them after this returns.
+    entities themselves. The caller keeps its own parents — pools, runs, masks,
+    references — and deletes them after this returns.
+
+    Work tickets go the other way: a ticket references its study and its
+    prep_sample under RESTRICT, so the caller must clear its own tickets
+    before calling this, or the entity delete at the end raises.
     """
     idxs = {
         STUDY: list(study_idxs),
