@@ -42,6 +42,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_user_principal,
     track_biosample_metadata_outputs,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 from qiita_control_plane.testing.unique_names import (
     unique_accession,
     unique_field_name,
@@ -103,35 +104,24 @@ async def _seed_metadata_checklist(pool, *, suffix: str) -> int:
 
 
 async def _cleanup_tracked(pool, created: dict) -> None:
-    """Drop every row tracked in `created` in FK-reverse order.
+    """Drop the biosample entity graph, then the rows that outlive it, then the
+    principals.
 
-    Ordering: biosample_metadata → biosample_study_field →
-    biosample_global_field → biosample_to_study → biosample → study_access
-    → study → metadata_checklist → user / service subtype rows → principal.
     The two principal-subtype lists are tracked separately because the FK
     from those subtype tables back to qiita.principal is ON DELETE RESTRICT,
     so the subtype row must go first.
     """
-    await delete_idxs(pool, "biosample_metadata", created["biosample_metadata"])
+    await teardown_entity_graph(
+        pool,
+        study_idxs=created["study"],
+        biosample_idxs=created["biosample"],
+        prep_sample_idxs=[],
+    )
     # biosample_metadata.value_missing_reason_idx FKs missing_value_reason
     # ON DELETE RESTRICT; sweep after the metadata rows are gone.
     await delete_idxs(pool, "missing_value_reason", created["missing_value_reason"])
-    await delete_idxs(pool, "biosample_study_field", created["biosample_study_field"])
+    # A global field is referenced by the study-local fields the sweep removed.
     await delete_idxs(pool, "biosample_global_field", created["biosample_global_field"])
-    for bs, st in created["biosample_to_study"]:
-        await pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-            bs,
-            st,
-        )
-    await delete_idxs(pool, "biosample", created["biosample"])
-    for st, p in created["study_access"]:
-        await pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-            st,
-            p,
-        )
-    await delete_idxs(pool, "study", created["study"])
     await delete_idxs(pool, "metadata_checklist", created["metadata_checklist"])
     # api_token has an ON DELETE RESTRICT FK to qiita.principal, so any
     # tokens minted against per-test principals (currently only the
@@ -144,17 +134,12 @@ async def _cleanup_tracked(pool, created: dict) -> None:
             "DELETE FROM qiita.api_token WHERE principal_idx = ANY($1::bigint[])",
             all_principals,
         )
-    if created["user_principals"]:
-        await pool.execute(
-            "DELETE FROM qiita.user WHERE principal_idx = ANY($1::bigint[])",
-            created["user_principals"],
-        )
     if created["service_account_principals"]:
         await pool.execute(
             "DELETE FROM qiita.service_account WHERE principal_idx = ANY($1::bigint[])",
             created["service_account_principals"],
         )
-    await delete_idxs(pool, "principal", all_principals)
+    await delete_principal(pool, all_principals)
 
 
 # ---------------------------------------------------------------------------
