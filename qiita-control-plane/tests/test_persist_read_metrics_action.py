@@ -20,10 +20,12 @@ from qiita_common.models import ReadMaskReason
 
 from qiita_control_plane.actions.library import persist_read_metrics
 from qiita_control_plane.testing.db_seeds import (
+    delete_idxs,
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -89,14 +91,16 @@ async def chain(postgres_pool):
 
     # FK-reverse cleanup: sequenced_sample -> sequenced_pool -> sequencing_run,
     # then prep_sample (cascades sequence_range), biosample, user, principal.
-    for run_idx, pool_idx, ss_idx in subtypes:
-        await postgres_pool.execute("DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss_idx)
-        await postgres_pool.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
-        await postgres_pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await postgres_pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", prep_sample_idx)
-    await postgres_pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", biosample_idx)
-    await postgres_pool.execute("DELETE FROM qiita.user WHERE principal_idx = $1", principal_idx)
-    await postgres_pool.execute("DELETE FROM qiita.principal WHERE idx = $1", principal_idx)
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[biosample_idx],
+        prep_sample_idxs=[prep_sample_idx],
+    )
+    for run_idx, pool_idx, _ss_idx in subtypes:
+        await delete_idxs(postgres_pool, "sequenced_pool", pool_idx)
+        await delete_idxs(postgres_pool, "sequencing_run", run_idx)
+    await delete_principal(postgres_pool, [principal_idx])
 
 
 async def _read_counts(pool, ss_idx):
