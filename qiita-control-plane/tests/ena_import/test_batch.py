@@ -35,10 +35,12 @@ from qiita_control_plane.ena_import.registration import EnaRunRegistrationStatus
 from qiita_control_plane.repositories.sequence_range import mint_sequence_range
 from qiita_control_plane.repositories.study import create_study
 from qiita_control_plane.testing.db_seeds import (
+    delete_idxs,
     disable_principal,
     retire_principal,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 from qiita_control_plane.testing.postgres import POSTGRES_POOL_MAX_SIZE
 from qiita_control_plane.testing.unique_names import (
     unique_accession,
@@ -240,53 +242,8 @@ async def _cleanup_study(postgres_pool, study_accession: str) -> None:
     )
     if study_idx is None:
         return
-    # ena_import_batch_item.study_idx FKs (RESTRICT) into qiita.study; clear it
-    # before the study DELETE below.
-    await postgres_pool.execute(
-        "DELETE FROM qiita.ena_import_batch_item WHERE study_idx = $1", study_idx
-    )
-    ps_rows = await postgres_pool.fetch(
-        "SELECT prep_sample_idx FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
-    )
-    ps_idxs = [r["prep_sample_idx"] for r in ps_rows]
-    if ps_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])", ps_idxs
-        )
-        # prep_sample_metadata RESTRICTs its prep_sample and study field, so
-        # sweep both before prep_sample / prep_sample_study_field / study below.
-        await postgres_pool.execute(
-            "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
-            ps_idxs,
-        )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
-    )
-    if ps_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
-        )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = $1", study_idx
-    )
-    bs_rows = await postgres_pool.fetch(
-        "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
-    )
-    bs_idxs = [r["biosample_idx"] for r in bs_rows]
-    if bs_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample_metadata WHERE biosample_idx = ANY($1::bigint[])", bs_idxs
-        )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample_study_field WHERE study_idx = $1", study_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
-    )
-    if bs_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", bs_idxs
-        )
+    # The runs this accession produced, and the pool-scoped tickets on them, which
+    # go ahead of the sweep because a ticket outlives the pool it names.
     run_rows = await postgres_pool.fetch(
         "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
         f"{study_accession}:%",
@@ -298,106 +255,92 @@ async def _cleanup_study(postgres_pool, study_accession: str) -> None:
             " (SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[]))",
             run_idxs,
         )
+    # The sweep takes explicit entity lists and cannot derive them, so the entities
+    # reached through this study's links are resolved first.
+    ps_rows = await postgres_pool.fetch(
+        "SELECT prep_sample_idx FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
+    )
+    bs_rows = await postgres_pool.fetch(
+        "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
+    )
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[study_idx],
+        biosample_idxs=[r["biosample_idx"] for r in bs_rows],
+        prep_sample_idxs=[r["prep_sample_idx"] for r in ps_rows],
+    )
+    if run_idxs:
         await postgres_pool.execute(
             "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
             run_idxs,
         )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequencing_run WHERE idx = ANY($1::bigint[])", run_idxs
-        )
-    await postgres_pool.execute("DELETE FROM qiita.study_access WHERE study_idx = $1", study_idx)
-    await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", study_idx)
+        await delete_idxs(postgres_pool, "sequencing_run", run_idxs)
 
 
 async def _cleanup_two_studies_sharing_biosample(
     postgres_pool, *, study_accessions: list[str], shared_sample_accession: str
 ) -> None:
-    """Teardown twin of `_cleanup_study` where two studies share ONE biosample row:
-    clear both studies' links/prep first, then drop the shared biosample once, then
-    each study -- deleting the biosample early would trip its RESTRICT FK.
-    """
-    # biosample_metadata FKs (RESTRICT) into biosample_study_field, so clear the shared
-    # biosample's metadata before either study's field rows are dropped below.
-    biosample_idx = await postgres_pool.fetchval(
-        "SELECT idx FROM qiita.biosample WHERE ena_sample_accession = $1",
-        shared_sample_accession,
-    )
-    if biosample_idx is not None:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample_metadata WHERE biosample_idx = $1", biosample_idx
-        )
+    """Teardown for the case where two studies share ONE biosample row.
 
+    Both studies and the shared biosample go to the sweep in one call, which is
+    what lets the biosample be dropped once: its inbound links are cleared for
+    every study in range before any entity is deleted.
+    """
     study_idxs: list[int] = []
+    prep_sample_idxs: list[int] = []
+    biosample_idxs: list[int] = []
+    run_idxs: list[int] = []
     for accession in study_accessions:
+        run_rows = await postgres_pool.fetch(
+            "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
+            f"{accession}:%",
+        )
+        run_idxs.extend(r["idx"] for r in run_rows)
         study_idx = await postgres_pool.fetchval(
             "SELECT idx FROM qiita.study WHERE bioproject_accession = $1", accession
         )
         if study_idx is None:
             continue
         study_idxs.append(study_idx)
-        await postgres_pool.execute(
-            "DELETE FROM qiita.ena_import_batch_item WHERE study_idx = $1", study_idx
-        )
         ps_rows = await postgres_pool.fetch(
             "SELECT prep_sample_idx FROM qiita.prep_sample_to_study WHERE study_idx = $1",
             study_idx,
         )
-        ps_idxs = [r["prep_sample_idx"] for r in ps_rows]
-        if ps_idxs:
-            await postgres_pool.execute(
-                "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])",
-                ps_idxs,
-            )
-            # prep_sample_metadata RESTRICTs its prep_sample and study field, so
-            # sweep both before prep_sample / prep_sample_study_field / study below.
-            await postgres_pool.execute(
-                "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
-                ps_idxs,
-            )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
+        prep_sample_idxs.extend(r["prep_sample_idx"] for r in ps_rows)
+        bs_rows = await postgres_pool.fetch(
+            "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
         )
-        if ps_idxs:
-            await postgres_pool.execute(
-                "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
-            )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = $1", study_idx
-        )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample_study_field WHERE study_idx = $1", study_idx
-        )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
-        )
-        run_rows = await postgres_pool.fetch(
-            "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
-            f"{accession}:%",
-        )
-        run_idxs = [r["idx"] for r in run_rows]
-        if run_idxs:
-            await postgres_pool.execute(
-                "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
-                " (SELECT idx FROM qiita.sequenced_pool"
-                "  WHERE sequencing_run_idx = ANY($1::bigint[]))",
-                run_idxs,
-            )
-            await postgres_pool.execute(
-                "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
-                run_idxs,
-            )
-            await postgres_pool.execute(
-                "DELETE FROM qiita.sequencing_run WHERE idx = ANY($1::bigint[])", run_idxs
-            )
+        biosample_idxs.extend(r["biosample_idx"] for r in bs_rows)
 
-    if biosample_idx is not None:
-        await postgres_pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", biosample_idx)
+    # The shared biosample may carry no link to either study by now; name it
+    # directly so it is in range either way.
+    shared_idx = await postgres_pool.fetchval(
+        "SELECT idx FROM qiita.biosample WHERE ena_sample_accession = $1",
+        shared_sample_accession,
+    )
+    if shared_idx is not None:
+        biosample_idxs.append(shared_idx)
 
-    for study_idx in study_idxs:
+    # Pool-scoped tickets go ahead of the sweep, the pools and runs they name
+    # after it, the same order _cleanup_study uses.
+    if run_idxs:
         await postgres_pool.execute(
-            "DELETE FROM qiita.study_access WHERE study_idx = $1", study_idx
+            "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
+            " (SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[]))",
+            run_idxs,
         )
-        await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", study_idx)
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=study_idxs,
+        biosample_idxs=sorted(set(biosample_idxs)),
+        prep_sample_idxs=sorted(set(prep_sample_idxs)),
+    )
+    if run_idxs:
+        await postgres_pool.execute(
+            "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
+            run_idxs,
+        )
+        await delete_idxs(postgres_pool, "sequencing_run", run_idxs)
 
 
 @pytest_asyncio.fixture
