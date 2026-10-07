@@ -19,6 +19,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from .conftest import make_caller_own_run
 
@@ -49,11 +50,11 @@ async def seeded_pool(ctx):
         ss_idx,
     )
     yield {"run_idx": run_idx, "pool_idx": pool_idx, "ss_idx": ss_idx}
-    await db.execute("DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss_idx)
+    await teardown_entity_graph(
+        db, study_idxs=[], biosample_idxs=[bs_idx], prep_sample_idxs=[ps_idx]
+    )
     await db.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
     await db.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await db.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", ps_idx)
-    await db.execute("DELETE FROM qiita.biosample WHERE idx = $1", bs_idx)
 
 
 def _url(run_idx, pool_idx):
