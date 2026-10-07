@@ -27,8 +27,9 @@ GENOME_OF_PREP_SAMPLE = "genome_of_prep_sample"
 # within a tier is free.
 #
 # Hard-coded rather than derived from the catalog so a reader can see exactly
-# what a teardown touches. `assert_entity_graph_swept` is what catches the list
-# falling behind the schema.
+# what a teardown touches. A parity test compares this list against the live
+# schema, so a table added to a migration and forgotten here fails on the schema
+# alone rather than waiting for something to seed a row into it.
 SWEEP_TIERS = (
     (
         ("alignment_sample", (("prep_sample_idx", PREP_SAMPLE),)),
@@ -73,7 +74,11 @@ _ENTITY_KEY_COLUMNS = {
     BIOSAMPLE: "biosample_idx",
     PREP_SAMPLE: "prep_sample_idx",
 }
+_GENOME_KEY_COLUMN = "genome_idx"
+_GENOME_TABLE = "genome"
+
 _KEY_BY_COLUMN = {column: key for key, column in _ENTITY_KEY_COLUMNS.items()}
+_KEY_BY_COLUMN[_GENOME_KEY_COLUMN] = GENOME_OF_PREP_SAMPLE
 _ENTITY_TABLES = frozenset(_ENTITY_KEY_COLUMNS)
 
 
@@ -94,22 +99,32 @@ class EntityGraphNotSweptError(AssertionError):
         )
 
 
+async def _fetch_genome_idxs(pool: asyncpg.Pool, prep_sample_idxs: list[int]) -> list[int]:
+    """Return the idxs of the genomes these prep_samples produced.
+
+    Resolved before the sweep runs, because the sweep deletes qiita.genome and
+    the genome-keyed tables can no longer be matched once it has.
+    """
+    if not prep_sample_idxs:
+        return []
+    rows = await pool.fetch(
+        "SELECT genome_idx FROM qiita.genome WHERE prep_sample_idx = ANY($1::bigint[])",
+        prep_sample_idxs,
+    )
+    genome_idxs = [row["genome_idx"] for row in rows]
+    return genome_idxs
+
+
 async def _sweep_table(pool: asyncpg.Pool, table: str, keys, idxs) -> None:
     """Delete one table's rows for the named entities, matching any of its keys."""
     clauses: list[str] = []
     args: list[list[int]] = []
     for column, key in keys:
-        named = idxs[PREP_SAMPLE] if key == GENOME_OF_PREP_SAMPLE else idxs[key]
+        named = idxs[key]
         if not named:
             continue
         args.append(named)
-        if key == GENOME_OF_PREP_SAMPLE:
-            clauses.append(
-                f"{column} IN (SELECT genome_idx FROM qiita.genome"
-                f" WHERE prep_sample_idx = ANY(${len(args)}::bigint[]))"
-            )
-        else:
-            clauses.append(f"{column} = ANY(${len(args)}::bigint[])")
+        clauses.append(f"{column} = ANY(${len(args)}::bigint[])")
     if not clauses:
         return
     await pool.execute(f"DELETE FROM qiita.{table} WHERE " + " OR ".join(clauses), *args)
@@ -121,6 +136,7 @@ async def assert_entity_graph_swept(
     study_idxs: list[int],
     biosample_idxs: list[int],
     prep_sample_idxs: list[int],
+    genome_idxs: list[int] | None = None,
 ) -> None:
     """Raise if any table carrying an entity idx still holds rows for these entities.
 
@@ -128,19 +144,29 @@ async def assert_entity_graph_swept(
     added to the schema and forgotten here fails the first time a test touches
     it. The entity tables themselves are skipped, since they are deleted after
     this runs.
+
+    `genome_idxs` names the genomes whose derived rows are checked too. They
+    cannot be looked up here: qiita.genome is already gone by the time this
+    runs, so the caller resolves them first.
     """
-    idxs = {STUDY: study_idxs, BIOSAMPLE: biosample_idxs, PREP_SAMPLE: prep_sample_idxs}
+    idxs = {
+        STUDY: study_idxs,
+        BIOSAMPLE: biosample_idxs,
+        PREP_SAMPLE: prep_sample_idxs,
+        GENOME_OF_PREP_SAMPLE: list(genome_idxs or ()),
+    }
     candidates = await pool.fetch(
         "SELECT table_name, column_name FROM information_schema.columns"
         " WHERE table_schema = 'qiita' AND column_name = ANY($1::text[])"
         " ORDER BY table_name, column_name",
-        list(_ENTITY_KEY_COLUMNS.values()),
+        [*_ENTITY_KEY_COLUMNS.values(), _GENOME_KEY_COLUMN],
     )
     for row in candidates:
         table, column = row["table_name"], row["column_name"]
         # The entities are deleted after this runs, and prep_sample carries a
-        # biosample_idx of its own, so both would read as survivors here.
-        if table in _ENTITY_TABLES or table in UNSWEPT_ENTITY_TABLES:
+        # biosample_idx of its own, so both would read as survivors here. The
+        # genome rows go with the sweep, so the genome table reads the same way.
+        if table in _ENTITY_TABLES or table in UNSWEPT_ENTITY_TABLES or table == _GENOME_TABLE:
             continue
         named = idxs[_KEY_BY_COLUMN[column]]
         if not named:
@@ -175,6 +201,9 @@ async def teardown_entity_graph(
         BIOSAMPLE: list(biosample_idxs),
         PREP_SAMPLE: list(prep_sample_idxs),
     }
+    # Resolved up front: the tier that deletes qiita.genome runs below, and the
+    # genome-keyed tables cannot be matched once it has.
+    idxs[GENOME_OF_PREP_SAMPLE] = await _fetch_genome_idxs(pool, idxs[PREP_SAMPLE])
     for tier in SWEEP_TIERS:
         for table, keys in tier:
             await _sweep_table(pool, table, keys, idxs)
@@ -183,6 +212,7 @@ async def teardown_entity_graph(
         study_idxs=idxs[STUDY],
         biosample_idxs=idxs[BIOSAMPLE],
         prep_sample_idxs=idxs[PREP_SAMPLE],
+        genome_idxs=idxs[GENOME_OF_PREP_SAMPLE],
     )
     for table in ENTITY_DELETE_ORDER:
         await delete_idxs(pool, table, idxs[table])

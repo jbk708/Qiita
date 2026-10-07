@@ -15,14 +15,14 @@ pytestmark = pytest.mark.db
 
 
 async def test_retired_sample_excluded(pool_ctx):
-    ps_anomalous = await pool_ctx["add_sample"]()
+    ps_anomalous = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_sample"](retired=True)
     rows = await fetch_sequenced_pool_sample_exceptions(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert [r["prep_sample_idx"] for r in rows] == [ps_anomalous]
 
 
 async def test_flagged_sample_excluded(pool_ctx):
-    ps_anomalous = await pool_ctx["add_sample"]()
+    ps_anomalous = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_sample"](ena_status="suppressed")
     rows = await fetch_sequenced_pool_sample_exceptions(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert [r["prep_sample_idx"] for r in rows] == [ps_anomalous]

@@ -18,6 +18,7 @@ their own helpers and consume neither fixture.
 
 import json
 import secrets
+from typing import NamedTuple
 
 import pytest_asyncio
 from qiita_common.auth_constants import SYSTEM_PRINCIPAL_IDX
@@ -480,6 +481,19 @@ async def _create_linked_entity_for_spec(ctx, spec):
 # ---------------------------------------------------------------------------
 
 
+class SeededSample(NamedTuple):
+    """The three idxs one `add_sample` call wrote.
+
+    Named rather than positional so a caller cannot bind the wrong entity: the
+    pool reads are keyed on prep_sample, while the read-count and QC columns
+    live on the sequenced_sample.
+    """
+
+    biosample_idx: int
+    prep_sample_idx: int
+    sequenced_sample_idx: int
+
+
 def _qc_report(point: str) -> str:
     """One serialized QC-report payload, for a sample seeded with reports.
 
@@ -495,8 +509,8 @@ def _qc_report(point: str) -> str:
 async def pool_ctx(postgres_pool):
     """Seed a principal, one sequencing_run and one sequenced_pool.
 
-    `add_sample(...)` attaches one sequenced_sample to the pool and returns its
-    prep_sample idx. Every keyword is optional, so a bare call attaches a sample
+    `add_sample(...)` attaches one sequenced_sample to the pool and returns a
+    `SeededSample`. Every keyword is optional, so a bare call attaches a sample
     carrying no reads, no reports and no accessions; each group of columns is
     written only when asked for, leaving the rest at their defaults.
     """
@@ -602,7 +616,9 @@ async def pool_ctx(postgres_pool):
 
         biosample_idxs.append(bs_idx)
         prep_sample_idxs.append(ps_idx)
-        return ps_idx
+        return SeededSample(
+            biosample_idx=bs_idx, prep_sample_idx=ps_idx, sequenced_sample_idx=ss_idx
+        )
 
     yield {
         "pool": postgres_pool,

@@ -370,13 +370,13 @@ async def test_each_terminal_state_buckets(pool_ctx):
     """One sample per bucket: completed, in-flight (processing), no-data, failed,
     and not-submitted — each lands in exactly one count, and the five sum to
     sample_count."""
-    ps_done = await pool_ctx["add_sample"]()
+    ps_done = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_done, "completed")
-    ps_run = await pool_ctx["add_sample"]()
+    ps_run = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_run, "processing")
-    ps_empty = await pool_ctx["add_sample"]()
+    ps_empty = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_empty, "no_data")
-    ps_fail = await pool_ctx["add_sample"]()
+    ps_fail = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_fail, "failed")
     await pool_ctx["add_sample"]()  # not submitted
 
@@ -400,7 +400,7 @@ async def test_each_terminal_state_buckets(pool_ctx):
 async def test_no_data_excluded_from_failed_bucket(pool_ctx):
     """A sample whose only ticket is NO_DATA (an empty well) counts as no_data,
     NOT failed — the whole point of the distinct terminal outcome."""
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "no_data")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert row["sample_count"] == 1
@@ -413,7 +413,7 @@ async def test_no_data_wins_over_failed_retry(pool_ctx):
     no_data — no_data outranks failed, so an empty well that was retried then
     superseded doesn't get stuck in the failed bucket (and the pool can still
     reach `complete`)."""
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "failed")
     await pool_ctx["add_ticket"](ps, "no_data")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
@@ -426,9 +426,9 @@ async def test_completed_plus_no_data_makes_pool_complete(pool_ctx):
     """A pool of real data with empty wells: completed + no_data == sample_count,
     so the PoolCompletionStatus `complete` flag fires (verified at the model
     layer; here we assert the buckets the flag reads)."""
-    ps_done = await pool_ctx["add_sample"]()
+    ps_done = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_done, "completed")
-    ps_empty = await pool_ctx["add_sample"]()
+    ps_empty = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_empty, "no_data")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert row["sample_count"] == 2
@@ -439,7 +439,7 @@ async def test_completed_plus_no_data_makes_pool_complete(pool_ctx):
 async def test_completed_wins_over_failed_retry(pool_ctx):
     """A sample with both a FAILED (first attempt) and a COMPLETED ticket counts
     as completed — completed has top precedence."""
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "failed")
     await pool_ctx["add_ticket"](ps, "completed")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
@@ -451,7 +451,7 @@ async def test_completed_wins_over_failed_retry(pool_ctx):
 async def test_in_flight_wins_over_failed(pool_ctx):
     """A sample with a FAILED first attempt and a QUEUED resubmission (no
     COMPLETED) counts as in-flight, not failed — work is ongoing."""
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "failed")
     await pool_ctx["add_ticket"](ps, "queued")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
@@ -462,9 +462,9 @@ async def test_in_flight_wins_over_failed(pool_ctx):
 async def test_retired_sample_excluded(pool_ctx):
     """A retired prep_sample contributes to no bucket, even with a COMPLETED
     ticket — it is out of the pool's active set."""
-    ps_active = await pool_ctx["add_sample"]()
+    ps_active = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_active, "completed")
-    ps_retired = await pool_ctx["add_sample"](retired=True)
+    ps_retired = (await pool_ctx["add_sample"](retired=True)).prep_sample_idx
     await pool_ctx["add_ticket"](ps_retired, "completed")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert row["sample_count"] == 1
@@ -474,9 +474,9 @@ async def test_retired_sample_excluded(pool_ctx):
 async def test_flagged_sample_excluded(pool_ctx):
     """An ENA-flagged prep_sample contributes to no bucket, even with a
     COMPLETED ticket — the same exclusion as a retired one."""
-    ps_active = await pool_ctx["add_sample"]()
+    ps_active = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_active, "completed")
-    ps_flagged = await pool_ctx["add_sample"](ena_status="suppressed")
+    ps_flagged = (await pool_ctx["add_sample"](ena_status="suppressed")).prep_sample_idx
     await pool_ctx["add_ticket"](ps_flagged, "completed")
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert row["sample_count"] == 1
@@ -484,9 +484,9 @@ async def test_flagged_sample_excluded(pool_ctx):
 
 
 async def test_flagged_sample_excluded_from_read_mask_ticket_state_counts(pool_ctx):
-    ps_active = await pool_ctx["add_sample"]()
+    ps_active = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_active, "completed")
-    ps_flagged = await pool_ctx["add_sample"](ena_status="suppressed")
+    ps_flagged = (await pool_ctx["add_sample"](ena_status="suppressed")).prep_sample_idx
     await pool_ctx["add_ticket"](ps_flagged, "completed")
     counts = await fetch_sequenced_pool_read_mask_ticket_state_counts(
         pool_ctx["pool"], pool_ctx["pool_idx"]
@@ -495,9 +495,9 @@ async def test_flagged_sample_excluded_from_read_mask_ticket_state_counts(pool_c
 
 
 async def test_flagged_sample_excluded_from_read_mask_coverage(pool_ctx):
-    ps_active = await pool_ctx["add_sample"]()
+    ps_active = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_active, "completed")
-    ps_flagged = await pool_ctx["add_sample"](ena_status="suppressed")
+    ps_flagged = (await pool_ctx["add_sample"](ena_status="suppressed")).prep_sample_idx
     await pool_ctx["add_ticket"](ps_flagged, "completed")
     coverage = await fetch_sequenced_pool_read_mask_coverage(pool_ctx["pool"], pool_ctx["pool_idx"])
     assert coverage["sample_count"] == 1
@@ -513,7 +513,7 @@ async def test_withdrawn_run_is_invalidated_not_completed(pool_ctx):
     """A withdrawn run keeps its COMPLETED work ticket, so only the gate can
     report it — see `fetch_sequenced_pool_completion` for why."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask, gate=False)
     await pool_ctx["add_gate"](ps, mask, "invalidated")
 
@@ -528,7 +528,7 @@ async def test_the_ticket_alone_would_have_called_it_completed(pool_ctx):
     counts as completed — so the invalidated result above is attributable to the
     withdrawal and not to the ticket being miscounted."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask, gate=False)
     await pool_ctx["add_gate"](ps, mask, "completed")
 
@@ -541,7 +541,7 @@ async def test_withdrawal_outranks_a_running_remask(pool_ctx):
     """`invalidated` outranks `in_flight`: the sample reads withdrawn even while a
     re-mask runs."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask, gate=False)
     await pool_ctx["add_gate"](ps, mask, "invalidated")
     await pool_ctx["add_ticket"](ps, "queued", mask_idx=mask)
@@ -557,7 +557,7 @@ async def test_a_second_mask_that_completed_keeps_the_sample_usable(pool_ctx):
     invalidated."""
     withdrawn_mask = await pool_ctx["mint_mask"]()
     good_mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_gate"](ps, withdrawn_mask, "invalidated")
     await pool_ctx["add_gate"](ps, good_mask, "completed")
 
@@ -575,7 +575,7 @@ async def test_a_completed_ticket_with_no_gate_row_still_counts_as_masked(pool_c
     sample is `completed` in `GET /mask-definition` and never-submitted here.
     """
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask, gate=False)
 
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
@@ -588,7 +588,7 @@ async def test_a_gate_row_still_overrides_its_own_ticket(pool_ctx):
     than an OR: where a gate row exists it decides, so a withdrawal is not undone
     by the COMPLETED ticket underneath it."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask, gate=False)
     await pool_ctx["add_gate"](ps, mask, "invalidated")
 
@@ -603,7 +603,7 @@ async def test_a_cancelled_ticket_is_not_reported_as_never_submitted(pool_ctx):
     stop should stay legible, so it gets its own bucket rather than reading as a
     sample nobody tried to mask."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "cancelled", mask_idx=mask)
 
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
@@ -620,7 +620,7 @@ async def test_a_pending_gate_awaiting_its_flip_is_outstanding_not_unsubmitted(p
     never submitted, which tells the operator to re-submit a sample a block
     re-plan then refuses with BlockMaskResubmitError."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_gate"](ps, mask, "pending")
     await pool_ctx["add_block"]([ps], "completed", mask_idx=mask)
 
@@ -635,7 +635,7 @@ async def test_a_pending_gate_does_not_hide_a_failed_block(pool_ctx):
     leaves the gate at 'pending' forever, and reading that as outstanding would
     hide the failure behind a bucket that says "still coming"."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_gate"](ps, mask, "pending")
     await pool_ctx["add_block"]([ps], "failed", mask_idx=mask)
 
@@ -650,7 +650,7 @@ async def test_a_deliberate_stop_outranks_the_failure_it_stopped(pool_ctx):
     failure". An operator cancels to stop a failing retry loop, so the stale
     FAILED is exactly what would hide the cancel if failed outranked it."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "failed", mask_idx=mask)
     await pool_ctx["add_ticket"](ps, "cancelled", mask_idx=mask)
 
@@ -668,8 +668,8 @@ async def test_block_masked_sample_is_completed_not_not_submitted(pool_ctx):
     """A block ticket carries block_idx with prep_sample_idx NULL, so the gate is
     what makes block-path masking visible here."""
     mask = await pool_ctx["mint_mask"]()
-    ps_a = await pool_ctx["add_sample"]()
-    ps_b = await pool_ctx["add_sample"]()
+    ps_a = (await pool_ctx["add_sample"]()).prep_sample_idx
+    ps_b = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_block"]([ps_a, ps_b], "completed", mask_idx=mask)
     await pool_ctx["add_gate"](ps_a, mask, "completed")
     await pool_ctx["add_gate"](ps_b, mask, "completed")
@@ -689,7 +689,7 @@ async def test_coverage_and_completion_disagree_on_a_block_masked_sample(pool_ct
     has no read-mask ticket of its own. Anything that re-derived one from the
     other would have to make one of these two assertions false."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_block"]([ps], "completed", mask_idx=mask)
     await pool_ctx["add_gate"](ps, mask, "completed")
 
@@ -706,8 +706,8 @@ async def test_a_running_block_puts_every_member_in_flight(pool_ctx):
     its gate row is still pending. The pending gate rows below are what the plan
     writes in production; the block ticket, not they, is what this asserts."""
     mask = await pool_ctx["mint_mask"]()
-    ps_a = await pool_ctx["add_sample"]()
-    ps_b = await pool_ctx["add_sample"]()
+    ps_a = (await pool_ctx["add_sample"]()).prep_sample_idx
+    ps_b = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_block"]([ps_a, ps_b], "processing", mask_idx=mask)
     await pool_ctx["add_gate"](ps_a, mask, "pending")
     await pool_ctx["add_gate"](ps_b, mask, "pending")
@@ -719,8 +719,8 @@ async def test_a_running_block_puts_every_member_in_flight(pool_ctx):
 
 async def test_a_failed_block_puts_every_member_in_failed(pool_ctx):
     mask = await pool_ctx["mint_mask"]()
-    ps_a = await pool_ctx["add_sample"]()
-    ps_b = await pool_ctx["add_sample"]()
+    ps_a = (await pool_ctx["add_sample"]()).prep_sample_idx
+    ps_b = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_gate"](ps_a, mask, "pending")
     await pool_ctx["add_gate"](ps_b, mask, "pending")
     await pool_ctx["add_block"]([ps_a, ps_b], "failed", mask_idx=mask)
@@ -735,7 +735,7 @@ async def test_a_sample_outside_the_block_is_untouched_by_it(pool_ctx):
     block ticket to a sample, so a sample the block does not cover keeps its own
     classification."""
     mask = await pool_ctx["mint_mask"]()
-    ps_in = await pool_ctx["add_sample"]()
+    ps_in = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_sample"]()  # not a member of the block
     await pool_ctx["add_gate"](ps_in, mask, "pending")
     await pool_ctx["add_block"]([ps_in], "failed", mask_idx=mask)
@@ -751,7 +751,7 @@ async def test_fastq_to_parquet_masking_counts_as_masked(pool_ctx):
     PER_SAMPLE_MASK_ACTION_IDS, not `read-mask` alone, so an ingest-and-mask
     ticket is not invisible to it."""
     mask = await pool_ctx["mint_mask"]()
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_f2p_ticket"](ps, "processing", mask_idx=mask)
 
     row = await fetch_sequenced_pool_completion(pool_ctx["pool"], pool_ctx["pool_idx"])
@@ -763,17 +763,17 @@ async def test_every_sample_lands_in_exactly_one_bucket(pool_ctx):
     """One sample per bucket, across both masking paths, asserting the partition
     the docstring promises: the seven buckets sum to sample_count."""
     mask = await pool_ctx["mint_mask"]()
-    ps_done = await pool_ctx["add_sample"]()
+    ps_done = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_done, "completed", mask_idx=mask)
-    ps_gone = await pool_ctx["add_sample"]()
+    ps_gone = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_gate"](ps_gone, mask, "invalidated")
-    ps_run = await pool_ctx["add_sample"]()
+    ps_run = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_block"]([ps_run], "processing", mask_idx=mask)
-    ps_empty = await pool_ctx["add_sample"]()
+    ps_empty = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_empty, "no_data")
-    ps_fail = await pool_ctx["add_sample"]()
+    ps_fail = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_fail, "failed")
-    ps_stopped = await pool_ctx["add_sample"]()
+    ps_stopped = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_stopped, "cancelled")
     await pool_ctx["add_sample"]()  # never submitted
 
@@ -843,9 +843,9 @@ async def test_reference_scoped_completion_distinguishes_per_reference(pool_ctx)
     mask_a = await pool_ctx["mint_mask"](rype_ref=ref_a)
     mask_b = await pool_ctx["mint_mask"](minimap2_ref=ref_b)
 
-    ps_a = await pool_ctx["add_sample"]()
+    ps_a = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_a, "completed", mask_idx=mask_a)
-    ps_b = await pool_ctx["add_sample"]()
+    ps_b = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps_b, "completed", mask_idx=mask_b)
 
     # Reference-agnostic: both masked → both completed.
@@ -875,7 +875,7 @@ async def test_reference_scoped_matches_rype_or_minimap2(pool_ctx):
     a mask that names reference 300 only as its minimap2 reference still counts
     when scoped to 300."""
     mask = await pool_ctx["mint_mask"](minimap2_ref=300)
-    ps = await pool_ctx["add_sample"]()
+    ps = (await pool_ctx["add_sample"]()).prep_sample_idx
     await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask)
     scoped = await fetch_sequenced_pool_completion(
         pool_ctx["pool"], pool_ctx["pool_idx"], reference_idx=300
@@ -920,7 +920,7 @@ async def test_reference_scope_matches_real_build_mask_params_keys(pool_ctx):
         pool_ctx["pool_idx"],
     )
     try:
-        ps = await pool_ctx["add_sample"]()
+        ps = (await pool_ctx["add_sample"]()).prep_sample_idx
         await pool_ctx["add_ticket"](ps, "completed", mask_idx=mask_idx)
         scoped = await fetch_sequenced_pool_completion(db, pool_ctx["pool_idx"], reference_idx=ref)
         assert scoped["samples_completed"] == 1
