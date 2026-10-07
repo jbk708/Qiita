@@ -35,6 +35,7 @@ from qiita_control_plane.repositories.sequence_range import mint_sequence_range
 from qiita_control_plane.runner import AdapterSetHashes
 from qiita_control_plane.testing.db_seeds import (
     NCBI_TAXONOMY_HUMAN_TERM_ID,
+    delete_idxs,
     fetch_missing_value_reason_idx,
     fetch_ncbi_taxonomy_term,
     fetch_seeded_metagenome_term,
@@ -43,6 +44,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_host_reference,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -158,26 +160,11 @@ async def pooled(postgres_pool):
         " (SELECT block_idx FROM qiita.block_member WHERE prep_sample_idx = ANY($1::bigint[]))",
         ps_arr,
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.block_member WHERE prep_sample_idx = ANY($1::bigint[])", ps_arr
+    await teardown_entity_graph(
+        postgres_pool, study_idxs=[], biosample_idxs=biosamples, prep_sample_idxs=ps_arr
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.mask_sample WHERE prep_sample_idx = ANY($1::bigint[])", ps_arr
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequence_range WHERE prep_sample_idx = ANY($1::bigint[])", ps_arr
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])", ps_arr
-    )
-    await postgres_pool.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
-    await postgres_pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_arr
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", biosamples
-    )
+    await delete_idxs(postgres_pool, "sequenced_pool", pool_idx)
+    await delete_idxs(postgres_pool, "sequencing_run", run_idx)
     await postgres_pool.execute(
         "DELETE FROM qiita.action WHERE action_id = $1 AND version = $2",
         _BLOCK_ACTION_ID,
@@ -186,8 +173,7 @@ async def pooled(postgres_pool):
     await postgres_pool.execute(
         "DELETE FROM qiita.mask_definition WHERE created_by_idx = $1", principal_idx
     )
-    await postgres_pool.execute("DELETE FROM qiita.user WHERE principal_idx = $1", principal_idx)
-    await postgres_pool.execute("DELETE FROM qiita.principal WHERE idx = $1", principal_idx)
+    await delete_principal(postgres_pool, [principal_idx])
 
 
 async def _plan(pooled, planapp, **overrides):
@@ -357,22 +343,24 @@ async def hf(pooled):
         "seed_second_host_profile": seed_second_host_profile,
     }
 
-    # Teardown (runs before `pooled` deletes the biosamples): FK-reverse.
+    # Runs before `pooled` deletes the biosamples. Their metadata is cleared by
+    # idx rather than swept: handing those biosamples to the sweep would delete
+    # them here, while `pooled` still has its own teardown to run against them.
     await pool.execute(
         "DELETE FROM qiita.biosample_metadata WHERE idx = ANY($1::bigint[])", meta_idxs
     )
-    await pool.execute("DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx)
+    await teardown_entity_graph(
+        pool, study_idxs=[study_idx], biosample_idxs=[], prep_sample_idxs=[]
+    )
     await pool.execute(
         "DELETE FROM qiita.host_filter_profile WHERE created_by_idx = $1", principal_idx
     )
-    await pool.execute("DELETE FROM qiita.biosample_study_field WHERE idx = $1", field_idx)
     await pool.execute(
         "DELETE FROM qiita.reference_index WHERE reference_idx = ANY($1::bigint[])", references
     )
     await pool.execute(
         "DELETE FROM qiita.reference WHERE reference_idx = ANY($1::bigint[])", references
     )
-    await pool.execute("DELETE FROM qiita.study WHERE idx = $1", study_idx)
 
 
 # ---------------------------------------------------------------------------
