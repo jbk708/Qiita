@@ -7,12 +7,16 @@ The transaction-rollback pattern (Pattern 1) used by the trigger tests at
 the bottom of test_biosample.py keeps its own conn-style helpers inline
 because those tests neither commit nor share state.
 
-Other repository test files (test_study.py, test_study_access.py,
-test_user_eligibility.py) define their own helpers and do not consume
-this conftest's fixture; the scope here is biosample-family until a
-real second consumer surfaces.
+The `pool_ctx` fixture at the bottom covers the other shared shape in this
+directory: one sequencing_run and one sequenced_pool, with samples attached on
+demand. The four pool-reading modules share it rather than each seeding the
+same run and pool.
+
+Other repository test files (test_study.py, test_user_eligibility.py) define
+their own helpers and consume neither fixture.
 """
 
+import json
 import secrets
 
 import pytest_asyncio
@@ -32,10 +36,12 @@ from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_ME
 from qiita_control_plane.testing.db_seeds import (
     delete_idxs,
     seed_biosample_global_field,
+    seed_biosample_with_sequenced_prep_sample,
     seed_local_study_field,
     seed_prep_sample_global_field,
     seed_sequenced_prep_sample,
     seed_study,
+    seed_user_principal,
 )
 from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_field_name
@@ -467,3 +473,151 @@ async def _create_linked_entity_for_spec(ctx, spec):
     if spec.entity_kind is SampleEntityKind.BIOSAMPLE:
         return await _create_biosample_with_link(ctx)
     return await _create_prep_sample_with_link(ctx)
+
+
+# ---------------------------------------------------------------------------
+# Sequenced-pool fixture (sequencing_run → sequenced_pool → sequenced_sample)
+# ---------------------------------------------------------------------------
+
+
+def _qc_report(point: str) -> str:
+    """One serialized QC-report payload, for a sample seeded with reports.
+
+    The shape is all the pool-report reads care about; no test asserts on the
+    values, only on whether a blob is present.
+    """
+    return json.dumps(
+        {"point": point, "layout": "single", "read_pairs": 1, "mates": {"r1": None, "r2": None}}
+    )
+
+
+@pytest_asyncio.fixture
+async def pool_ctx(postgres_pool):
+    """Seed a principal, one sequencing_run and one sequenced_pool.
+
+    `add_sample(...)` attaches one sequenced_sample to the pool and returns its
+    prep_sample idx. Every keyword is optional, so a bare call attaches a sample
+    carrying no reads, no reports and no accessions; each group of columns is
+    written only when asked for, leaving the rest at their defaults.
+    """
+    owner_idx = await seed_user_principal(postgres_pool, prefix="pool", suffix="owner")
+    run_idx = await postgres_pool.fetchval(
+        "INSERT INTO qiita.sequencing_run (instrument_run_id, platform, created_by_idx)"
+        " VALUES ($1, 'illumina'::qiita.platform, $2) RETURNING idx",
+        f"pool-run-{secrets.token_hex(4)}",
+        owner_idx,
+    )
+    pool_idx = await postgres_pool.fetchval(
+        "INSERT INTO qiita.sequenced_pool (sequencing_run_idx, created_by_idx)"
+        " VALUES ($1, $2) RETURNING idx",
+        run_idx,
+        owner_idx,
+    )
+    biosample_idxs: list[int] = []
+    prep_sample_idxs: list[int] = []
+
+    async def add_sample(
+        *,
+        raw=None,
+        biological=None,
+        quality_filtered=None,
+        spikein=None,
+        with_reports=False,
+        retired=False,
+        ena_status=None,
+        biosample_accession=None,
+        ena_sample_accession=None,
+        ena_experiment_accession=None,
+        ena_run_accession=None,
+    ):
+        bs_idx, ps_idx = await seed_biosample_with_sequenced_prep_sample(
+            postgres_pool, owner_idx=owner_idx
+        )
+        ss_idx = await postgres_pool.fetchval(
+            "INSERT INTO qiita.sequenced_sample"
+            "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
+            " VALUES ($1, $2, $3, $4) RETURNING idx",
+            ps_idx,
+            pool_idx,
+            f"item-{secrets.token_hex(4)}",
+            owner_idx,
+        )
+
+        # The biosample-side accessions travel together; either one asks for the write.
+        if biosample_accession is not None or ena_sample_accession is not None:
+            await postgres_pool.execute(
+                "UPDATE qiita.biosample SET biosample_accession = $2,"
+                " ena_sample_accession = $3 WHERE idx = $1",
+                bs_idx,
+                biosample_accession,
+                ena_sample_accession,
+            )
+        if ena_experiment_accession is not None or ena_run_accession is not None:
+            await postgres_pool.execute(
+                "UPDATE qiita.sequenced_sample SET ena_experiment_accession = $2,"
+                " ena_run_accession = $3 WHERE idx = $1",
+                ss_idx,
+                ena_experiment_accession,
+                ena_run_accession,
+            )
+
+        # `raw` gates the whole read-count group so a caller naming only the
+        # later stages cannot leave a half-populated row.
+        if raw is not None:
+            await postgres_pool.execute(
+                "UPDATE qiita.sequenced_sample SET raw_read_count_r1r2 = $2,"
+                " biological_read_count_r1r2 = $3, quality_filtered_read_count_r1r2 = $4,"
+                " spikein_read_count_r1r2 = $5 WHERE idx = $1",
+                ss_idx,
+                raw,
+                biological,
+                quality_filtered,
+                spikein,
+            )
+        if with_reports:
+            await postgres_pool.execute(
+                "UPDATE qiita.sequenced_sample SET raw_qc_report = $2::jsonb,"
+                " filtered_qc_report = $3::jsonb WHERE idx = $1",
+                ss_idx,
+                _qc_report("raw"),
+                _qc_report("filtered"),
+            )
+
+        # Retirement and the ENA flag are the two exclusion paths the pool reads
+        # filter on, so a test asks for one to assert the sample drops out.
+        if retired:
+            await postgres_pool.execute(
+                "UPDATE qiita.prep_sample SET retired = true, retired_by_idx = $2,"
+                " retired_at = now(), retire_reason = 'test' WHERE idx = $1",
+                ps_idx,
+                owner_idx,
+            )
+        if ena_status is not None:
+            await postgres_pool.execute(
+                "UPDATE qiita.sequenced_sample SET ena_status = $2,"
+                " ena_availability_checked_at = now() WHERE idx = $1",
+                ss_idx,
+                ena_status,
+            )
+
+        biosample_idxs.append(bs_idx)
+        prep_sample_idxs.append(ps_idx)
+        return ps_idx
+
+    yield {
+        "pool": postgres_pool,
+        "owner_idx": owner_idx,
+        "run_idx": run_idx,
+        "pool_idx": pool_idx,
+        "add_sample": add_sample,
+    }
+
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=biosample_idxs,
+        prep_sample_idxs=prep_sample_idxs,
+    )
+    await delete_idxs(postgres_pool, "sequenced_pool", pool_idx)
+    await delete_idxs(postgres_pool, "sequencing_run", run_idx)
+    await delete_principal(postgres_pool, [owner_idx])
