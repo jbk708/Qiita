@@ -215,11 +215,9 @@ async def ctx(postgres_pool):
     checklist_idx = await _seed_metadata_checklist(postgres_pool, checklist_name)
 
     # Test-populated tracking dict; every list holds idxs. `studies` holds any
-    # extra studies the test seeds beyond the one auto-seeded above; they are
-    # deleted after the biosample-side rows are swept and before the auto-seeded
-    # study row is dropped. The three entity lists feed the sweep; the rest hang
-    # off no entity. A row belonging to an entity needs no entry here — the
-    # sweep finds it by parent FK.
+    # extra studies the test seeds beyond the one auto-seeded above. The three
+    # entity lists feed the sweep; the rest hang off no entity. A row belonging
+    # to an entity needs no entry here — the sweep finds it by parent FK.
     created: dict = {
         "biosample": [],
         "prep_sample": [],

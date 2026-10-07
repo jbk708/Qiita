@@ -64,10 +64,13 @@ SWEEP_TIERS = (
 # by the time this runs, so the entities go in this order.
 ENTITY_DELETE_ORDER = (PREP_SAMPLE, BIOSAMPLE, STUDY)
 
-# Carries an entity idx column but is deliberately not swept: a work ticket is
-# the caller's own, and teardown_entity_graph's docstring states when it has to
-# be gone.
-UNSWEPT_ENTITY_TABLES = frozenset({"work_ticket"})
+# Deliberately not swept, each for its own reason. A work ticket references a
+# study and a prep_sample, so a standing one fails the entity delete;
+# teardown_entity_graph's docstring states when the caller has to clear it. An
+# exclusion names its genome with a bare BIGINT and is meant to outlive it, but
+# it does reference the principals who recorded and unblocked it, so a caller
+# that touched one must clear the exclusion before delete_principal.
+UNSWEPT_ENTITY_TABLES = frozenset({"work_ticket", "reference_exclusion"})
 
 _ENTITY_KEY_COLUMNS = {
     STUDY: "study_idx",
@@ -75,7 +78,6 @@ _ENTITY_KEY_COLUMNS = {
     PREP_SAMPLE: "prep_sample_idx",
 }
 _GENOME_KEY_COLUMN = "genome_idx"
-_GENOME_TABLE = "genome"
 
 _KEY_BY_COLUMN = {column: key for key, column in _ENTITY_KEY_COLUMNS.items()}
 _KEY_BY_COLUMN[_GENOME_KEY_COLUMN] = GENOME_OF_PREP_SAMPLE
@@ -85,8 +87,10 @@ _ENTITY_TABLES = frozenset(_ENTITY_KEY_COLUMNS)
 class EntityGraphNotSweptError(AssertionError):
     """Rows survived a teardown for the entities it was given.
 
-    Carries the table and the surviving count, so the failure names what was
-    missed rather than surfacing later as a foreign-key violation.
+    Carries the table and the surviving count, so a missed table is named
+    rather than surfacing later as a foreign-key violation. The tables in
+    UNSWEPT_ENTITY_TABLES sit outside the range checked; what leaving one of
+    them standing costs differs per table, and its comment says which.
     """
 
     def __init__(self, table: str, column: str, surviving: int) -> None:
@@ -115,7 +119,12 @@ async def _fetch_genome_idxs(pool: asyncpg.Pool, prep_sample_idxs: list[int]) ->
     return genome_idxs
 
 
-async def _sweep_table(pool: asyncpg.Pool, table: str, keys, idxs) -> None:
+async def _sweep_table(
+    pool: asyncpg.Pool,
+    table: str,
+    keys: tuple[tuple[str, str], ...],
+    idxs: dict[str, list[int]],
+) -> None:
     """Delete one table's rows for the named entities, matching any of its keys."""
     clauses: list[str] = []
     args: list[list[int]] = []
@@ -138,7 +147,7 @@ async def assert_entity_graph_swept(
     prep_sample_idxs: list[int],
     genome_idxs: list[int] | None = None,
 ) -> None:
-    """Raise if any table carrying an entity idx still holds rows for these entities.
+    """Raise if any table keyed on an entity or a genome still holds rows for them.
 
     Discovers the tables from the catalog rather than the sweep list, so a table
     added to the schema and forgotten here fails the first time a test touches
@@ -163,10 +172,13 @@ async def assert_entity_graph_swept(
     )
     for row in candidates:
         table, column = row["table_name"], row["column_name"]
-        # The entities are deleted after this runs, and prep_sample carries a
-        # biosample_idx of its own, so both would read as survivors here. The
-        # genome rows go with the sweep, so the genome table reads the same way.
-        if table in _ENTITY_TABLES or table in UNSWEPT_ENTITY_TABLES or table == _GENOME_TABLE:
+        # prep_sample is the only entity table this query reaches — study and
+        # biosample key on a column named `idx`, which it does not ask for —
+        # and it carries a biosample_idx of its own, which would read as a
+        # survivor though it goes with the entities afterwards. qiita.genome is
+        # not skipped: the sweep deletes it, so a row left behind is exactly
+        # what this is here to catch.
+        if table in _ENTITY_TABLES or table in UNSWEPT_ENTITY_TABLES:
             continue
         named = idxs[_KEY_BY_COLUMN[column]]
         if not named:

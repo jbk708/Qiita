@@ -20,6 +20,12 @@ from qiita_control_plane.testing.db_seeds import (
     seed_user_principal,
 )
 from qiita_control_plane.testing.db_teardown import (
+    _ENTITY_KEY_COLUMNS,
+    _ENTITY_TABLES,
+    _GENOME_KEY_COLUMN,
+    BIOSAMPLE,
+    PREP_SAMPLE,
+    STUDY,
     SWEEP_TIERS,
     UNSWEPT_ENTITY_TABLES,
     EntityGraphNotSweptError,
@@ -30,19 +36,14 @@ from qiita_control_plane.testing.db_teardown import (
 
 pytestmark = pytest.mark.db
 
-# The entity tables are deleted after the sweep rather than by it, so they are
-# expected to carry their own idx column without appearing in SWEEP_TIERS.
-_ENTITY_TABLE_NAMES = frozenset({"study", "biosample", "prep_sample"})
-
-_ENTITY_KEY_COLUMN_NAMES = ("study_idx", "biosample_idx", "prep_sample_idx")
-
 
 def _sweep_drift_message(drift: dict[str, list[str]]) -> str:
     return (
         f"SWEEP_TIERS has drifted from the qiita schema: {drift}."
-        " A table carrying an entity idx must be added to the tier that deletes"
-        " it before its parents, or named in UNSWEPT_ENTITY_TABLES with the"
-        " reason the caller owns it; a table no longer in the schema must go."
+        " A table keyed on an entity or on a genome must be added to the tier"
+        " that deletes it before its parents, or named in UNSWEPT_ENTITY_TABLES"
+        " with the reason it is not swept; a table no longer in the schema"
+        " must go."
     )
 
 
@@ -88,14 +89,19 @@ async def graph(postgres_pool):
             " (SELECT genome_idx FROM qiita.genome WHERE prep_sample_idx = $1)",
             prep_sample_idx,
         )
+    # Each column is matched on its own entity, the way the function under test
+    # does. Handing every column all three idxs would delete another test's rows
+    # whenever the idxs collide, which they do: study.idx and prep_sample.idx
+    # both restart at 25000, so the Nth of each carries the same number.
+    seeded = {STUDY: study_idx, BIOSAMPLE: biosample_idx, PREP_SAMPLE: prep_sample_idx}
     for tier in SWEEP_TIERS:
         for table, keys in tier:
-            for column, _key in keys:
-                if column == "genome_idx":
+            for column, key in keys:
+                if key not in seeded:
                     continue
                 await postgres_pool.execute(
                     f"DELETE FROM qiita.{table} WHERE {column} = ANY($1::bigint[])",
-                    [study_idx, biosample_idx, prep_sample_idx],
+                    [seeded[key]],
                 )
     await postgres_pool.execute(
         "DELETE FROM qiita.genome WHERE prep_sample_idx = $1", prep_sample_idx
@@ -230,7 +236,9 @@ async def test_sweep_tiers_matches_the_live_schema(postgres_pool):
 
     `assert_entity_graph_swept` only names a forgotten table once some test
     seeds a row into it. This fails on the schema alone, so a table added to a
-    migration is caught whether or not anything exercises it yet.
+    migration is caught whether or not anything exercises it yet. It walks the
+    same columns that assertion does, genome included, so a table reached only
+    through a genome is covered too.
     """
     entity_keyed = await postgres_pool.fetch(
         "SELECT DISTINCT c.table_name FROM information_schema.columns c"
@@ -238,7 +246,7 @@ async def test_sweep_tiers_matches_the_live_schema(postgres_pool):
         "    ON t.table_schema = c.table_schema AND t.table_name = c.table_name"
         " WHERE c.table_schema = 'qiita' AND t.table_type = 'BASE TABLE'"
         "   AND c.column_name = ANY($1::text[])",
-        list(_ENTITY_KEY_COLUMN_NAMES),
+        [*_ENTITY_KEY_COLUMNS.values(), _GENOME_KEY_COLUMN],
     )
     all_tables = await postgres_pool.fetch(
         "SELECT table_name FROM information_schema.tables"
@@ -246,7 +254,7 @@ async def test_sweep_tiers_matches_the_live_schema(postgres_pool):
     )
 
     swept = {table for tier in SWEEP_TIERS for table, _keys in tier}
-    accounted_for = swept | _ENTITY_TABLE_NAMES | UNSWEPT_ENTITY_TABLES
+    accounted_for = swept | _ENTITY_TABLES | UNSWEPT_ENTITY_TABLES
     drift = {
         "missing_from_sweep": sorted({row["table_name"] for row in entity_keyed} - accounted_for),
         "absent_from_schema": sorted(swept - {row["table_name"] for row in all_tables}),
@@ -261,9 +269,11 @@ async def test_assert_entity_graph_swept_names_a_missed_genome_table(postgres_po
 
     `exported_feature` clears its genome_idx on delete rather than refusing, so
     a row left behind here is never surfaced by a foreign-key violation later.
-    The genomes have to be named explicitly: the sweep deletes qiita.genome
-    before this runs, so they cannot be found by walking back from the
-    prep_sample.
+    The genomes have to be named explicitly, because a real teardown deletes
+    qiita.genome before the check runs and they could not be found by walking
+    back from the prep_sample. No sweep runs here, so the genome stands too, and
+    the candidates are ordered by name, which is what settles that
+    `feature_genome` is the survivor named first.
     """
     genome_idx, _source_id = await seed_genome(
         postgres_pool, source=GenomeSource.QIITA, prep_sample_idx=graph["prep_sample_idx"]
