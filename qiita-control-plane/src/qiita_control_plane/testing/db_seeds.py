@@ -1,16 +1,14 @@
 """Pytest seed and state-change helpers for DB-row fixtures.
 
 Plain async functions (not pytest fixtures) so callers can pass test-local
-arguments. Helpers fall into four groups: seeders that insert rows and
-return the new idx, state-changers that update existing rows (disabling,
-retiring, etc.), lookup helpers for migration-seeded reference data that
-every test DB carries, and a cleanup-tracking helper that records
-import-created rows in a test's `created` dict. Cleanup is the caller's
-responsibility
-(route tests do FK-reverse cleanup against a per-test `created` tracker;
-integration tests may rely on a session-scoped truncate). Helpers are
-pool-based and commit their writes — for repository-layer trigger tests
-that roll back, build the SQL inline against the open connection instead.
+arguments. Helpers fall into three groups: seeders that insert rows and return
+the new idx, state-changers that update existing rows (disabling, retiring,
+etc.), and lookup helpers for migration-seeded reference data that every test
+DB carries. Cleanup is the caller's responsibility (route tests do FK-reverse
+cleanup against a per-test `created` tracker; integration tests may rely on a
+session-scoped truncate). Helpers are pool-based and commit their writes — for
+repository-layer trigger tests that roll back, build the SQL inline against the
+open connection instead.
 """
 
 import json
@@ -744,43 +742,6 @@ async def seed_globally_linked_study_field(
             created_by_idx=created_by_idx,
         )
     return idx
-
-
-async def track_biosample_metadata_outputs(
-    pool: asyncpg.Pool,
-    created: dict,
-    biosample_idx: int,
-    study_idx: int,
-    global_field_idxs: list[int],
-) -> None:
-    """Record, in a test's `created` tracker, the study-field and metadata rows a
-    biosample import produced, so FK-reverse cleanup sweeps them.
-
-    Appends every globally-linked biosample_study_field at study_idx tied to one
-    of global_field_idxs, plus every non-owner-id biosample_metadata row for
-    biosample_idx. An idx already present is not re-appended.
-    """
-    # Pick up every globally-linked study field row at this study tied to
-    # one of the supplied global fields.
-    field_rows = await pool.fetch(
-        "SELECT idx FROM qiita.biosample_study_field"
-        " WHERE study_idx = $1 AND biosample_global_field_idx = ANY($2::bigint[])",
-        study_idx,
-        list(global_field_idxs),
-    )
-    for r in field_rows:
-        if r["idx"] not in created["biosample_study_field"]:
-            created["biosample_study_field"].append(r["idx"])
-
-    # Pick up every non-owner-id metadata row for this biosample.
-    meta_rows = await pool.fetch(
-        "SELECT idx FROM qiita.biosample_metadata"
-        " WHERE biosample_idx = $1 AND is_owner_biosample_id = false",
-        biosample_idx,
-    )
-    for r in meta_rows:
-        if r["idx"] not in created["biosample_metadata"]:
-            created["biosample_metadata"].append(r["idx"])
 
 
 async def seed_biosample_to_study_link(
