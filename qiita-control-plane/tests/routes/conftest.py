@@ -49,6 +49,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_study,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_field_name
 
 
@@ -1278,39 +1279,15 @@ async def pool_alignment_seed(role_keyed_clients):
         "reader_idx": reader,
     }
 
-    prep_idxs = [ps for _, ps, _ in samples]
-    bio_idxs = [bs for bs, _, _ in samples]
-    ss_idxs = [ss for _, _, ss in samples]
-    # Before anything else: exported_identifier holds prep_sample under RESTRICT
-    # (a published handle must outlive the alignment it names, so it cannot ride a
-    # cascade), which would block the prep_sample delete below for any test that
-    # minted one. Keyed on prep_sample rather than alignment because a row whose
-    # alignment was purged has had its alignment_idx nulled.
-    await db.execute(
-        "DELETE FROM qiita.exported_identifier WHERE prep_sample_idx = ANY($1::bigint[])",
-        prep_idxs,
-    )
-    await db.execute(
-        "DELETE FROM qiita.alignment_sample WHERE alignment_idx = ANY($1::bigint[])",
-        [align_1, align_2],
+    await teardown_entity_graph(
+        db,
+        study_idxs=[study_1, study_2],
+        biosample_idxs=[bs for bs, _, _ in samples],
+        prep_sample_idxs=[ps for _, ps, _ in samples],
     )
     await db.execute(
         "DELETE FROM qiita.alignment_definition WHERE alignment_idx = ANY($1::bigint[])",
         [align_1, align_2],
     )
-    await db.execute(
-        "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = ANY($1::bigint[])",
-        prep_idxs,
-    )
-    await db.execute(
-        "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = ANY($1::bigint[])", bio_idxs
-    )
-    await db.execute("DELETE FROM qiita.sequenced_sample WHERE idx = ANY($1::bigint[])", ss_idxs)
     await db.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
     await db.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await db.execute("DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", prep_idxs)
-    await db.execute("DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", bio_idxs)
-    await db.execute(
-        "DELETE FROM qiita.study_access WHERE study_idx = ANY($1::bigint[])", [study_1, study_2]
-    )
-    await db.execute("DELETE FROM qiita.study WHERE idx = ANY($1::bigint[])", [study_1, study_2])
