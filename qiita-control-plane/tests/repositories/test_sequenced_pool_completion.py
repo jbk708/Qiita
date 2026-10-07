@@ -33,35 +33,35 @@ from qiita_control_plane.repositories.sequencing_run import (
     fetch_sequenced_pool_read_mask_coverage,
     fetch_sequenced_pool_read_mask_ticket_state_counts,
 )
-from qiita_control_plane.testing.db_seeds import (
-    seed_biosample_with_sequenced_prep_sample,
-    seed_user_principal,
-)
 
 pytestmark = pytest.mark.db
 
 
+async def _delete_work_tickets(pool, actions) -> None:
+    """Delete every work_ticket raised against these (action_id, version) pairs.
+
+    Runs before the blocks: work_ticket.block_idx is a NO ACTION FK, so a block
+    still referenced by a live ticket cannot be deleted.
+    """
+    for action_id, version in actions:
+        await pool.execute(
+            "DELETE FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
+            action_id,
+            version,
+        )
+
+
 @pytest_asyncio.fixture
-async def pool_ctx(postgres_pool):
-    """Seed a principal + run + pool + the read-mask, read-mask-block and
-    bcl-convert actions; yield a context with `add_sample()` (attach a
-    sequenced_sample, optionally retired), `add_ticket(prep_sample_idx, state)`
-    (a per-sample read-mask ticket), `add_gate(prep_sample_idx, mask_idx, state)`
-    (a qiita.mask_sample gate row) and `add_block(prep_sample_idxs, state, ...)`
-    (a block, its members, and its block-scoped ticket). FK-reverse cleanup."""
-    owner_idx = await seed_user_principal(postgres_pool, prefix="poolcompl", suffix="owner")
-    run_idx = await postgres_pool.fetchval(
-        "INSERT INTO qiita.sequencing_run (instrument_run_id, platform, created_by_idx)"
-        " VALUES ($1, 'illumina'::qiita.platform, $2) RETURNING idx",
-        f"pc-run-{secrets.token_hex(4)}",
-        owner_idx,
-    )
-    pool_idx = await postgres_pool.fetchval(
-        "INSERT INTO qiita.sequenced_pool (sequencing_run_idx, created_by_idx)"
-        " VALUES ($1, $2) RETURNING idx",
-        run_idx,
-        owner_idx,
-    )
+async def pool_ctx(pool_ctx, postgres_pool):
+    """Add the read-mask, read-mask-block, feature-to-profile and bcl-convert
+    actions to the shared pool fixture, plus the helpers built on them:
+    `add_ticket(prep_sample_idx, state)` (a per-sample read-mask ticket),
+    `add_gate(prep_sample_idx, mask_idx, state)` (a qiita.mask_sample gate row)
+    and `add_block(prep_sample_idxs, state, ...)` (a block, its members, and its
+    block-scoped ticket). `add_sample` comes from the shared fixture.
+    """
+    owner_idx = pool_ctx["owner_idx"]
+    pool_idx = pool_ctx["pool_idx"]
     # A read-mask action row so the work_ticket (action_id, action_version)
     # FK resolves. The completion query matches on the bare action_id (a sample
     # is "processed" once it has a mask), so the version is arbitrary here.
@@ -129,8 +129,13 @@ async def pool_ctx(postgres_pool):
         f2p_action_version,
         json.dumps({"service": False, "human_roles": ["user"]}),
     )
+    seeded_actions = (
+        (action_id, action_version),
+        (bcl_action_id, bcl_action_version),
+        (block_action_id, block_action_version),
+        (f2p_action_id, f2p_action_version),
+    )
 
-    samples: list[tuple[int, int, int]] = []  # (biosample, prep_sample, sequenced_sample)
     masks: list[int] = []
     blocks: list[int] = []
 
@@ -161,36 +166,6 @@ async def pool_ctx(postgres_pool):
         if not _default_mask:
             _default_mask.append(await mint_mask())
         return _default_mask[0]
-
-    async def add_sample(*, retired=False, ena_status=None):
-        bs_idx, ps_idx = await seed_biosample_with_sequenced_prep_sample(
-            postgres_pool, owner_idx=owner_idx
-        )
-        ss_idx = await postgres_pool.fetchval(
-            "INSERT INTO qiita.sequenced_sample"
-            "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
-            " VALUES ($1, $2, $3, $4) RETURNING idx",
-            ps_idx,
-            pool_idx,
-            f"item-{secrets.token_hex(4)}",
-            owner_idx,
-        )
-        if retired:
-            await postgres_pool.execute(
-                "UPDATE qiita.prep_sample SET retired = true, retired_by_idx = $2,"
-                " retired_at = now(), retire_reason = 'test' WHERE idx = $1",
-                ps_idx,
-                owner_idx,
-            )
-        if ena_status is not None:
-            await postgres_pool.execute(
-                "UPDATE qiita.sequenced_sample SET ena_status = $2,"
-                " ena_availability_checked_at = now() WHERE idx = $1",
-                ss_idx,
-                ena_status,
-            )
-        samples.append((bs_idx, ps_idx, ss_idx))
-        return ps_idx
 
     async def add_ticket(prep_sample_idx, state, mask_idx=None, gate=True):
         """Attach a per-sample read-mask ticket.
@@ -331,29 +306,23 @@ async def pool_ctx(postgres_pool):
             "test failure" if failed else None,
         )
 
-    yield {
-        "pool": postgres_pool,
-        "pool_idx": pool_idx,
-        "add_sample": add_sample,
-        "add_ticket": add_ticket,
-        "add_demux_ticket": add_demux_ticket,
-        "add_gate": add_gate,
-        "add_block": add_block,
-        "add_f2p_ticket": add_f2p_ticket,
-        "mint_mask": mint_mask,
-    }
+    pool_ctx.update(
+        {
+            "add_ticket": add_ticket,
+            "add_demux_ticket": add_demux_ticket,
+            "add_gate": add_gate,
+            "add_block": add_block,
+            "add_f2p_ticket": add_f2p_ticket,
+            "mint_mask": mint_mask,
+        }
+    )
+    yield pool_ctx
 
-    await postgres_pool.execute(
-        "DELETE FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
-        action_id,
-        action_version,
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
-        bcl_action_id,
-        bcl_action_version,
-    )
-    # Gate rows and block membership before the masks and samples they reference.
+    # This fixture finalizes before the shared one, so everything here lands
+    # ahead of the entity sweep — which the work tickets require, since they
+    # reference the prep_samples under RESTRICT.
+    await _delete_work_tickets(postgres_pool, seeded_actions)
+    # Gate rows and block membership before the masks and blocks they reference.
     if masks:
         await postgres_pool.execute(
             "DELETE FROM qiita.mask_sample WHERE mask_idx = ANY($1::bigint[])", masks
@@ -362,57 +331,19 @@ async def pool_ctx(postgres_pool):
         await postgres_pool.execute(
             "DELETE FROM qiita.block_member WHERE block_idx = ANY($1::bigint[])", blocks
         )
-    # Before the blocks: work_ticket.block_idx is a NO ACTION FK, so a block still
-    # referenced by a live ticket cannot be deleted. This delete cascades to the
-    # blocks anyway via qiita.block.work_ticket_idx (ON DELETE CASCADE).
-    await postgres_pool.execute(
-        "DELETE FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
-        block_action_id,
-        block_action_version,
-    )
-    if blocks:
         await postgres_pool.execute(
             "DELETE FROM qiita.block WHERE block_idx = ANY($1::bigint[])", blocks
         )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.work_ticket WHERE action_id = $1 AND action_version = $2",
-        f2p_action_id,
-        f2p_action_version,
-    )
-    # Masks after the work_tickets that referenced them (mask_idx is ON DELETE
-    # SET NULL, so order isn't strictly required, but keep it FK-reverse).
     if masks:
         await postgres_pool.execute(
             "DELETE FROM qiita.mask_definition WHERE mask_idx = ANY($1::bigint[])", masks
         )
-    for _bs, _ps, ss_idx in samples:
-        await postgres_pool.execute("DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss_idx)
-    await postgres_pool.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
-    await postgres_pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await postgres_pool.execute(
-        "DELETE FROM qiita.action WHERE action_id = $1 AND version = $2", action_id, action_version
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.action WHERE action_id = $1 AND version = $2",
-        bcl_action_id,
-        bcl_action_version,
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.action WHERE action_id = $1 AND version = $2",
-        block_action_id,
-        block_action_version,
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.action WHERE action_id = $1 AND version = $2",
-        f2p_action_id,
-        f2p_action_version,
-    )
-    for _bs, ps_idx, _ss in samples:
-        await postgres_pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", ps_idx)
-    for bs_idx, _ps, _ss in samples:
-        await postgres_pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", bs_idx)
-    await postgres_pool.execute("DELETE FROM qiita.user WHERE principal_idx = $1", owner_idx)
-    await postgres_pool.execute("DELETE FROM qiita.principal WHERE idx = $1", owner_idx)
+    for seeded_action_id, seeded_version in seeded_actions:
+        await postgres_pool.execute(
+            "DELETE FROM qiita.action WHERE action_id = $1 AND version = $2",
+            seeded_action_id,
+            seeded_version,
+        )
 
 
 async def test_empty_pool_is_all_zero(pool_ctx):

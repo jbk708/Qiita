@@ -32,6 +32,7 @@ from qiita_control_plane.repositories.study import (
     get_or_create_study_by_ena_accessions,
     update_study,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -1029,15 +1030,13 @@ async def test_get_or_create_study_by_ena_accessions_collision_refetch_resolves_
             assert row["idx"] == winner_idx
         finally:
             await tr.rollback()
-            if winner_idx is not None:
-                await postgres_pool.execute(
-                    "DELETE FROM qiita.study_access WHERE study_idx = $1", winner_idx
-                )
-                await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", winner_idx)
-            await postgres_pool.execute(
-                "DELETE FROM qiita.user WHERE principal_idx = $1", winner_owner
+            await teardown_entity_graph(
+                postgres_pool,
+                study_idxs=[winner_idx] if winner_idx is not None else [],
+                biosample_idxs=[],
+                prep_sample_idxs=[],
             )
-            await postgres_pool.execute("DELETE FROM qiita.principal WHERE idx = $1", winner_owner)
+            await delete_principal(postgres_pool, [winner_owner])
 
 
 async def test_get_or_create_study_by_ena_accessions_collision_refetch_resolves_by_bioproject(
@@ -1086,15 +1085,13 @@ async def test_get_or_create_study_by_ena_accessions_collision_refetch_resolves_
             assert row["idx"] == winner_idx
         finally:
             await tr.rollback()
-            if winner_idx is not None:
-                await postgres_pool.execute(
-                    "DELETE FROM qiita.study_access WHERE study_idx = $1", winner_idx
-                )
-                await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", winner_idx)
-            await postgres_pool.execute(
-                "DELETE FROM qiita.user WHERE principal_idx = $1", winner_owner
+            await teardown_entity_graph(
+                postgres_pool,
+                study_idxs=[winner_idx] if winner_idx is not None else [],
+                biosample_idxs=[],
+                prep_sample_idxs=[],
             )
-            await postgres_pool.execute("DELETE FROM qiita.principal WHERE idx = $1", winner_owner)
+            await delete_principal(postgres_pool, [winner_owner])
 
 
 # ---------------------------------------------------------------------------
