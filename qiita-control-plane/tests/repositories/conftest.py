@@ -207,26 +207,16 @@ async def ctx(postgres_pool):
     checklist_name = f"bs-checklist-{token}"
     checklist_idx = await _seed_metadata_checklist(postgres_pool, checklist_name)
 
-    # Test-populated tracking dict; lists hold idxs (or (bs, st) tuples).
-    # `studies` holds idxs of any extra studies the test seeds beyond the
-    # one auto-seeded above; they are deleted after the biosample-side rows
-    # are swept and before the auto-seeded study row is dropped.
-    # The three entity lists feed the sweep; the rest hang off no entity. A row
-    # belonging to an entity needs no entry here — the sweep finds it by parent FK.
+    # Test-populated tracking dict; every list holds idxs. `studies` holds any
+    # extra studies the test seeds beyond the one auto-seeded above; they are
+    # deleted after the biosample-side rows are swept and before the auto-seeded
+    # study row is dropped. The three entity lists feed the sweep; the rest hang
+    # off no entity. A row belonging to an entity needs no entry here — the
+    # sweep finds it by parent FK.
     created: dict = {
         "biosample": [],
         "prep_sample": [],
         "studies": [],
-        # Entity-family buckets nothing reads any more: the sweep finds these
-        # rows by parent FK. Retained only until their writers are removed.
-        "biosample_metadata": [],
-        "biosample_study_field": [],
-        "biosample_to_study": [],
-        "prep_sample_metadata": [],
-        "prep_sample_study_field": [],
-        "prep_sample_to_study": [],
-        "sequenced_sample": [],
-        "study_access": [],
         "biosample_global_field": [],
         "prep_sample_global_field": [],
         "terminology_term": [],
