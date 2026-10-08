@@ -101,7 +101,6 @@ async def _seed_prep_sample_linked_to_studies(ctx, *, owner_idx: int, study_idxs
             study_idx=study_idx,
             created_by_idx=owner_idx,
         )
-        ctx["created"]["biosample_to_study"].append((biosample_idx, study_idx))
         await ctx["pool"].execute(
             "INSERT INTO qiita.prep_sample_to_study (prep_sample_idx, study_idx, created_by_idx)"
             " VALUES ($1, $2, $3)",
@@ -109,7 +108,6 @@ async def _seed_prep_sample_linked_to_studies(ctx, *, owner_idx: int, study_idxs
             study_idx,
             owner_idx,
         )
-        ctx["created"]["prep_sample_to_study"].append((prep_sample_idx, study_idx))
     return prep_sample_idx
 
 

@@ -1242,10 +1242,7 @@ async def test_patch_study_field_widen_admits_a_concurrent_write(ctx, surface, m
         # preflight holds, and must not be made to wait for it.
         async with ctx["pool"].acquire() as writer, writer.transaction():
             await writer.execute(f"SET LOCAL lock_timeout = '{CONTENDED_WRITE_LOCK_TIMEOUT}'")
-            metadata_idx = await writer.fetchval(
-                insert_sql, entity_idx, target_idx, Decimal("2.5"), owner_idx
-            )
-        ctx["created"][spec.metadata_table.removeprefix("qiita.")].append(metadata_idx)
+            await writer.fetchval(insert_sql, entity_idx, target_idx, Decimal("2.5"), owner_idx)
 
         return await original_widen(conn, **kwargs)
 

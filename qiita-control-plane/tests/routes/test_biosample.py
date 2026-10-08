@@ -196,7 +196,6 @@ async def _post_biosample(client, ctx, study_idx: int, **body):
     if resp.status_code == 201:
         rj = resp.json()
         ctx["created"]["biosample"].append(rj["biosample_idx"])
-        ctx["created"]["biosample_to_study"].append((rj["biosample_idx"], study_idx))
     return resp
 
 
@@ -1372,7 +1371,6 @@ async def _seed_link_to_study(ctx, *, study_idx, owner_idx):
         study_idx=study_idx,
         created_by_idx=owner_idx,
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, study_idx))
     return bs_idx
 
 
@@ -3668,7 +3666,6 @@ async def test_patch_biosample_metadata_foreign_study_409(ctx):
     await seed_biosample_to_study_link(
         ctx["pool"], biosample_idx=bs_idx, study_idx=study_b, created_by_idx=wet_idx
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, study_b))
     token = secrets.token_hex(4)
     global_name = f"Field {token}"
     global_idx = await seed_biosample_global_field(
@@ -4204,7 +4201,6 @@ async def test_patch_biosample_metadata_deadlock_503(ctx, monkeypatch):
         study_idx=study_idx,
         created_by_idx=ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["biosample_to_study"].append((biosample_idx, study_idx))
 
     async def _deadlock(conn, **kwargs):
         raise asyncpg.DeadlockDetectedError("deadlock detected")
@@ -4244,7 +4240,6 @@ async def test_patch_biosample_metadata_redeclared_field_409(ctx, monkeypatch):
         study_idx=study_idx,
         created_by_idx=ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["biosample_to_study"].append((biosample_idx, study_idx))
 
     widen_committed = False
     original_preflight = sample_helpers.preflight_sample_metadata

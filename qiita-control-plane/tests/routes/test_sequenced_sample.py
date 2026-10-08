@@ -221,7 +221,6 @@ async def _seed_biosample_linked_to_study(ctx, *, owner_idx: int, study_idx: int
         study_idx=study_idx,
         created_by_idx=owner_idx,
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, study_idx))
     return bs_idx
 
 
@@ -269,23 +268,8 @@ async def _post_sequenced_sample(client, ctx, run_idx, pool_idx, **body):
         json=body,
     )
     if resp.status_code == 201:
-        rj = resp.json()
-        ps_idx = rj["prep_sample_idx"]
-        ss_idx = rj["sequenced_sample_idx"]
+        ps_idx = resp.json()["prep_sample_idx"]
         ctx["created"]["prep_sample"].append(ps_idx)
-        ctx["created"]["sequenced_sample"].append(ss_idx)
-        # Track every per-test study link the composer wrote: the primary
-        # plus any secondaries.
-        ctx["created"]["prep_sample_to_study"].append((ps_idx, body["primary_study_idx"]))
-        for st in body.get("secondary_study_idxs", []):
-            ctx["created"]["prep_sample_to_study"].append((ps_idx, st))
-        # Track prep_sample_metadata rows by looking them up after the call.
-        meta_rows = await ctx["pool"].fetch(
-            "SELECT idx FROM qiita.prep_sample_metadata WHERE prep_sample_idx = $1",
-            ps_idx,
-        )
-        for r in meta_rows:
-            ctx["created"]["prep_sample_metadata"].append(r["idx"])
     return resp
 
 
@@ -942,7 +926,6 @@ async def test_import_sequenced_sample_from_run_multi_study_happy_path(ctx):
         study_idx=secondary_idx,
         created_by_idx=ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, secondary_idx))
     protocol_idx = await _fetch_prep_protocol_idx(ctx)
 
     resp = await _post_sequenced_sample(
@@ -1007,7 +990,6 @@ async def test_import_sequenced_sample_from_run_duplicate_secondary_dedupes(ctx)
         study_idx=secondary_idx,
         created_by_idx=ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, secondary_idx))
     protocol_idx = await _fetch_prep_protocol_idx(ctx)
 
     resp = await _post_sequenced_sample(
@@ -2301,7 +2283,6 @@ async def test_list_sequenced_sample_idxs_in_study_surfaces_secondary_link(ctx):
         study_idx=secondary_idx,
         created_by_idx=ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, secondary_idx))
     protocol_idx = await _fetch_prep_protocol_idx(ctx)
 
     # Compose one sequenced_sample whose supertype prep_sample lands a
@@ -3366,14 +3347,13 @@ async def _bind_host_taxon_field(ctx, study_idx):
             display_name="host taxon id",
             created_by_idx=ctx["wet_session"]["principal_idx"],
         )
-    ctx["created"]["biosample_study_field"].append(field_idx)
     return field_idx
 
 
 async def _write_host_taxon(ctx, *, biosample_idx, field_idx, term_idx=None, reason_idx=None):
     """Write the sample's host_taxon_id as either a terminology term or a missing-reason."""
     column = "value_terminology_term_idx" if term_idx is not None else "value_missing_reason_idx"
-    meta_idx = await ctx["pool"].fetchval(
+    await ctx["pool"].fetchval(
         f"INSERT INTO qiita.biosample_metadata"
         f" (biosample_idx, biosample_study_field_idx, {column}, created_by_idx)"
         f" VALUES ($1, $2, $3, $4) RETURNING idx",
@@ -3382,7 +3362,6 @@ async def _write_host_taxon(ctx, *, biosample_idx, field_idx, term_idx=None, rea
         term_idx if term_idx is not None else reason_idx,
         ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["biosample_metadata"].append(meta_idx)
 
 
 async def _seed_illumina_human_profile(ctx, suffix):
@@ -3563,7 +3542,6 @@ async def test_get_sequenced_sample_in_study_returns_global_and_local_metadata(c
         value="LOCAL-1",
         created_by_idx=ctx["wet_session"]["principal_idx"],
     )
-    ctx["created"]["prep_sample_metadata"].append(metadata_idx)
 
     resp = await ctx["wet"].get(
         URL_SEQUENCED_SAMPLE_BY_STUDY_AND_IDX.format(
@@ -3818,16 +3796,6 @@ async def _patch_sequenced_metadata(
     )
 
 
-async def _track_prep_sample_metadata(ctx, prep_sample_idx):
-    """Track every prep_sample_metadata row for a prep_sample for FK-reverse cleanup."""
-    rows = await ctx["pool"].fetch(
-        "SELECT idx FROM qiita.prep_sample_metadata WHERE prep_sample_idx = $1", prep_sample_idx
-    )
-    for r in rows:
-        if r["idx"] not in ctx["created"]["prep_sample_metadata"]:
-            ctx["created"]["prep_sample_metadata"].append(r["idx"])
-
-
 async def _seed_prep_global_field(ctx, *, data_type=FieldDataType.TEXT):
     """Seed one prep_sample global field; track it.
 
@@ -3874,7 +3842,6 @@ async def test_patch_sequenced_sample_metadata_inserts_global_and_local(ctx):
         {global_name: "GVAL", local_name: "LVAL"},
     )
     assert resp.status_code == 200, resp.text
-    await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
 
     rj = resp.json()
     expected = {
@@ -3908,7 +3875,6 @@ async def test_patch_sequenced_sample_metadata_updates_existing_value(ctx):
         ctx["wet"], seeded["study_idx"], seeded["sequenced_sample_idx"], {name: "V1"}
     )
     assert first.status_code == 200, first.text
-    await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
 
     resp = await _patch_sequenced_metadata(
         ctx["wet"], seeded["study_idx"], seeded["sequenced_sample_idx"], {name: "V2"}
@@ -3936,7 +3902,6 @@ async def test_patch_sequenced_sample_metadata_unchanged_on_identical_value(ctx)
         ctx["wet"], seeded["study_idx"], seeded["sequenced_sample_idx"], {name: "SAME"}
     )
     assert first.status_code == 200, first.text
-    await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
 
     resp = await _patch_sequenced_metadata(
         ctx["wet"], seeded["study_idx"], seeded["sequenced_sample_idx"], {name: "SAME"}
@@ -3970,7 +3935,6 @@ async def test_patch_sequenced_sample_metadata_internal_name_is_the_read_key(ctx
         {global_name: "GVAL"},
     )
     assert written.status_code == 200, written.text
-    await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
 
     read = await ctx["wet"].get(
         URL_SEQUENCED_SAMPLE_BY_STUDY_AND_IDX.format(
@@ -4002,7 +3966,6 @@ async def test_patch_sequenced_sample_metadata_internal_name_keying_round_trips(
         global_internal_names=True,
     )
     assert written.status_code == 200, written.text
-    await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
     assert written.json() == {
         "results": {
             global_internal: {
@@ -4064,7 +4027,6 @@ async def test_patch_sequenced_sample_metadata_foreign_study_409(ctx):
     await seed_biosample_to_study_link(
         ctx["pool"], biosample_idx=bs_idx, study_idx=study_b, created_by_idx=wet_idx
     )
-    ctx["created"]["biosample_to_study"].append((bs_idx, study_b))
     run_idx, pool_idx = await _seed_run_and_pool(ctx, "patch-fs")
     protocol_idx = await _fetch_prep_protocol_idx(ctx)
     post = await _post_sequenced_sample(
@@ -4081,13 +4043,11 @@ async def test_patch_sequenced_sample_metadata_foreign_study_409(ctx):
     )
     assert post.status_code == 201, post.text
     ss_idx = post.json()["sequenced_sample_idx"]
-    prep_idx = post.json()["prep_sample_idx"]
     _global_idx, name, internal_name = await _seed_prep_global_field(ctx)
 
     # Study A writes the global value first (contributing study = A).
     first = await _patch_sequenced_metadata(ctx["wet"], study_a, ss_idx, {name: "VAL-A"})
     assert first.status_code == 200, first.text
-    await _track_prep_sample_metadata(ctx, prep_idx)
 
     # Study B writing a different value to the same global slot collides.
     resp = await _patch_sequenced_metadata(ctx["wet"], study_b, ss_idx, {name: "VAL-B"})
@@ -4160,7 +4120,6 @@ async def test_patch_sequenced_sample_metadata_link_retired_mid_write_404(
             {global_name: "BEFORE"},
         )
         assert seed_resp.status_code == 200, seed_resp.text
-        await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
     await retire_prep_sample_to_study_link(
         ctx["pool"],
         prep_sample_idx=seeded["prep_sample_idx"],
@@ -4279,7 +4238,6 @@ async def test_patch_sequenced_sample_metadata_admin_tier_writes(ctx):
         ctx["user"], seeded["study_idx"], seeded["sequenced_sample_idx"], {name: "AVAL"}
     )
     assert resp.status_code == 200, resp.text
-    await _track_prep_sample_metadata(ctx, seeded["prep_sample_idx"])
     assert resp.json() == {
         "results": {
             name: {

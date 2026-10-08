@@ -77,7 +77,6 @@ async def _seed_sample_on_pool(ctx, *, owner_idx: int, study_idx: int | None = N
         owner_idx=owner_idx,
         sequenced_pool_item_id=f"item-{secrets.token_hex(4)}",
     )
-    ctx["created"]["sequenced_sample"].append(ss_idx)
     ctx["created"]["sequenced_pool"].append(pool_idx)
     ctx["created"]["sequencing_run"].append(run_idx)
     if study_idx is not None:
@@ -89,7 +88,6 @@ async def _seed_sample_on_pool(ctx, *, owner_idx: int, study_idx: int | None = N
             study_idx=study_idx,
             created_by_idx=owner_idx,
         )
-        ctx["created"]["biosample_to_study"].append((biosample_idx, study_idx))
         await ctx["pool"].execute(
             "INSERT INTO qiita.prep_sample_to_study (prep_sample_idx, study_idx, created_by_idx)"
             " VALUES ($1, $2, $3)",
@@ -97,7 +95,6 @@ async def _seed_sample_on_pool(ctx, *, owner_idx: int, study_idx: int | None = N
             study_idx,
             owner_idx,
         )
-        ctx["created"]["prep_sample_to_study"].append((prep_sample_idx, study_idx))
     return prep_sample_idx, pool_idx
 
 
@@ -109,7 +106,6 @@ async def _seed_gate_row(ctx, *, mask_idx: int, prep_sample_idx: int, state: str
         prep_sample_idx,
         state,
     )
-    ctx["created"]["mask_sample"].append((mask_idx, prep_sample_idx))
 
 
 async def _seed_mask_ticket(
@@ -647,7 +643,6 @@ async def test_user_needs_admin_on_every_linked_study(ctx):
         study_idx=ungranted,
         created_by_idx=admin_idx,
     )
-    ctx["created"]["biosample_to_study"].append((ctx["created"]["biosample"][-1], ungranted))
     await ctx["pool"].execute(
         "INSERT INTO qiita.prep_sample_to_study (prep_sample_idx, study_idx, created_by_idx)"
         " VALUES ($1, $2, $3)",
@@ -655,7 +650,6 @@ async def test_user_needs_admin_on_every_linked_study(ctx):
         ungranted,
         admin_idx,
     )
-    ctx["created"]["prep_sample_to_study"].append((prep_sample_idx, ungranted))
 
     assert (await ctx["user"].get(url)).json()["samples"] == []
 

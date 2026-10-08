@@ -175,7 +175,7 @@ async def _make_biosample(ctx):
 
 async def _set_host_term(ctx, biosample_idx, term_idx):
     """Write host_taxon_id as a terminology term on the biosample."""
-    meta_idx = await ctx["pool"].fetchval(
+    await ctx["pool"].fetchval(
         "INSERT INTO qiita.biosample_metadata"
         " (biosample_idx, biosample_study_field_idx, value_terminology_term_idx,"
         "  created_by_idx)"
@@ -185,14 +185,13 @@ async def _set_host_term(ctx, biosample_idx, term_idx):
         term_idx,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_metadata"].append(meta_idx)
 
 
 async def _set_host_missing_reason(ctx, biosample_idx, reason_name):
     """Write host_taxon_id as a missing-reason on the biosample."""
     reason_idx = await fetch_missing_value_reason_idx(ctx["pool"], reason_name)
     assert reason_idx is not None, f"missing_value_reason {reason_name!r} should be seeded"
-    meta_idx = await ctx["pool"].fetchval(
+    await ctx["pool"].fetchval(
         "INSERT INTO qiita.biosample_metadata"
         " (biosample_idx, biosample_study_field_idx, value_missing_reason_idx,"
         "  created_by_idx)"
@@ -202,7 +201,6 @@ async def _set_host_missing_reason(ctx, biosample_idx, reason_name):
         reason_idx,
         ctx["principal_idx"],
     )
-    ctx["created"]["biosample_metadata"].append(meta_idx)
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +485,6 @@ async def test_a_biosample_cannot_carry_two_host_taxon_id_values(ctx):
             study_idx=other_study_idx,
             created_by_idx=ctx["principal_idx"],
         )
-    ctx["created"]["biosample_study_field"].append(other_field_idx)
 
     # Same biosample, same global field, DIFFERENT study field — rejected.
     with pytest.raises(asyncpg.UniqueViolationError):

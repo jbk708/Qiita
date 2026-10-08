@@ -326,7 +326,6 @@ async def _grant_study_access(ctx, *, study_idx, principal_idx, tier, granted_by
         tier,
         granted_by_idx,
     )
-    ctx["created"]["study_access"].append((study_idx, principal_idx))
 
 
 async def _seed_study(ctx, *, owner_idx: int, suffix: str) -> int:
@@ -476,11 +475,9 @@ async def seed_sample_with_value(
     await seed_biosample_to_study_link(
         pool, biosample_idx=biosample_idx, study_idx=study_idx, created_by_idx=owner_idx
     )
-    ctx["created"]["biosample_to_study"].append((biosample_idx, study_idx))
     await seed_prep_sample_to_study_link(
         pool, prep_sample_idx=prep_sample_idx, study_idx=study_idx, created_by_idx=owner_idx
     )
-    ctx["created"]["prep_sample_to_study"].append((prep_sample_idx, study_idx))
 
     missing_reason_idx = None
     if missing_reason_name is not None:
@@ -491,7 +488,7 @@ async def seed_sample_with_value(
             f"no missing_value_reason named {missing_reason_name!r}"
         )
 
-    metadata_idx = await pool.fetchval(
+    await pool.fetchval(
         f"INSERT INTO {spec.metadata_table}"
         f" ({spec.entity_key_column}, {spec.study_field_idx_column},"
         f" {value_column}, value_missing_reason_idx, created_by_idx)"
@@ -502,7 +499,6 @@ async def seed_sample_with_value(
         missing_reason_idx,
         owner_idx,
     )
-    ctx["created"][spec.metadata_table.removeprefix("qiita.")].append(metadata_idx)
 
     if publish:
         # The publish action: FALSE -> TRUE on the link. OLD.is_published is
@@ -543,10 +539,8 @@ def sibling_field_surface(surface: SampleFieldSurface) -> SampleFieldSurface:
 
 
 async def post_study_field(ctx, *, surface: SampleFieldSurface, client, study_idx: int, **body):
-    """POST one entity's create-field route and, on 201, track the created row."""
+    """POST one entity's create-field route."""
     resp = await client.post(surface.url_template.format(study_idx=study_idx), json=body)
-    if resp.status_code == 201:
-        ctx["created"][surface.created_key].append(resp.json()[surface.idx_key])
     return resp
 
 

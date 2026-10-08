@@ -119,7 +119,6 @@ async def _post_study(client, ctx, **body):
     if resp.status_code == 201:
         rj = resp.json()
         ctx["created"]["study"].append(rj["study_idx"])
-        ctx["created"]["study_access"].append((rj["study_idx"], rj["owner_idx"]))
     return resp
 
 
