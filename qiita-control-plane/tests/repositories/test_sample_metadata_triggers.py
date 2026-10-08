@@ -269,7 +269,8 @@ async def _retire_link(ctx, spec, entity_idx):
 async def _seed_global_value(ctx, spec, entity_idx, value):
     """Write one globally-linked TEXT metadata value while the link is active.
 
-    Returns (metadata_idx, global_field_idx), both tracked for cleanup.
+    Returns (metadata_idx, global_field_idx). The global field is tracked for
+    cleanup.
     """
     gf = await _seed_global_field_for_spec(ctx, spec, data_type=FieldDataType.TEXT)
     async with ctx["pool"].acquire() as conn, conn.transaction():

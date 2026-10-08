@@ -1,7 +1,7 @@
 """Shared fixtures and helpers for control-plane route tests.
 
-Holds the three-role AsyncClient triple, a PAT-minting client factory used by
-the per-route no-scope fixtures, and the pair that drives the ineligible-owner
+Holds the three-role AsyncClient triple, a factory that mints a PAT carrying a
+caller-chosen scope set, and the pair that drives the ineligible-owner
 cases — `IneligibilityKind`, which tests parametrize over, and
 `resolve_ineligible_owner_idx`, which turns one of its kinds into a principal
 idx a route will reject with 422. Each route test owns its own `ctx`, because

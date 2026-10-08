@@ -44,9 +44,9 @@ CONTENTION_ERRORS = [asyncpg.LockNotAvailableError, asyncpg.DeadlockDetectedErro
 async def ctx(role_keyed_clients):
     """Per-test fixture: route-keyed clients plus a `created` tracker.
 
-    Tracks both entities' study-field buckets, since one test body runs against
-    either surface, plus the sample, link, and metadata rows the uniqueness
-    cases seed to give a field values to be unique over.
+    Tracks what outlives the entity sweep: the terminologies and both entities'
+    global fields, which the study-local rows point at, plus the studies and
+    samples the uniqueness cases seed.
     """
     created: dict = {
         "terminology": [],

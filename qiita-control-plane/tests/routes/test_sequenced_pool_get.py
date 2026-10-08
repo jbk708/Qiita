@@ -28,8 +28,8 @@ pytestmark = pytest.mark.db
 
 @pytest.fixture
 def ctx(role_keyed_clients):
-    """Alias the shared role-keyed clients ({pool, wet, user, wet_session, ...});
-    this route needs no per-test `created` tracker (seeded_pool owns cleanup)."""
+    """Alias the shared role-keyed clients ({pool, wet, user, wet_session, ...}).
+    `seeded_pool` owns every row these tests read, and tears them down."""
     return role_keyed_clients
 
 
