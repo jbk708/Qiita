@@ -10,8 +10,9 @@ Two-write-target and idempotent/re-runnable semantics are identical too.
 
 Gotchas specific to the ENA source:
 - md5 verification is miint's, not this job's: `read_ena_sequences`'s
-  `verify_md5` defaults to true (duckdb-miint#172, docs/insdc_ena.md) and a
-  single-run scan raises `duckdb.IOException` naming the md5 mismatch, which
+  `verify_md5` defaults to true
+  (https://the-miint.github.io/duckdb-miint/insdc_ena/) and a single-run scan
+  raises `duckdb.IOException` naming the md5 mismatch, which
   `_classify_ena_fetch_error` classifies retriable (a truncated transfer and a
   bad digest are indistinguishable; `max_retries` bounds it).
 - One FRESH DuckDB connection PER RUN. `miint_warnings()` accumulates across
@@ -20,9 +21,9 @@ Gotchas specific to the ENA source:
 - Fail loud on a silent skip. `read_ena_sequences` does not raise on a run that
   fails to open or fails mid-stream — it retries once, then skips/truncates and
   records a `miint_warnings()` entry, returning fewer/zero rows. So a "skip"
-  warning (`_skip_warnings`) fails the run retriably (a re-run recovers the
-  data) and a clean 0-row result fails it BAD_INPUT (an ENA run never
-  legitimately has zero reads, unlike a demux well). A raised
+  warning (`_skip_warnings`) fails the run retriably and a clean 0-row result
+  fails it BAD_INPUT (an ENA run never legitimately has zero reads, unlike a
+  demux well). A raised
   `duckdb.Error` is classified separately (`_classify_ena_fetch_error`).
 """
 
@@ -69,9 +70,8 @@ _SKIP_WARNING_MARKER = "skip"
 _MD5_SKIPPED_WARNING_MARKER = "md5 verification skipped"
 
 # Substrings marking a raised duckdb.Error as transport/network-shaped (vs.
-# format/parse) — see `_classify_ena_fetch_error`. Conservative: a non-match is
-# treated as permanent, since a false "retriable" burns a retry on an error
-# that fails identically every time.
+# format/parse) — see `_classify_ena_fetch_error`. A non-match is permanent
+# unless it is an md5 mismatch, which miint cannot tell from a truncation.
 _TRANSIENT_ERROR_MARKERS = (
     "connection",
     "timed out",
@@ -157,11 +157,8 @@ def _classify_ena_fetch_error(
     (transport/network-shaped or md5 mismatch) or permanent (format/parse, or
     anything not confidently network-shaped). A raised exception means miint's
     internal open-retry-then-skip did NOT run, so there is no `miint_warnings()`
-    entry — the exception text is all the caller has.
-
-    The transient-marker check runs FIRST, so text mentioning both md5 and a
-    transient marker classifies transient; the md5 branch only sees text already
-    ruled out as network-shaped."""
+    entry — the exception text is all the caller has. Both retriable branches
+    share a kind; the marker check only picks the reason text."""
     text = str(exc).lower()
     if any(marker in text for marker in _TRANSIENT_ERROR_MARKERS):
         return BackendFailure(
@@ -173,7 +170,8 @@ def _classify_ena_fetch_error(
             ),
         )
     # miint raises the same error for a truncated transfer and for bytes that
-    # genuinely disagree with ENA's digest (docs/insdc_ena.md): retry, bounded.
+    # genuinely disagree with ENA's digest
+    # (https://the-miint.github.io/duckdb-miint/insdc_ena/): retry, bounded.
     if "md5" in text:
         return BackendFailure(
             kind=FailureKind.EXTERNAL_FETCH_TRANSIENT,
@@ -181,8 +179,8 @@ def _classify_ena_fetch_error(
             step_name=step_name,
             reason=(
                 f"ENA run {run_accession}: downloaded bytes don't match ENA's "
-                f"declared fastq_md5; a truncated transfer cannot be told from a "
-                f"bad digest, so the step is retried. If it keeps failing, "
+                f"declared fastq_md5; miint cannot tell a truncated transfer from a "
+                f"bad digest. If it keeps failing, "
                 f"compare the run's fastq_md5 in the ENA Portal API against the "
                 f"value reported here ({type(exc).__name__}): {exc}"
             ),
@@ -192,6 +190,20 @@ def _classify_ena_fetch_error(
         stage=WorkTicketFailureStage.STEP_RUN,
         step_name=step_name,
         reason=f"ENA run {run_accession}: fetch failed ({type(exc).__name__}): {exc}",
+    )
+
+
+def _combine_failures(failures: list[BackendFailure]) -> BackendFailure:
+    """One failure for the step: a permanent outcome wins over a transient one so
+    it is not retried, and the reason names every failed run."""
+    lead = next((f for f in failures if not f.transient), failures[0])
+    if len(failures) == 1:
+        return lead
+    return BackendFailure(
+        kind=lead.kind,
+        stage=lead.stage,
+        step_name=lead.step_name,
+        reason=f"{len(failures)} runs failed: " + " | ".join(f.reason for f in failures),
     )
 
 
@@ -249,6 +261,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
 
                 skip_msgs = _skip_warnings(warnings)
                 if skip_msgs:
+                    mid_stream = any("mid-stream" in m.lower() for m in skip_msgs)
                     raise BackendFailure(
                         kind=FailureKind.EXTERNAL_FETCH_TRANSIENT,
                         stage=WorkTicketFailureStage.STEP_RUN,
@@ -256,8 +269,13 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                         reason=(
                             f"ENA run {run_accession} (prep_sample {prep_sample_idx}) "
                             "was skipped by miint -- its data is missing or partial; "
-                            "refusing to register an incomplete read set, a re-run "
-                            f"is expected to recover it: {'; '.join(skip_msgs)}"
+                            "refusing to register an incomplete read set"
+                            + (
+                                "; miint reports a re-run recovers a mid-stream failure"
+                                if mid_stream
+                                else ""
+                            )
+                            + f": {'; '.join(skip_msgs)}"
                         ),
                     )
                 if count == 0:
@@ -305,12 +323,14 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                 return_exceptions=True,
             )
 
-    # Surface the first hard error in roster order (matches ingest_reads'
-    # abort-on-first). Runs that already completed only wrote their own durable
-    # copy, which is harmless.
+    # Runs that already completed only wrote their own durable copy, which is
+    # harmless.
     for outcome in outcomes:
-        if isinstance(outcome, BaseException):
+        if isinstance(outcome, BaseException) and not isinstance(outcome, BackendFailure):
             raise outcome
+    failures = [o for o in outcomes if isinstance(o, BackendFailure)]
+    if failures:
+        raise _combine_failures(failures)
 
     # register-files loads the workspace's `read/` parts into the `read` table.
     return {"read_staging_dir": workspace}

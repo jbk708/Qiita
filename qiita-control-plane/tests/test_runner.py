@@ -962,13 +962,12 @@ async def test_retry_uses_isolated_per_attempt_workspace(
     assert not (workspace / "hash" / "attempt-1" / "partial.parquet").exists()
 
 
-async def test_retry_exhausted_marks_failed_with_retriable_type(
+async def test_retry_exhausted_marks_failed_with_permanent_type(
     postgres_pool, pending_work_ticket, library_spy, tmp_path
 ):
     """Transient failures keep retrying until retry_count == max_retries,
-    then transition to FAILED with failure_type='retriable' (the
-    distinguishing post-mortem signal: retries-exhausted vs
-    permanent-on-first-attempt)."""
+    then transition to FAILED with failure_type='permanent' so the notify
+    sweeper emails it; the reason keeps the last attempt's kind."""
     from qiita_common.backend_failure import BackendFailure, FailureKind
 
     workspace_root = tmp_path / "ws"
@@ -993,9 +992,10 @@ async def test_retry_exhausted_marks_failed_with_retriable_type(
     )
     assert row["state"] == "failed"
     assert row["retry_count"] == row["max_retries"] == 3
-    assert row["failure_type"] == "retriable"
+    assert row["failure_type"] == "permanent"
     assert row["failure_stage"] == "step_run"
     assert row["failure_step_name"] == "hash"
+    assert "retries exhausted" in row["failure_reason"]
     assert "node_fail" in row["failure_reason"]
     # 4 total attempts: 1 initial + 3 retries.
     assert backend.attempts["hash"] == 4

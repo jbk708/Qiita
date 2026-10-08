@@ -1199,7 +1199,15 @@ async def _run_entry_with_retry(
                     current_retry,
                     max_retries,
                 )
-                raise
+                raise BackendFailure(
+                    kind=FailureKind.RETRIES_EXHAUSTED,
+                    stage=exc.stage,
+                    step_name=exc.step_name,
+                    reason=(
+                        f"retries exhausted ({current_retry}/{max_retries}); "
+                        f"last failure [{exc.kind.value}]: {exc.reason}"
+                    ),
+                ) from exc
             # An OOM-killed step would OOM again at the same size, so grow its
             # memory floor (clamped to the action ceiling) before re-queuing.
             # Steps only — `action:` entries carry no baseline_resources and

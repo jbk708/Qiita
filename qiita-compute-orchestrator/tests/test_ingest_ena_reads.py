@@ -247,8 +247,7 @@ def test_stale_partial_does_not_count_as_ingested(fake_mint, monkeypatch, tmp_pa
 
 def test_mid_stream_skip_warning_is_retriable(fake_mint, monkeypatch, tmp_path):
     """A skip warning (even alongside returned rows -- a mid-stream truncation)
-    fails the step retriably: miint says a re-run recovers the data, and the
-    incomplete read set is never registered."""
+    fails the step retriably, and the incomplete read set is never registered."""
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
         _write_intermediate(intermediate_path, [(1, "r1", "ACGT", None, None, None)])
@@ -266,12 +265,13 @@ def test_mid_stream_skip_warning_is_retriable(fake_mint, monkeypatch, tmp_path):
     assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
     assert exc.value.transient is True
     assert "ERR001" in exc.value.reason
+    assert "re-run" in exc.value.reason
     assert fake_mint == []  # never reached the mint — failed before it
 
 
 def test_skip_warning_without_transport_wording_is_retriable(fake_mint, monkeypatch, tmp_path):
-    """Truncation inside a gzip member has no transient marker in its text but is
-    still recovered by a re-run, so the skip itself decides the kind."""
+    """Truncation inside a gzip member has no transient marker in its text, so the
+    skip itself decides the kind."""
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
         _write_intermediate(intermediate_path, [(1, "r1", "ACGT", None, None, None)])
@@ -306,6 +306,7 @@ def test_open_failure_skip_warning_is_retriable(fake_mint, monkeypatch, tmp_path
         _run(inputs, tmp_path / "ws")
     assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
     assert "zero reads" not in exc.value.reason
+    assert "re-run" not in exc.value.reason
     assert fake_mint == []
 
 
@@ -425,6 +426,7 @@ def test_md5_mismatch_fetch_error_is_retriable(fake_mint, monkeypatch, tmp_path)
     assert exc.value.transient is True
     assert "fastq_md5" in exc.value.reason.lower()
     assert "ena portal api" in exc.value.reason.lower()
+    assert "retried" not in exc.value.reason
 
 
 def test_md5_error_with_transient_marker_still_classifies_transient(
@@ -447,6 +449,49 @@ def test_md5_error_with_transient_marker_still_classifies_transient(
     assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
     assert exc.value.transient is True
     assert "fastq_md5" not in exc.value.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Several failed runs in one pool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("permanent_first", [True, False])
+def test_permanent_failure_wins_over_transient_in_any_roster_order(
+    fake_mint, monkeypatch, tmp_path, permanent_first
+):
+    """A permanent run must not be retried behind a transient one, whatever the
+    roster order, and the reason names every failed run."""
+    bad = "ERR001" if permanent_first else "ERR002"
+
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        if run_accession == bad:
+            raise duckdb.InvalidInputException("read_ena_sequences: malformed FASTQ record")
+        raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value.kind == FailureKind.BAD_INPUT
+    assert exc.value.transient is False
+    assert "ERR001" in exc.value.reason
+    assert "ERR002" in exc.value.reason
+
+
+def test_transient_failures_name_every_failed_run(fake_mint, monkeypatch, tmp_path):
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
+    assert "ERR001" in exc.value.reason
+    assert "ERR002" in exc.value.reason
 
 
 # ---------------------------------------------------------------------------
