@@ -24,6 +24,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
     seed_prep_sample_to_study_link,
 )
+
 from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 _CHUNK_BP = 4_096

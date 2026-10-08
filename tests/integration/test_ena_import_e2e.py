@@ -24,7 +24,6 @@ from qiita_common.actions import ActionDefinition, WorkflowAction
 from qiita_common.api_paths import LOOPBACK_HOST
 from qiita_common.auth_constants import SystemRole
 from qiita_common.models.ena_import import BatchItemState
-
 from qiita_control_plane.auth.principal import HumanUser
 from qiita_control_plane.dispatch import build_dispatch_semaphore
 from qiita_control_plane.ena_import import (
@@ -39,24 +38,21 @@ from qiita_control_plane.repositories.sequenced_sample import (
     fetch_sequenced_pool_ena_run_roster,
 )
 from qiita_control_plane.testing.db_seeds import seed_user_principal
+from qiita_control_plane.testing.db_teardown import delete_principal
+
 from qiita_control_plane.testing.unique_names import (
     unique_accession,
     unique_ena_accession,
 )
 
 _DOWNLOAD_ENA_STUDY_YAML_PATH = (
-    Path(__file__).parent.parent.parent
-    / "workflows"
-    / "download-ena-study"
-    / "1.0.0.yaml"
+    Path(__file__).parent.parent.parent / "workflows" / "download-ena-study" / "1.0.0.yaml"
 )
 
 # Network-free resolver seam.
 _QUERY_STUDY = "qiita_control_plane.ena_import.miint_resolver._query_ena_study_header"
 _QUERY_RUNS = "qiita_control_plane.ena_import.miint_resolver._query_ena_runs"
-_QUERY_ATTRS = (
-    "qiita_control_plane.ena_import.miint_resolver._query_ena_sample_attributes"
-)
+_QUERY_ATTRS = "qiita_control_plane.ena_import.miint_resolver._query_ena_sample_attributes"
 
 _RUN_COLUMNS = (
     "run_accession",
@@ -158,9 +154,7 @@ def _write_ena_run_map(path: Path, roster: list[tuple[int, str]]) -> None:
     rows = ", ".join(f"({idx}, '{acc}')" for idx, acc in roster)
     with duckdb.connect(":memory:") as conn:
         conn.execute(
-            "COPY (SELECT * FROM (VALUES "
-            + rows
-            + ") AS t(prep_sample_idx, ena_run_accession)) "
+            "COPY (SELECT * FROM (VALUES " + rows + ") AS t(prep_sample_idx, ena_run_accession)) "
             f"TO '{path}' (FORMAT parquet)"
         )
 
@@ -273,9 +267,7 @@ async def batch_app(postgres_pool):
 
     yield app
 
-    pending = list(app.state.running_dispatches) + list(
-        app.state.running_ena_import_batches
-    )
+    pending = list(app.state.running_dispatches) + list(app.state.running_ena_import_batches)
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
     app.state.compute_backend_client = saved_compute_backend_client
@@ -300,8 +292,7 @@ async def admin_principal(postgres_pool):
         retired=False,
     )
     yield principal
-    await postgres_pool.execute("DELETE FROM qiita.user WHERE principal_idx = $1", pidx)
-    await postgres_pool.execute("DELETE FROM qiita.principal WHERE idx = $1", pidx)
+    await delete_principal(postgres_pool, pidx)
 
 
 @pytest_asyncio.fixture
@@ -330,9 +321,7 @@ async def download_ena_study_action(postgres_pool):
         "          $4::jsonb, $5::jsonb, 1, 1, '1 minute', 'active', 'failed')",
         DOWNLOAD_ENA_STUDY_ACTION_ID,
         DOWNLOAD_ENA_STUDY_ACTION_VERSION,
-        json.dumps(
-            {"service": False, "human_roles": ["wet_lab_admin", "system_admin"]}
-        ),
+        json.dumps({"service": False, "human_roles": ["wet_lab_admin", "system_admin"]}),
         json.dumps(
             {
                 "type": "object",
@@ -369,6 +358,20 @@ async def batch_cleanup(postgres_pool):
         )
 
 
+@pytest_asyncio.fixture
+async def ena_study_cleanup(postgres_pool):
+    """Accessions whose registered study graph is torn down after the test.
+
+    A test appends its accession as soon as it has one, so a failed assert
+    leaves no study, sample graph or sequencing run behind for the rest of the
+    session.
+    """
+    accessions: list[str] = []
+    yield accessions
+    for accession in accessions:
+        await cleanup_ena_study(postgres_pool, accession)
+
+
 # Fixture reads for the two runs sharing one biosample: 3 for run 1, 2 for
 # run 2 -- small, deterministic, distinct counts so a mismatch between the
 # two prep_samples' rows is easy to see.
@@ -390,6 +393,7 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     admin_principal,
     download_ena_study_action,
     batch_cleanup,
+    ena_study_cleanup,
     tmp_path,
     monkeypatch,
 ):
@@ -399,6 +403,7 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     asserts registration-level idempotency (no new study/biosample, no
     duplicate reads)."""
     accession = unique_ena_accession("PRJNA")
+    ena_study_cleanup.append(accession)
     shared_sample_accession = unique_accession("SAMN")
     fake_runs, fake_attrs = _make_two_runs_sharing_one_sample(shared_sample_accession)
     monkeypatch.setattr(_QUERY_STUDY, _fake_study_header)
@@ -424,9 +429,7 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
         " FROM qiita.ena_import_batch_item WHERE batch_idx = $1",
         batch_idx,
     )
-    assert item_row["state"] == BatchItemState.DOWNLOADING.value, item_row[
-        "failure_reason"
-    ]
+    assert item_row["state"] == BatchItemState.DOWNLOADING.value, item_row["failure_reason"]
     assert item_row["study_idx"] is not None
     assert len(item_row["download_work_ticket_idxs"]) == 1
     work_ticket_idx = item_row["download_work_ticket_idxs"][0]
@@ -482,9 +485,7 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     from qiita_compute_orchestrator.jobs import ingest_ena_reads
     from qiita_compute_orchestrator.sequence_range import MintedSequenceRange
 
-    monkeypatch.setattr(
-        ingest_ena_reads, "_stage_run_reads", _fake_stage_run_reads_factory(by_run)
-    )
+    monkeypatch.setattr(ingest_ena_reads, "_stage_run_reads", _fake_stage_run_reads_factory(by_run))
 
     mint_calls: list[tuple[int, int]] = []
 
@@ -555,5 +556,3 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     )
     assert biosample_count_after == 1
     assert _count_read_rows(data_plane, prep_sample_idxs) == total_reads
-
-    await cleanup_ena_study(postgres_pool, accession)

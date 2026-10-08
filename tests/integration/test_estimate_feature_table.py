@@ -49,11 +49,15 @@ from qiita_control_plane.repositories.block import (
     create_alignment_sample_pending,
     finalize_alignment_sample,
 )
+
 from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_principal,
+    teardown_entity_graph,
+)
 
 _YAML_PATH = (
     Path(__file__).parent.parent.parent
@@ -245,12 +249,7 @@ async def feature_table_scenario(postgres_pool, data_plane):
     await postgres_pool.execute(
         "DELETE FROM qiita.reference WHERE reference_idx = $1", reference_idx
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.user WHERE principal_idx = $1", principal_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.principal WHERE idx = $1", principal_idx
-    )
+    await delete_principal(postgres_pool, principal_idx)
 
 
 def _fake_alignment_stream(data_plane, *, alignment_idx, prep_sample_idx):

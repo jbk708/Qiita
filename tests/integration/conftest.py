@@ -39,7 +39,10 @@ from _pg_env import (
 )
 from qiita_common.api_paths import LOOPBACK_HOST
 from qiita_common.duckdb_miint import setup_miint_test_env  # noqa: E402
-
+from qiita_control_plane.testing.db_teardown import (
+    resolve_ena_study_idxs,
+    teardown_ena_study_graph,
+)
 from qiita_control_plane.testing.jwks import jwks_harness  # noqa: F401
 from qiita_control_plane.testing.postgres import (  # noqa: F401
     _run_db_migrations,
@@ -52,7 +55,6 @@ from qiita_control_plane.testing.sessions import (  # noqa: F401
     human_admin_session,
     regular_user_session,
 )
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 # Integration tests run native orchestrator jobs (hash_sequences,
 # stage_local_fasta, reference_load) in-process via LocalBackend, which LOAD the
@@ -223,53 +225,10 @@ async def cleanup_ena_study(pool, study_accession: str) -> None:
     """Tear down the study an ENA import registered, and its whole sample graph.
 
     `study_accession` is the bioproject accession the study was registered
-    under; nothing happens when no study carries it. The sequencing runs are
-    matched on the instrument_run_id prefix composed from that same accession.
+    under; nothing happens when no study carries it.
     """
-    study_idx = await pool.fetchval(
-        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1", study_accession
-    )
-    if study_idx is None:
-        return
-    # The link rows go with the sweep, so the entities they name are resolved
-    # while those rows still exist.
-    ps_rows = await pool.fetch(
-        "SELECT prep_sample_idx FROM qiita.prep_sample_to_study WHERE study_idx = $1",
-        study_idx,
-    )
-    bs_rows = await pool.fetch(
-        "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1",
-        study_idx,
-    )
-    run_rows = await pool.fetch(
-        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
-        f"{study_accession}:%",
-    )
-    run_idxs = [row["idx"] for row in run_rows]
-    # A ticket references its study and its prep_sample under RESTRICT, so it
-    # goes before the sweep rather than after it.
-    if run_idxs:
-        await pool.execute(
-            "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
-            " (SELECT idx FROM qiita.sequenced_pool"
-            "  WHERE sequencing_run_idx = ANY($1::bigint[]))",
-            run_idxs,
-        )
-    await teardown_entity_graph(
-        pool,
-        study_idxs=[study_idx],
-        biosample_idxs=[row["biosample_idx"] for row in bs_rows],
-        prep_sample_idxs=[row["prep_sample_idx"] for row in ps_rows],
-    )
-    if run_idxs:
-        await pool.execute(
-            "DELETE FROM qiita.sequenced_pool"
-            " WHERE sequencing_run_idx = ANY($1::bigint[])",
-            run_idxs,
-        )
-        await pool.execute(
-            "DELETE FROM qiita.sequencing_run WHERE idx = ANY($1::bigint[])", run_idxs
-        )
+    study_idxs = await resolve_ena_study_idxs(pool, [study_accession])
+    await teardown_ena_study_graph(pool, study_idxs=study_idxs, run_accessions=[study_accession])
 
 
 @pytest.fixture(scope="module")

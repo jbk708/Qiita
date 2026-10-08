@@ -143,8 +143,7 @@ def _count_read_mask_rows(data_plane, *, mask_idx: int, prep_sample_idx: int) ->
     conn = ducklake_connect(data_plane["data_path"])
     try:
         (n,) = conn.execute(
-            "SELECT count(*) FROM qiita_lake.read_mask"
-            " WHERE mask_idx = ? AND prep_sample_idx = ?",
+            "SELECT count(*) FROM qiita_lake.read_mask WHERE mask_idx = ? AND prep_sample_idx = ?",
             [mask_idx, prep_sample_idx],
         ).fetchone()
         return n

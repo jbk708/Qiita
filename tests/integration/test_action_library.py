@@ -556,8 +556,7 @@ async def test_library_mint_features_qiita_source_records_prep_sample(
     )
 
     recorded = await postgres_pool.fetchval(
-        "SELECT prep_sample_idx FROM qiita.genome"
-        " WHERE source = 'qiita' AND source_id = $1",
+        "SELECT prep_sample_idx FROM qiita.genome WHERE source = 'qiita' AND source_id = $1",
         sid,
     )
     assert recorded == prep_sample_idx
@@ -670,8 +669,7 @@ async def test_library_mint_features_qiita_reingest_updates_prep_sample(
 
     async def _current_prep():
         return await postgres_pool.fetchval(
-            "SELECT prep_sample_idx FROM qiita.genome"
-            " WHERE source = 'qiita' AND source_id = $1",
+            "SELECT prep_sample_idx FROM qiita.genome WHERE source = 'qiita' AND source_id = $1",
             sid,
         )
 

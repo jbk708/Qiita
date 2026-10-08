@@ -49,9 +49,7 @@ from qiita_common.api_paths import LOOPBACK_HOST
 from qiita_common.models.reference import Tier
 from qiita_common.taxonomy import RANK_COLUMNS
 
-from qiita_control_plane.repositories.alignment_definition import (
-    mint_alignment_definition,
-)
+from qiita_control_plane.repositories.alignment_definition import mint_alignment_definition
 from qiita_control_plane.repositories.block import (
     create_alignment_sample_pending,
     finalize_alignment_sample,
@@ -62,6 +60,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_prep_sample_to_study_link,
     seed_sequenced_sample_subtype,
 )
+
 from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 _THRESHOLD = "0.01"
@@ -135,9 +134,7 @@ def _rank_literals(lineage: tuple[str, ...]) -> str:
 
 
 @pytest.fixture
-async def publishable_cohort(
-    postgres_pool, human_admin_session, regular_user_session, data_plane
-):
+async def publishable_cohort(postgres_pool, human_admin_session, regular_user_session, data_plane):
     """Seed the whole recipe's inputs across both stores with coordinated ids, in one
     study the calling user holds `Tier.VIEWER` on.
 
@@ -380,9 +377,7 @@ async def publishable_cohort(
         "DELETE FROM qiita.genome WHERE genome_idx = ANY($1::bigint[])",
         list(genomes.values()),
     )
-    await db.execute(
-        "DELETE FROM qiita.reference WHERE reference_idx = $1", reference_idx
-    )
+    await db.execute("DELETE FROM qiita.reference WHERE reference_idx = $1", reference_idx)
 
 
 def _read_artifact(path, *, fmt: str = "parquet") -> list[tuple]:
@@ -450,16 +445,11 @@ async def test_a_user_builds_a_publishable_feature_table(
     # --- Discovery: the two verbs a user reaches for first. ---
     assert _run("alignment", "list", *pool) == 0
     listed = json.loads(capsys.readouterr().out)
-    summary = next(
-        a for a in listed["alignments"] if a["alignment_idx"] == seed["alignment_idx"]
-    )
+    summary = next(a for a in listed["alignments"] if a["alignment_idx"] == seed["alignment_idx"])
     assert (summary["samples_completed"], summary["samples_total"]) == (2, 2)
 
     assert _run("alignment", "cohort", *pool, *alignment) == 0
-    assert (
-        json.loads(capsys.readouterr().out)["prep_sample_idx"]
-        == seed["prep_sample_idxs"]
-    )
+    assert json.loads(capsys.readouterr().out)["prep_sample_idx"] == seed["prep_sample_idxs"]
 
     # --- Pooled, Parquet: the whole bundle, over the discovered cohort. ---
     pooled = out_dir / "pooled.parquet"
@@ -545,10 +535,7 @@ async def test_a_user_builds_a_publishable_feature_table(
 
     # --- Per-sample, BIOM: the stricter scope and the other writer, same recipe. ---
     per_sample = out_dir / "per-sample.biom"
-    assert (
-        _build("--coverage-scope", "per-sample", "--format", "biom", output=per_sample)
-        == 0
-    )
+    assert _build("--coverage-scope", "per-sample", "--format", "biom", output=per_sample) == 0
     # A's 0.6% per sample is under the threshold that its 1.2% pooled cleared, so the
     # only survivor is the genome one sample really covers.
     assert _read_artifact(per_sample, fmt="biom") == [(handles[ps0], src["C"], 2.0)]
@@ -568,12 +555,8 @@ async def test_a_user_builds_a_publishable_feature_table(
     # The mint is idempotent, which only a second real build can show: the two bundles
     # name the same samples the same way, so the tables above are comparable to each
     # other and a re-run does not rename anybody's columns.
-    second_map = json.loads(
-        (out_dir / "per-sample.exported-identifier.json").read_text()
-    )
-    assert {
-        e["prep_sample_idx"]: e["export_id"] for e in second_map["identifiers"]
-    } == handles
+    second_map = json.loads((out_dir / "per-sample.exported-identifier.json").read_text())
+    assert {e["prep_sample_idx"]: e["export_id"] for e in second_map["identifiers"]} == handles
 
     # --- The manifest, against the real mint and the real reference row. ---
     manifests = [

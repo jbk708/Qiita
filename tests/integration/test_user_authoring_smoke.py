@@ -31,7 +31,6 @@ import httpx
 import pytest
 from qiita_common.api_paths import URL_UPLOAD_PREFIX
 from qiita_common.models import WorkTicketState
-
 from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_ena_accession
 

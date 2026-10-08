@@ -330,8 +330,7 @@ async def test_old_order_register_then_persist_fails_filenotfound(
 
     # ...and the sequenced_sample counts stayed NULL (no metrics persisted).
     row = await postgres_pool.fetchrow(
-        "SELECT raw_read_count_r1r2 FROM qiita.sequenced_sample"
-        " WHERE prep_sample_idx = $1",
+        "SELECT raw_read_count_r1r2 FROM qiita.sequenced_sample WHERE prep_sample_idx = $1",
         prep_sample_idx,
     )
     assert row["raw_read_count_r1r2"] is None

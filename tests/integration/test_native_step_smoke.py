@@ -210,9 +210,7 @@ async def test_fastq_to_parquet_through_runner(
     # The runner places each step's outputs in
     # <workspace_root>/<work_ticket_idx>/<step_name>/attempt-0/. fastq is
     # the YAML step name; this is the SINGLETON-attempt-0 path.
-    reads_parquet = (
-        workspace_root / str(work_ticket_idx) / "fastq" / "attempt-0" / "read.parquet"
-    )
+    reads_parquet = workspace_root / str(work_ticket_idx) / "fastq" / "attempt-0" / "read.parquet"
     assert reads_parquet.exists(), f"expected read.parquet at {reads_parquet}"
 
     # Mint helper called exactly once with the fixture's read count.
@@ -231,8 +229,7 @@ async def test_fastq_to_parquet_through_runner(
     # Verify the Parquet's schema and content.
     with duckdb.connect(":memory:") as conn:
         rows = conn.execute(
-            "SELECT column_name, column_type FROM ("
-            f" DESCRIBE SELECT * FROM '{reads_parquet}')"
+            f"SELECT column_name, column_type FROM ( DESCRIBE SELECT * FROM '{reads_parquet}')"
         ).fetchall()
         # DuckDB DESCRIBE column order matches the Parquet's physical order.
         # prep_sample_idx is the DuckLake `read` table's scope/prune column
