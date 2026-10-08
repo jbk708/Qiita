@@ -21,6 +21,14 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Added
 
+- **The branch reviewer is in the repo, and a PR description records its run (#655).**
+  `.claude/agents/qiita-reviewer.md` (the rules) and `.claude/skills/qiita-review/` (the
+  review, fix, re-review loop) were per-developer files that `CLAUDE.md` already pointed
+  at; both are now tracked. The loop ends by printing a `## Reviewer loop` block — the
+  commit reviewed and what was declined, deferred or left unprobed — which the new PR
+  template carries. The `review-loop-check` job (`scripts/check-review-loop.sh`) fails a
+  PR whose description lacks the block or names a commit that is not one of the PR's
+  own; the `no-agent-review` label opts out.
 - **Bulk biosample import — `POST /api/v1/study/{study_idx}/biosample/bulk` (#656).**
   Creates many biosamples in one all-or-nothing transaction: a single failing row
   rolls the whole batch back, and the error (whatever status that row produced —
