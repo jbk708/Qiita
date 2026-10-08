@@ -28,6 +28,9 @@ access to).
 | FAILED        | Reset → PENDING and dispatch (manual restart)     |
 | CANCELLED     | Reset → PENDING and dispatch (redrive after fix)  |
 
+A download-ena-study redrive re-runs every step against the live roster, and is
+refused (409) unless it is the pool's latest download ticket.
+
 The atomic state transition guard inside `runner._atomic_transition`
 prevents double-dispatch even if `/run` races with the implicit dispatch
 fired by submission.
@@ -105,6 +108,8 @@ from ..auth.principal import Anonymous, HumanUser, Principal, ServiceAccount, ge
 from ..config import Settings
 from ..deps import get_db_pool
 from ..dispatch import schedule_dispatch
+from ..ena_import.registration import fetch_pool_download_ticket
+from ..ena_import.submit import DOWNLOAD_ENA_STUDY_ACTION_ID
 from ..fanout_dispatch import (
     COHORT_BUILDERS,
     FanoutCohort,
@@ -1662,6 +1667,37 @@ async def _reset_failed_reference_scope_for_dispatch(
         )
 
 
+async def _refuse_unsafe_download_redrive(
+    conn: asyncpg.Connection, *, work_ticket_idx: int, sequenced_pool_idx: int, current_state: str
+) -> None:
+    """409 when redriving this download ticket would duplicate a newer ticket's
+    runs, or adopt a live job that holds a stale roster."""
+    latest = await fetch_pool_download_ticket(conn, sequenced_pool_idx=sequenced_pool_idx)
+    if latest is not None and latest["work_ticket_idx"] != work_ticket_idx:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"work_ticket {work_ticket_idx} is superseded by download ticket "
+                f"{latest['work_ticket_idx']} ({latest['work_ticket_state']}) on the same "
+                "pool; redrive that one instead"
+            ),
+        )
+    if current_state == WorkTicketState.FAILED.value and await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM qiita.work_ticket_step"
+        " WHERE work_ticket_idx = $1 AND state IN ($2, $3) AND slurm_job_id IS NOT NULL)",
+        work_ticket_idx,
+        StepProgressState.SUBMITTED.value,
+        StepProgressState.RUNNING.value,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"work_ticket {work_ticket_idx} still has a live download job that may hold "
+                "an outdated run roster; cancel the ticket to reap it, then re-import the study"
+            ),
+        )
+
+
 @router.post(
     PATH_WORK_TICKET_RUN,
     response_model=WorkTicketResponse,
@@ -1678,7 +1714,8 @@ async def run_work_ticket(
     one whose original create-time dispatch was lost. State-aware (see
     table at module top)."""
     row = await pool.fetchrow(
-        "SELECT action_id, action_version, state, scope_target_kind, reference_idx"
+        "SELECT action_id, action_version, state, scope_target_kind, reference_idx,"
+        "       sequenced_pool_idx"
         " FROM qiita.work_ticket WHERE work_ticket_idx = $1",
         work_ticket_idx,
     )
@@ -1726,7 +1763,15 @@ async def run_work_ticket(
         # a redrive never half-applies. Atomic; refuses if state changed
         # under us between the SELECT and now (the WHERE binds the exact
         # from-state we read, so a concurrent flip loses the race cleanly).
+        is_download = row["action_id"] == DOWNLOAD_ENA_STUDY_ACTION_ID
         async with pool.acquire() as conn, conn.transaction():
+            if is_download:
+                await _refuse_unsafe_download_redrive(
+                    conn,
+                    work_ticket_idx=work_ticket_idx,
+                    sequenced_pool_idx=row["sequenced_pool_idx"],
+                    current_state=current_state,
+                )
             updated = await conn.fetchval(
                 "UPDATE qiita.work_ticket"
                 " SET state = $1::qiita.work_ticket_state,"
@@ -1798,6 +1843,13 @@ async def run_work_ticket(
                 redrive_after_cancel,
                 StepProgressState.FAILED.value,
             )
+            if is_download:
+                # The roster is re-read on dispatch, so a kept completed ingest would be stale.
+                await conn.execute(
+                    "DELETE FROM qiita.work_ticket_step WHERE work_ticket_idx = $1 AND state = $2",
+                    work_ticket_idx,
+                    StepProgressState.COMPLETED.value,
+                )
 
             await _reset_failed_reference_scope_for_dispatch(
                 conn,
