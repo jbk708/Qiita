@@ -35,6 +35,7 @@ from qiita_common.models import (
 )
 
 from qiita_control_plane.dispatch import build_dispatch_semaphore
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -241,12 +242,12 @@ async def prep_sample_idx(postgres_pool, admin_token):
         postgres_pool, owner_idx=admin_idx
     )
     yield idx
-    # FK RESTRICT cascade — drop dependents in reverse order. The
-    # composer used the seeded `short_read_metagenomics` prep_protocol
+    # The composer used the seeded `short_read_metagenomics` prep_protocol
     # (system-owned), so we don't delete the protocol here.
     await postgres_pool.execute("DELETE FROM qiita.work_ticket WHERE prep_sample_idx = $1", idx)
-    await postgres_pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", idx)
-    await postgres_pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", biosample_idx)
+    await teardown_entity_graph(
+        postgres_pool, study_idxs=[], biosample_idxs=[biosample_idx], prep_sample_idxs=[idx]
+    )
 
 
 @pytest.fixture
@@ -581,22 +582,11 @@ async def prep_sample_with_study_link(postgres_pool, prep_sample_idx, admin_toke
 
     yield prep_sample_idx, study_idx, admin_idx
 
-    # FK-reverse cleanup of just the rows this fixture created.
-    await postgres_pool.execute(
-        "DELETE FROM qiita.study_access WHERE study_idx = $1",
-        study_idx,
+    # Just the rows this fixture created: the samples it links are the shared
+    # prep_sample fixture's, which tears them down itself.
+    await teardown_entity_graph(
+        postgres_pool, study_idxs=[study_idx], biosample_idxs=[], prep_sample_idxs=[]
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1 AND study_idx = $2",
-        prep_sample_idx,
-        study_idx,
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1 AND study_idx = $2",
-        biosample_idx,
-        study_idx,
-    )
-    await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", study_idx)
 
 
 @pytest.fixture
