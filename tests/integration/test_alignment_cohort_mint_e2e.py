@@ -34,13 +34,16 @@ from qiita_common.api_paths import (
 )
 from qiita_common.models.reference import Tier
 
-from qiita_control_plane.repositories.alignment_definition import mint_alignment_definition
+from qiita_control_plane.repositories.alignment_definition import (
+    mint_alignment_definition,
+)
 from qiita_control_plane.testing.db_seeds import (
     seed_biosample_to_study_link,
     seed_biosample_with_sequenced_prep_sample,
     seed_prep_sample_to_study_link,
     seed_sequenced_sample_subtype,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 # Narrow on purpose: `cigar` is the wide column the projection keeps off the wire
 # unless asked for, so its absence from the result schema is the assertion.
@@ -86,9 +89,10 @@ async def two_study_pool(postgres_pool, human_admin_session, regular_user_sessio
     samples = []
     run_idx = pool_idx = None
     for i in range(2):
-        biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
-            db, owner_idx=owner
-        )
+        (
+            biosample_idx,
+            prep_sample_idx,
+        ) = await seed_biosample_with_sequenced_prep_sample(db, owner_idx=owner)
         run_idx, pool_idx, ss_idx = await seed_sequenced_sample_subtype(
             db,
             prep_sample_idx=prep_sample_idx,
@@ -99,20 +103,30 @@ async def two_study_pool(postgres_pool, human_admin_session, regular_user_sessio
         )
         samples.append((biosample_idx, prep_sample_idx, ss_idx))
 
-    for (biosample_idx, prep_sample_idx, _), study_idx in zip(samples, studies, strict=True):
+    for (biosample_idx, prep_sample_idx, _), study_idx in zip(
+        samples, studies, strict=True
+    ):
         await seed_biosample_to_study_link(
             db, biosample_idx=biosample_idx, study_idx=study_idx, created_by_idx=owner
         )
         await seed_prep_sample_to_study_link(
-            db, prep_sample_idx=prep_sample_idx, study_idx=study_idx, created_by_idx=owner
+            db,
+            prep_sample_idx=prep_sample_idx,
+            study_idx=study_idx,
+            created_by_idx=owner,
         )
 
     ps_readable, ps_hidden = samples[0][1], samples[1][1]
-    params = {"reference_idx": 1, "aligner": "minimap2", "shard_ids": [0], "t": str(uuid.uuid4())}
+    params = {
+        "reference_idx": 1,
+        "aligner": "minimap2",
+        "shard_ids": [0],
+        "t": str(uuid.uuid4()),
+    }
     async with db.acquire() as conn:
-        alignment_idx = (await mint_alignment_definition(conn, params=params, principal_idx=owner))[
-            "alignment_idx"
-        ]
+        alignment_idx = (
+            await mint_alignment_definition(conn, params=params, principal_idx=owner)
+        )["alignment_idx"]
     for prep_sample_idx in (ps_readable, ps_hidden):
         await db.execute(
             "INSERT INTO qiita.alignment_sample (alignment_idx, prep_sample_idx, state)"
@@ -132,29 +146,17 @@ async def two_study_pool(postgres_pool, human_admin_session, regular_user_sessio
 
     prep_idxs = [ps for _, ps, _ in samples]
     bio_idxs = [bs for bs, _, _ in samples]
-    ss_idxs = [ss for _, _, ss in samples]
-    await db.execute("DELETE FROM qiita.alignment_sample WHERE alignment_idx = $1", alignment_idx)
+    await teardown_entity_graph(
+        db,
+        study_idxs=studies,
+        biosample_idxs=bio_idxs,
+        prep_sample_idxs=prep_idxs,
+    )
     await db.execute(
         "DELETE FROM qiita.alignment_definition WHERE alignment_idx = $1", alignment_idx
     )
-    await db.execute(
-        "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = ANY($1::bigint[])",
-        prep_idxs,
-    )
-    await db.execute(
-        "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = ANY($1::bigint[])", bio_idxs
-    )
-    await db.execute("DELETE FROM qiita.sequenced_sample WHERE idx = ANY($1::bigint[])", ss_idxs)
     await db.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
     await db.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await db.execute("DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", prep_idxs)
-    await db.execute("DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", bio_idxs)
-    await db.execute(
-        "DELETE FROM qiita.study_access WHERE study_idx = $1 AND principal_idx = $2",
-        study_readable,
-        reader,
-    )
-    await db.execute("DELETE FROM qiita.study WHERE idx = ANY($1::bigint[])", studies)
 
 
 @pytest.fixture
@@ -193,7 +195,9 @@ async def test_user_discovers_mints_and_streams_only_their_slice(
     seed = seeded_alignment_rows
     auth = {"Authorization": f"Bearer {regular_user_session['token']}"}
 
-    async with httpx.AsyncClient(base_url=cp_server, headers=auth, timeout=30.0) as client:
+    async with httpx.AsyncClient(
+        base_url=cp_server, headers=auth, timeout=30.0
+    ) as client:
         listed = await client.get(
             URL_SEQUENCED_POOL_ALIGNMENT.format(
                 sequencing_run_idx=seed["run_idx"], sequenced_pool_idx=seed["pool_idx"]
@@ -201,7 +205,9 @@ async def test_user_discovers_mints_and_streams_only_their_slice(
         )
         assert listed.status_code == 200, listed.text
         summary = next(
-            a for a in listed.json()["alignments"] if a["alignment_idx"] == seed["alignment_idx"]
+            a
+            for a in listed.json()["alignments"]
+            if a["alignment_idx"] == seed["alignment_idx"]
         )
         # Caller-scoped counts: the alignment really covers two samples.
         assert (summary["samples_completed"], summary["samples_total"]) == (1, 1)
