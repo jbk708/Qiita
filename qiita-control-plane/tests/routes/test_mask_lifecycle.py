@@ -33,6 +33,7 @@ from qiita_control_plane.repositories.mask_definition import (
 from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -94,14 +95,13 @@ async def lifecycle(postgres_pool, human_admin_session):
         "ps_done": ps_done,
         "ps_pending": ps_pend,
     }
-    await postgres_pool.execute("DELETE FROM qiita.mask_sample WHERE mask_idx = $1", mask_idx)
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[bs_done, bs_pend],
+        prep_sample_idxs=[ps_done, ps_pend],
+    )
     await postgres_pool.execute("DELETE FROM qiita.mask_definition WHERE mask_idx = $1", mask_idx)
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", [ps_done, ps_pend]
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", [bs_done, bs_pend]
-    )
 
 
 async def _deprecate(client, mask_idx, reason="rype_classify scored wrongly"):

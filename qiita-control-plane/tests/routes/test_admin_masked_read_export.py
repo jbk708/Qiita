@@ -38,6 +38,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -97,14 +98,14 @@ async def seeded(ctx):
         "UPDATE qiita.biosample SET biosample_accession = $1 WHERE idx = $2", acc_a, bs_a
     )
     ps_a = await seed_sequenced_prep_sample(pool, biosample_idx=bs_a, owner_idx=owner)
-    run_idx, pool_idx, ss_a = await seed_sequenced_sample_subtype(
+    run_idx, pool_idx, _ss_a = await seed_sequenced_sample_subtype(
         pool, prep_sample_idx=ps_a, owner_idx=owner, sequenced_pool_item_id=f"item-a-{token}"
     )
 
     # Sample B — no accession; same pool.
     bs_b = await seed_biosample(pool, owner_idx=owner, created_by_idx=owner)
     ps_b = await seed_sequenced_prep_sample(pool, biosample_idx=bs_b, owner_idx=owner)
-    ss_b = await pool.fetchval(
+    await pool.fetchval(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
         " VALUES ($1, $2, $3, $4) RETURNING idx",
@@ -124,7 +125,7 @@ async def seeded(ctx):
         ps_c,
         owner,
     )
-    ss_c = await pool.fetchval(
+    await pool.fetchval(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
         " VALUES ($1, $2, $3, $4) RETURNING idx",
@@ -137,7 +138,7 @@ async def seeded(ctx):
     # Sample D — ENA-flagged sequenced_sample; same pool. Excluded from the roster.
     bs_d = await seed_biosample(pool, owner_idx=owner, created_by_idx=owner)
     ps_d = await seed_sequenced_prep_sample(pool, biosample_idx=bs_d, owner_idx=owner)
-    ss_d = await pool.fetchval(
+    await pool.fetchval(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx,"
         "   ena_status, ena_availability_checked_at)"
@@ -170,21 +171,14 @@ async def seeded(ctx):
         "ps_d": ps_d,
     }
 
-    # mask_sample rows (a test may insert them to exercise the completion gate)
-    # FK into BOTH prep_sample and mask_definition, so drop them first.
-    await pool.execute("DELETE FROM qiita.mask_sample WHERE mask_idx = $1", mask_idx)
-    await pool.execute(
-        "DELETE FROM qiita.sequenced_sample WHERE idx = ANY($1::bigint[])",
-        [ss_a, ss_b, ss_c, ss_d],
+    await teardown_entity_graph(
+        pool,
+        study_idxs=[],
+        biosample_idxs=[bs_a, bs_b, bs_c, bs_d],
+        prep_sample_idxs=[ps_a, ps_b, ps_c, ps_d],
     )
     await pool.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
     await pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
-    await pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", [ps_a, ps_b, ps_c, ps_d]
-    )
-    await pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", [bs_a, bs_b, bs_c, bs_d]
-    )
     await pool.execute("DELETE FROM qiita.mask_definition WHERE mask_idx = $1", mask_idx)
 
 
