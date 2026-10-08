@@ -168,10 +168,10 @@ async def planned(ctx, monkeypatch):
                 study_idx=study_idx,
                 created_by_idx=owner,
             )
-        await db.fetchval(
+        await db.execute(
             "INSERT INTO qiita.biosample_metadata"
             " (biosample_idx, biosample_study_field_idx, value_missing_reason_idx, created_by_idx)"
-            " VALUES ($1, $2, $3, $4) RETURNING idx",
+            " VALUES ($1, $2, $3, $4)",
             bs,
             field_idx,
             not_applicable_idx,

@@ -1,14 +1,13 @@
 """Pytest seed and state-change helpers for DB-row fixtures.
 
 Plain async functions (not pytest fixtures) so callers can pass test-local
-arguments. Helpers fall into three groups: seeders that insert rows and return
-the new idx, state-changers that update existing rows (disabling, retiring,
-etc.), and lookup helpers for migration-seeded reference data that every test
-DB carries. Cleanup is the caller's responsibility (route tests do FK-reverse
-cleanup against a per-test `created` tracker; integration tests may rely on a
-session-scoped truncate). Helpers are pool-based and commit their writes — for
-repository-layer trigger tests that roll back, build the SQL inline against the
-open connection instead.
+arguments, covering what a DB-row fixture needs to insert its rows, move them
+between states, and look up the reference data every test DB carries. Cleanup
+is the caller's responsibility: the study / biosample / prep_sample graph goes
+through the ordered sweep, a caller's own parents through its own teardown, and
+integration tests may rely on a session-scoped truncate. Helpers are pool-based
+and commit their writes — for repository-layer trigger tests that roll back,
+build the SQL inline against the open connection instead.
 """
 
 import json
@@ -49,6 +48,17 @@ NCBI_TAXONOMY_METAGENOME_TERM_ID = "256318"
 SEEDED_TERMINOLOGY_LOADED_AT = datetime(2026, 1, 15, 12, 30, 0, tzinfo=UTC)
 
 
+def _reject_non_identifiers(caller: str, *names: str) -> None:
+    """Raise unless every name is a bare identifier.
+
+    These names are interpolated into the statement rather than bound, which
+    no placeholder can do for a table or a column.
+    """
+    for name in names:
+        if not name.isidentifier():
+            raise ValueError(f"{caller} rejects a non-identifier name: {name!r}")
+
+
 async def delete_idxs(pool: asyncpg.Pool, table: str, idxs) -> None:
     """Delete rows by idx from qiita.<table>.
 
@@ -57,6 +67,7 @@ async def delete_idxs(pool: asyncpg.Pool, table: str, idxs) -> None:
     auto-seeded idx without wrapping it in a list. `table` is interpolated into
     the statement, so it must be a literal the caller wrote, never input.
     """
+    _reject_non_identifiers("delete_idxs", table)
     # Normalize a bare int into a one-element list so callers can pass either.
     if isinstance(idxs, int):
         idxs = [idxs]

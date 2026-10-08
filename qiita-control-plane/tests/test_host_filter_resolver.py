@@ -173,11 +173,11 @@ async def _make_biosample(ctx):
 
 async def _set_host_term(ctx, biosample_idx, term_idx):
     """Write host_taxon_id as a terminology term on the biosample."""
-    await ctx["pool"].fetchval(
+    await ctx["pool"].execute(
         "INSERT INTO qiita.biosample_metadata"
         " (biosample_idx, biosample_study_field_idx, value_terminology_term_idx,"
         "  created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx",
+        " VALUES ($1, $2, $3, $4)",
         biosample_idx,
         ctx["field_idx"],
         term_idx,
@@ -189,11 +189,11 @@ async def _set_host_missing_reason(ctx, biosample_idx, reason_name):
     """Write host_taxon_id as a missing-reason on the biosample."""
     reason_idx = await fetch_missing_value_reason_idx(ctx["pool"], reason_name)
     assert reason_idx is not None, f"missing_value_reason {reason_name!r} should be seeded"
-    await ctx["pool"].fetchval(
+    await ctx["pool"].execute(
         "INSERT INTO qiita.biosample_metadata"
         " (biosample_idx, biosample_study_field_idx, value_missing_reason_idx,"
         "  created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx",
+        " VALUES ($1, $2, $3, $4)",
         biosample_idx,
         ctx["field_idx"],
         reason_idx,

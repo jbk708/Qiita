@@ -33,7 +33,7 @@ _PREFIX = "sa-route"
 
 @pytest_asyncio.fixture
 async def ctx(role_keyed_clients):
-    created: dict = {"study_access": [], "study": [], "user_principals": []}
+    created: dict = {"study": [], "user_principals": []}
     yield {**role_keyed_clients, "created": created}
     await _cleanup(role_keyed_clients["pool"], created)
 

@@ -1215,7 +1215,7 @@ async def test_patch_study_field_widen_admits_a_concurrent_write(ctx, surface, m
     insert_sql = (
         f"INSERT INTO {spec.metadata_table} ({spec.entity_key_column},"
         f" {spec.study_field_idx_column}, value_numeric, created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx"
+        " VALUES ($1, $2, $3, $4)"
     )
     seam_ran = False
     original_widen = route_helpers.widen_study_field_to_text
@@ -1235,7 +1235,7 @@ async def test_patch_study_field_widen_admits_a_concurrent_write(ctx, surface, m
         # preflight holds, and must not be made to wait for it.
         async with ctx["pool"].acquire() as writer, writer.transaction():
             await writer.execute(f"SET LOCAL lock_timeout = '{CONTENDED_WRITE_LOCK_TIMEOUT}'")
-            await writer.fetchval(insert_sql, entity_idx, target_idx, Decimal("2.5"), owner_idx)
+            await writer.execute(insert_sql, entity_idx, target_idx, Decimal("2.5"), owner_idx)
 
         return await original_widen(conn, **kwargs)
 

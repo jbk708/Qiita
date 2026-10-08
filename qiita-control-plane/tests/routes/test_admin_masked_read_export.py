@@ -105,10 +105,10 @@ async def seeded(ctx):
     # Sample B — no accession; same pool.
     bs_b = await seed_biosample(pool, owner_idx=owner, created_by_idx=owner)
     ps_b = await seed_sequenced_prep_sample(pool, biosample_idx=bs_b, owner_idx=owner)
-    await pool.fetchval(
+    await pool.execute(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx",
+        " VALUES ($1, $2, $3, $4)",
         ps_b,
         pool_idx,
         f"item-b-{token}",
@@ -125,10 +125,10 @@ async def seeded(ctx):
         ps_c,
         owner,
     )
-    await pool.fetchval(
+    await pool.execute(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx",
+        " VALUES ($1, $2, $3, $4)",
         ps_c,
         pool_idx,
         f"item-c-{token}",
@@ -138,11 +138,11 @@ async def seeded(ctx):
     # Sample D — ENA-flagged sequenced_sample; same pool. Excluded from the roster.
     bs_d = await seed_biosample(pool, owner_idx=owner, created_by_idx=owner)
     ps_d = await seed_sequenced_prep_sample(pool, biosample_idx=bs_d, owner_idx=owner)
-    await pool.fetchval(
+    await pool.execute(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx,"
         "   ena_status, ena_availability_checked_at)"
-        " VALUES ($1, $2, $3, $4, 'suppressed', now()) RETURNING idx",
+        " VALUES ($1, $2, $3, $4, 'suppressed', now())",
         ps_d,
         pool_idx,
         f"item-d-{token}",

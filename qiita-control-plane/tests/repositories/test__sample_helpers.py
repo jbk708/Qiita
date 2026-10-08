@@ -932,10 +932,10 @@ async def test_write_global_metadata_or_diagnose_propagates_study_field_conflict
     display_name = unique_field_name("sfconf")
 
     # Pre-create a study_field at this (study, display_name) bound to gf_a.
-    await ctx["pool"].fetchval(
+    await ctx["pool"].execute(
         "INSERT INTO qiita.biosample_study_field"
         "  (study_idx, biosample_global_field_idx, display_name, created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx",
+        " VALUES ($1, $2, $3, $4)",
         ctx["study_idx"],
         gf_a,
         display_name,

@@ -3346,10 +3346,10 @@ async def _bind_host_taxon_field(ctx, study_idx):
 async def _write_host_taxon(ctx, *, biosample_idx, field_idx, term_idx=None, reason_idx=None):
     """Write the sample's host_taxon_id as either a terminology term or a missing-reason."""
     column = "value_terminology_term_idx" if term_idx is not None else "value_missing_reason_idx"
-    await ctx["pool"].fetchval(
+    await ctx["pool"].execute(
         f"INSERT INTO qiita.biosample_metadata"
         f" (biosample_idx, biosample_study_field_idx, {column}, created_by_idx)"
-        f" VALUES ($1, $2, $3, $4) RETURNING idx",
+        f" VALUES ($1, $2, $3, $4)",
         biosample_idx,
         field_idx,
         term_idx if term_idx is not None else reason_idx,

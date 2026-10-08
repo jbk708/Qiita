@@ -20,7 +20,6 @@ from qiita_control_plane.testing.db_seeds import (
     seed_user_principal,
 )
 from qiita_control_plane.testing.db_teardown import (
-    _ENTITY_KEY_COLUMNS,
     _ENTITY_TABLES,
     _GENOME_KEY_COLUMN,
     BIOSAMPLE,
@@ -29,12 +28,12 @@ from qiita_control_plane.testing.db_teardown import (
     SWEEP_TIERS,
     UNSWEPT_ENTITY_TABLES,
     EntityGraphNotSweptError,
+    _entity_keyed_candidates,
+    _sweep_table,
     assert_entity_graph_swept,
     delete_principal,
     teardown_entity_graph,
 )
-
-pytestmark = pytest.mark.db
 
 
 def _sweep_drift_message(drift: dict[str, list[str]]) -> str:
@@ -42,8 +41,9 @@ def _sweep_drift_message(drift: dict[str, list[str]]) -> str:
         f"SWEEP_TIERS has drifted from the qiita schema: {drift}."
         " A table keyed on an entity or on a genome must be added to the tier"
         " that deletes it before its parents, or named in UNSWEPT_ENTITY_TABLES"
-        " with the reason it is not swept; a table no longer in the schema"
-        " must go."
+        " with the reason it is not swept; a swept table must name every such"
+        " key it carries, since a row is matched on whichever one is in range;"
+        " a table no longer in the schema must go."
     )
 
 
@@ -89,6 +89,8 @@ async def graph(postgres_pool):
             " (SELECT genome_idx FROM qiita.genome WHERE prep_sample_idx = $1)",
             prep_sample_idx,
         )
+    # Replaying SWEEP_TIERS here would miss whatever the function under test
+    # misses; test_sweep_tiers_matches_the_live_schema is what closes that.
     # Each column is matched on its own entity, the way the function under test
     # does. Handing every column all three idxs would delete another test's rows
     # whenever the idxs collide, which they do: study.idx and prep_sample.idx
@@ -115,6 +117,7 @@ async def graph(postgres_pool):
     await delete_idxs(postgres_pool, "principal", principal_idx)
 
 
+@pytest.mark.db
 async def test_teardown_entity_graph_sweeps_the_whole_graph(postgres_pool, graph):
     """Tests the case where entities carrying children are torn down.
 
@@ -141,6 +144,7 @@ async def test_teardown_entity_graph_sweeps_the_whole_graph(postgres_pool, graph
     assert survivors == {"sequenced_sample": 0, "prep_sample": 0, "biosample": 0, "study": 0}
 
 
+@pytest.mark.db
 async def test_teardown_entity_graph_sweeps_an_assembly_derived_genome(postgres_pool, graph):
     """Tests the case where a prep_sample has produced a genome.
 
@@ -168,6 +172,7 @@ async def test_teardown_entity_graph_sweeps_an_assembly_derived_genome(postgres_
     await postgres_pool.execute("DELETE FROM qiita.feature WHERE feature_idx = $1", feature_idx)
 
 
+@pytest.mark.db
 async def test_teardown_entity_graph_leaves_an_external_genome(postgres_pool, graph):
     """Tests the case where an unrelated reference genome shares the database.
 
@@ -187,6 +192,7 @@ async def test_teardown_entity_graph_leaves_an_external_genome(postgres_pool, gr
     await postgres_pool.execute("DELETE FROM qiita.genome WHERE genome_idx = $1", external_idx)
 
 
+@pytest.mark.db
 async def test_assert_entity_graph_swept_names_the_table_the_sweep_missed(postgres_pool, graph):
     """Tests the case where a table carrying an entity idx is not in the sweep list.
 
@@ -203,6 +209,7 @@ async def test_assert_entity_graph_swept_names_the_table_the_sweep_missed(postgr
         )
 
 
+@pytest.mark.db
 async def test_teardown_entity_graph_accepts_empty_lists(postgres_pool):
     """Tests the case where a caller created none of some entity kind."""
     await teardown_entity_graph(
@@ -210,6 +217,7 @@ async def test_teardown_entity_graph_accepts_empty_lists(postgres_pool):
     )
 
 
+@pytest.mark.db
 async def test_delete_principal_removes_the_user_row_first(postgres_pool):
     """Tests the case where a principal with a user row is deleted.
 
@@ -231,23 +239,17 @@ async def test_delete_principal_removes_the_user_row_first(postgres_pool):
     assert survivors == {"user": 0, "principal": 0}
 
 
+@pytest.mark.db
 async def test_sweep_tiers_matches_the_live_schema(postgres_pool):
     """Tests the case where the schema and the sweep list have moved apart.
 
     `assert_entity_graph_swept` only names a forgotten table once some test
     seeds a row into it. This fails on the schema alone, so a table added to a
     migration is caught whether or not anything exercises it yet. It walks the
-    same columns that assertion does, genome included, so a table reached only
-    through a genome is covered too.
+    assertion's own candidate query, genome included, and checks both halves of
+    an entry: that the table is swept, and that it names every key it carries.
     """
-    entity_keyed = await postgres_pool.fetch(
-        "SELECT DISTINCT c.table_name FROM information_schema.columns c"
-        "  JOIN information_schema.tables t"
-        "    ON t.table_schema = c.table_schema AND t.table_name = c.table_name"
-        " WHERE c.table_schema = 'qiita' AND t.table_type = 'BASE TABLE'"
-        "   AND c.column_name = ANY($1::text[])",
-        [*_ENTITY_KEY_COLUMNS.values(), _GENOME_KEY_COLUMN],
-    )
+    entity_keyed = await _entity_keyed_candidates(postgres_pool)
     all_tables = await postgres_pool.fetch(
         "SELECT table_name FROM information_schema.tables"
         " WHERE table_schema = 'qiita' AND table_type = 'BASE TABLE'"
@@ -255,15 +257,30 @@ async def test_sweep_tiers_matches_the_live_schema(postgres_pool):
 
     swept = {table for tier in SWEEP_TIERS for table, _keys in tier}
     accounted_for = swept | _ENTITY_TABLES | UNSWEPT_ENTITY_TABLES
+    # A swept table must name every entity key it carries, not just one of them:
+    # a row whose other key is out of range is matched on the key that is in it.
+    declared_keys = {
+        (table, column) for tier in SWEEP_TIERS for table, keys in tier for column, _key in keys
+    }
+    # qiita.genome carries genome_idx as its own primary key rather than as a
+    # reference to a parent, so it is keyed on the prep_sample that made it.
+    carried_keys = {
+        (row["table_name"], row["column_name"])
+        for row in entity_keyed
+        if row["table_name"] in swept
+        and (row["table_name"], row["column_name"]) != ("genome", _GENOME_KEY_COLUMN)
+    }
     drift = {
         "missing_from_sweep": sorted({row["table_name"] for row in entity_keyed} - accounted_for),
         "absent_from_schema": sorted(swept - {row["table_name"] for row in all_tables}),
+        "keys_not_declared": sorted(carried_keys - declared_keys),
     }
 
-    expected = {"missing_from_sweep": [], "absent_from_schema": []}
+    expected = {"missing_from_sweep": [], "absent_from_schema": [], "keys_not_declared": []}
     assert drift == expected, _sweep_drift_message(drift)
 
 
+@pytest.mark.db
 async def test_assert_entity_graph_swept_names_a_missed_genome_table(postgres_pool, graph):
     """Tests the case where a table hanging off a genome survives the sweep.
 
@@ -295,3 +312,124 @@ async def test_assert_entity_graph_swept_names_a_missed_genome_table(postgres_po
     )
     await postgres_pool.execute("DELETE FROM qiita.genome WHERE genome_idx = $1", genome_idx)
     await postgres_pool.execute("DELETE FROM qiita.feature WHERE feature_idx = $1", feature_idx)
+
+
+@pytest.mark.db
+async def test_teardown_entity_graph_sweeps_a_link_row_by_either_side(postgres_pool, graph):
+    """Tests the case where a link row names one entity in range and one outside it.
+
+    biosample_to_study is keyed on both its sides, and a caller can hand over a
+    biosample without the second study it is linked to. Matching any one key is
+    what carries that row out; requiring every key would strand it, and the
+    assertion would then name biosample_to_study rather than let the teardown
+    reach its entity delete.
+    """
+    other_study_idx = await seed_study(
+        postgres_pool, owner_idx=graph["principal_idx"], title="teardown probe unswept study"
+    )
+    try:
+        await postgres_pool.execute(
+            "INSERT INTO qiita.biosample_to_study (biosample_idx, study_idx, created_by_idx)"
+            " VALUES ($1, $2, $3)",
+            graph["biosample_idx"],
+            other_study_idx,
+            graph["principal_idx"],
+        )
+
+        await teardown_entity_graph(
+            postgres_pool,
+            study_idxs=[graph["study_idx"]],
+            biosample_idxs=[graph["biosample_idx"]],
+            prep_sample_idxs=[graph["prep_sample_idx"]],
+        )
+
+        survivors = {
+            "biosample_to_study": await _count(
+                postgres_pool, "biosample_to_study", "study_idx", [other_study_idx]
+            ),
+            "study": await _count(postgres_pool, "study", "idx", [other_study_idx]),
+        }
+        assert survivors == {"biosample_to_study": 0, "study": 1}
+    finally:
+        # The fixture's replay cannot reach this study, and its owner is the
+        # principal that replay deletes under RESTRICT, so a failed assert here
+        # would otherwise surface as a foreign-key error in teardown.
+        await postgres_pool.execute(
+            "DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", other_study_idx
+        )
+        await delete_idxs(postgres_pool, "study", other_study_idx)
+
+
+@pytest.mark.db
+async def test_teardown_entity_graph_leaves_a_reference_exclusion(postgres_pool, graph):
+    """Tests the case where an exclusion names a genome the teardown deletes.
+
+    An exclusion carries its genome as a bare BIGINT and is meant to outlive it,
+    so the assertion has to pass over the table rather than report the row as a
+    survivor and refuse the teardown.
+    """
+    genome_idx, _source_id = await seed_genome(
+        postgres_pool, source=GenomeSource.QIITA, prep_sample_idx=graph["prep_sample_idx"]
+    )
+    exclusion_idx = await postgres_pool.fetchval(
+        "INSERT INTO qiita.reference_exclusion (genome_idx, reason, excluded_by_idx)"
+        " VALUES ($1, $2, $3) RETURNING reference_exclusion_idx",
+        genome_idx,
+        "teardown probe",
+        graph["principal_idx"],
+    )
+
+    try:
+        await teardown_entity_graph(
+            postgres_pool,
+            study_idxs=[graph["study_idx"]],
+            biosample_idxs=[graph["biosample_idx"]],
+            prep_sample_idxs=[graph["prep_sample_idx"]],
+        )
+
+        survivors = {
+            "reference_exclusion": await _count(
+                postgres_pool, "reference_exclusion", "genome_idx", [genome_idx]
+            ),
+            "genome": await _count(postgres_pool, "genome", "genome_idx", [genome_idx]),
+        }
+        assert survivors == {"reference_exclusion": 1, "genome": 0}
+    finally:
+        # The exclusion is deliberately unswept and references the principal
+        # under RESTRICT, so leaving it would fail the fixture's own teardown.
+        await postgres_pool.execute(
+            "DELETE FROM qiita.reference_exclusion WHERE reference_exclusion_idx = $1",
+            exclusion_idx,
+        )
+
+
+async def test_delete_idxs_rejects_a_non_identifier_table():
+    """Tests the case where the interpolated table name is not a bare identifier."""
+    with pytest.raises(ValueError, match="non-identifier name"):
+        await delete_idxs(None, "study; SELECT 1 --", [1])
+
+
+async def test__sweep_table_rejects_a_non_identifier_table():
+    """Tests the case where the interpolated table name is not a bare identifier."""
+    with pytest.raises(ValueError, match="non-identifier name"):
+        await _sweep_table(
+            None,
+            "study_access; SELECT 1 --",
+            (("study_idx", STUDY),),
+            {STUDY: [1]},
+        )
+
+
+async def test__sweep_table_rejects_a_non_identifier_column():
+    """Tests the case where an interpolated column name is not a bare identifier.
+
+    The keys are interpolated alongside the table, so a bad one has to be
+    refused on the same terms rather than ride in behind a clean table name.
+    """
+    with pytest.raises(ValueError, match="non-identifier name"):
+        await _sweep_table(
+            None,
+            "study_access",
+            (("study_idx; SELECT 1 --", STUDY),),
+            {STUDY: [1]},
+        )

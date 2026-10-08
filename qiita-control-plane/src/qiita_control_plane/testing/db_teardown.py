@@ -9,7 +9,7 @@ study link.
 
 import asyncpg
 
-from .db_seeds import delete_idxs
+from .db_seeds import _reject_non_identifiers, delete_idxs
 
 STUDY = "study"
 BIOSAMPLE = "biosample"
@@ -33,7 +33,10 @@ GENOME_OF_PREP_SAMPLE = "genome_of_prep_sample"
 SWEEP_TIERS = (
     (
         ("alignment_sample", (("prep_sample_idx", PREP_SAMPLE),)),
-        ("assembly_membership", (("prep_sample_idx", PREP_SAMPLE),)),
+        (
+            "assembly_membership",
+            (("genome_idx", GENOME_OF_PREP_SAMPLE), ("prep_sample_idx", PREP_SAMPLE)),
+        ),
         ("assembly_sample", (("prep_sample_idx", PREP_SAMPLE),)),
         ("biosample_field_exception", (("biosample_idx", BIOSAMPLE),)),
         ("biosample_metadata", (("biosample_idx", BIOSAMPLE),)),
@@ -119,6 +122,25 @@ async def _fetch_genome_idxs(pool: asyncpg.Pool, prep_sample_idxs: list[int]) ->
     return genome_idxs
 
 
+async def _entity_keyed_candidates(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    """Return every (table_name, column_name) in qiita keyed on an entity or a genome.
+
+    Base tables only: a view carrying one of these columns would report its rows
+    as survivors, and the entity skip matches on table name, so a view over an
+    entity table carries a different one and slips past it.
+    """
+    rows = await pool.fetch(
+        "SELECT c.table_name, c.column_name FROM information_schema.columns c"
+        "  JOIN information_schema.tables t"
+        "    ON t.table_schema = c.table_schema AND t.table_name = c.table_name"
+        " WHERE c.table_schema = 'qiita' AND t.table_type = 'BASE TABLE'"
+        "   AND c.column_name = ANY($1::text[])"
+        " ORDER BY c.table_name, c.column_name",
+        [*_ENTITY_KEY_COLUMNS.values(), _GENOME_KEY_COLUMN],
+    )
+    return rows
+
+
 async def _sweep_table(
     pool: asyncpg.Pool,
     table: str,
@@ -126,6 +148,7 @@ async def _sweep_table(
     idxs: dict[str, list[int]],
 ) -> None:
     """Delete one table's rows for the named entities, matching any of its keys."""
+    _reject_non_identifiers("_sweep_table", table, *(column for column, _key in keys))
     clauses: list[str] = []
     args: list[list[int]] = []
     for column, key in keys:
@@ -164,12 +187,7 @@ async def assert_entity_graph_swept(
         PREP_SAMPLE: prep_sample_idxs,
         GENOME_OF_PREP_SAMPLE: list(genome_idxs or ()),
     }
-    candidates = await pool.fetch(
-        "SELECT table_name, column_name FROM information_schema.columns"
-        " WHERE table_schema = 'qiita' AND column_name = ANY($1::text[])"
-        " ORDER BY table_name, column_name",
-        [*_ENTITY_KEY_COLUMNS.values(), _GENOME_KEY_COLUMN],
-    )
+    candidates = await _entity_keyed_candidates(pool)
     for row in candidates:
         table, column = row["table_name"], row["column_name"]
         # prep_sample is the only entity table this query reaches — study and
@@ -180,6 +198,7 @@ async def assert_entity_graph_swept(
         # what this is here to catch.
         if table in _ENTITY_TABLES or table in UNSWEPT_ENTITY_TABLES:
             continue
+        _reject_non_identifiers("assert_entity_graph_swept", table, column)
         named = idxs[_KEY_BY_COLUMN[column]]
         if not named:
             continue

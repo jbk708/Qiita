@@ -205,11 +205,11 @@ async def test_pool_filtered_export_excludes_flagged(ctx, seeded):
         seeded["study_idx"],
         owner,
     )
-    await pool.fetchval(
+    await pool.execute(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx,"
         "   ena_status, ena_availability_checked_at)"
-        " VALUES ($1, $2, $3, $4, 'suppressed', now()) RETURNING idx",
+        " VALUES ($1, $2, $3, $4, 'suppressed', now())",
         ps_d,
         seeded["pool_idx"],
         f"item-d-{token}",

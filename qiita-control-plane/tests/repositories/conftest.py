@@ -300,7 +300,7 @@ async def _create_biosample_with_link(ctx):
 
 
 async def _create_local_field(ctx, suffix=""):
-    """Helper: create a purely-local biosample_study_field, track for cleanup."""
+    """Helper: create a purely-local biosample_study_field."""
     field_name = f"{unique_field_name()}_{suffix}"
     idx = await seed_local_study_field(
         ctx["pool"],
@@ -315,8 +315,8 @@ async def _create_local_field(ctx, suffix=""):
 
 async def _create_prep_sample_with_link(ctx):
     """Helper: create a biosample+link, then a sequenced prep_sample linked
-    to ctx['study_idx'], tracking prep_sample / prep_sample_to_study for
-    cleanup. Returns the prep_sample idx.
+    to ctx['study_idx'], tracking prep_sample for cleanup. Returns the
+    prep_sample idx.
 
     The prep_sample requires its biosample to carry a biosample_to_study
     link (prep_sample_to_study_reject_without_biosample_link trigger), so

@@ -4004,6 +4004,16 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **Control-plane tests tear down their fixtures by parent FK rather than by tracked
+  row (#N).** A test passes `teardown_entity_graph` the idxs of its study, biosample
+  and prep_sample, and the helper deletes every row that hangs off them. That now
+  includes rows which a trigger or a cascade created, and which the per-row
+  bookkeeping it replaces could never delete, because nothing had recorded them. The
+  parents above that graph — e.g., pools, runs, principals — are still the caller's own to
+  clean up. A parity test compares the sweep list against the live schema, and fails
+  when a table that is keyed on one of these entities is missing from the list, or is
+  swept without naming every key that it carries. Table and column names that these
+  helpers interpolate into SQL are now rejected unless they are bare identifiers.
 - **`qiita biosample create-field` validates its flags before reading the auth token
   (#639).** An invalid flag combination now exits 2 naming the flag, where it previously
   reported a missing token first and left the real problem to be found on the retry. The

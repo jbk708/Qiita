@@ -1,10 +1,12 @@
 """Shared fixtures and helpers for control-plane route tests.
 
-Holds the three-role AsyncClient triple, a PAT-minting client factory used
-by the per-route no-scope fixtures, a generic FK-reverse delete helper, and
-the parametrise source + driver for the owner-eligibility 422 surface. Each
-route test owns its own `ctx`, because what a route needs seeded differs
-per route; teardown does not, and goes through the ordered sweep.
+Holds the three-role AsyncClient triple, a PAT-minting client factory used by
+the per-route no-scope fixtures, and the pair that drives the ineligible-owner
+cases — `IneligibilityKind`, which tests parametrize over, and
+`resolve_ineligible_owner_idx`, which turns one of its kinds into a principal
+idx a route will reject with 422. Each route test owns its own `ctx`, because
+what a route needs seeded differs per route; teardown does not, and goes
+through the ordered sweep.
 """
 
 import secrets
@@ -312,12 +314,7 @@ async def make_caller_own_run(ctx, run_idx: int, *, principal_idx: int) -> None:
 
 
 async def _grant_study_access(ctx, *, study_idx, principal_idx, tier, granted_by_idx):
-    """Insert a study_access row at the named tier; track for cleanup.
-
-    Appends (study_idx, principal_idx) to ctx['created']['study_access'];
-    the consuming file's _cleanup_tracked deletes those rows before its
-    own study delete.
-    """
+    """Insert a study_access row at the named tier."""
     await ctx["pool"].execute(
         "INSERT INTO qiita.study_access (study_idx, principal_idx, access_tier, granted_by_idx)"
         " VALUES ($1, $2, $3::qiita.tier, $4)",
@@ -488,11 +485,11 @@ async def seed_sample_with_value(
             f"no missing_value_reason named {missing_reason_name!r}"
         )
 
-    await pool.fetchval(
+    await pool.execute(
         f"INSERT INTO {spec.metadata_table}"
         f" ({spec.entity_key_column}, {spec.study_field_idx_column},"
         f" {value_column}, value_missing_reason_idx, created_by_idx)"
-        " VALUES ($1, $2, $3, $4, $5) RETURNING idx",
+        " VALUES ($1, $2, $3, $4, $5)",
         entity_idx,
         study_field_idx,
         value,
@@ -956,7 +953,7 @@ async def assert_study_scoped_sample_authz(
 
 
 # ---------------------------------------------------------------------------
-# Generic FK-reverse delete helper
+# ETag helpers for If-Match PATCH routes
 # ---------------------------------------------------------------------------
 
 
@@ -1197,13 +1194,13 @@ async def pool_alignment_seed(role_keyed_clients):
     authorization boundary with no second check behind it, that difference is the
     single most important thing in this fixture. Do not narrow it to one study.
 
-    Tracks and tears down everything it creates, including its own studies and
-    study_access rows, so it composes with any module's `ctx`.
+    Seeds and tears down its own studies and their grants, so it composes with
+    any module's `ctx`.
     """
     db = role_keyed_clients["pool"]
     owner = role_keyed_clients["wet_session"]["principal_idx"]
     reader = role_keyed_clients["user_session"]["principal_idx"]
-    tracked = {"pool": db, "created": {"study": [], "study_access": []}}
+    tracked = {"pool": db, "created": {"study": []}}
 
     study_1 = await _seed_study(tracked, owner_idx=owner, suffix="align-disc-1")
     study_2 = await _seed_study(tracked, owner_idx=owner, suffix="align-disc-2")
