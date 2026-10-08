@@ -19,7 +19,7 @@ import duckdb
 import pytest
 import pytest_asyncio
 import yaml
-from conftest import ducklake_connect
+from conftest import cleanup_ena_study, ducklake_connect
 from qiita_common.actions import ActionDefinition, WorkflowAction
 from qiita_common.api_paths import LOOPBACK_HOST
 from qiita_common.auth_constants import SystemRole
@@ -45,13 +45,18 @@ from qiita_control_plane.testing.unique_names import (
 )
 
 _DOWNLOAD_ENA_STUDY_YAML_PATH = (
-    Path(__file__).parent.parent.parent / "workflows" / "download-ena-study" / "1.0.0.yaml"
+    Path(__file__).parent.parent.parent
+    / "workflows"
+    / "download-ena-study"
+    / "1.0.0.yaml"
 )
 
 # Network-free resolver seam.
 _QUERY_STUDY = "qiita_control_plane.ena_import.miint_resolver._query_ena_study_header"
 _QUERY_RUNS = "qiita_control_plane.ena_import.miint_resolver._query_ena_runs"
-_QUERY_ATTRS = "qiita_control_plane.ena_import.miint_resolver._query_ena_sample_attributes"
+_QUERY_ATTRS = (
+    "qiita_control_plane.ena_import.miint_resolver._query_ena_sample_attributes"
+)
 
 _RUN_COLUMNS = (
     "run_accession",
@@ -153,7 +158,9 @@ def _write_ena_run_map(path: Path, roster: list[tuple[int, str]]) -> None:
     rows = ", ".join(f"({idx}, '{acc}')" for idx, acc in roster)
     with duckdb.connect(":memory:") as conn:
         conn.execute(
-            "COPY (SELECT * FROM (VALUES " + rows + ") AS t(prep_sample_idx, ena_run_accession)) "
+            "COPY (SELECT * FROM (VALUES "
+            + rows
+            + ") AS t(prep_sample_idx, ena_run_accession)) "
             f"TO '{path}' (FORMAT parquet)"
         )
 
@@ -183,7 +190,14 @@ def _write_intermediate(
 def _fake_stage_run_reads_factory(by_run: dict[str, tuple[list[tuple], list[str]]]):
     """Build a `_stage_run_reads`-shaped fake keyed by run_accession."""
 
-    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+    def _fake(
+        run_accession,
+        download_method,
+        intermediate_path,
+        duckdb_tmp,
+        memory_gb,
+        threads,
+    ):
         rows, warnings = by_run[run_accession]
         _write_intermediate(intermediate_path, rows)
         return len(rows), warnings
@@ -259,7 +273,9 @@ async def batch_app(postgres_pool):
 
     yield app
 
-    pending = list(app.state.running_dispatches) + list(app.state.running_ena_import_batches)
+    pending = list(app.state.running_dispatches) + list(
+        app.state.running_ena_import_batches
+    )
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
     app.state.compute_backend_client = saved_compute_backend_client
@@ -314,7 +330,9 @@ async def download_ena_study_action(postgres_pool):
         "          $4::jsonb, $5::jsonb, 1, 1, '1 minute', 'active', 'failed')",
         DOWNLOAD_ENA_STUDY_ACTION_ID,
         DOWNLOAD_ENA_STUDY_ACTION_VERSION,
-        json.dumps({"service": False, "human_roles": ["wet_lab_admin", "system_admin"]}),
+        json.dumps(
+            {"service": False, "human_roles": ["wet_lab_admin", "system_admin"]}
+        ),
         json.dumps(
             {
                 "type": "object",
@@ -340,87 +358,14 @@ async def download_ena_study_action(postgres_pool):
     )
 
 
-async def _cleanup_study(postgres_pool, study_accession: str) -> None:
-    """FK-reverse cleanup for the one study this test creates."""
-    study_idx = await postgres_pool.fetchval(
-        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1", study_accession
-    )
-    if study_idx is None:
-        return
-    await postgres_pool.execute(
-        "DELETE FROM qiita.ena_import_batch_item WHERE study_idx = $1", study_idx
-    )
-    ps_rows = await postgres_pool.fetch(
-        "SELECT prep_sample_idx FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
-    )
-    ps_idxs = [r["prep_sample_idx"] for r in ps_rows]
-    if ps_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = ANY($1::bigint[])", ps_idxs
-        )
-        # prep_sample_metadata RESTRICTs its prep_sample and study field, so
-        # sweep both before prep_sample / prep_sample_study_field / study below.
-        await postgres_pool.execute(
-            "DELETE FROM qiita.prep_sample_metadata WHERE prep_sample_idx = ANY($1::bigint[])",
-            ps_idxs,
-        )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
-    )
-    if ps_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", ps_idxs
-        )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample_study_field WHERE study_idx = $1", study_idx
-    )
-    bs_rows = await postgres_pool.fetch(
-        "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
-    )
-    bs_idxs = [r["biosample_idx"] for r in bs_rows]
-    if bs_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample_metadata WHERE biosample_idx = ANY($1::bigint[])", bs_idxs
-        )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample_study_field WHERE study_idx = $1", study_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
-    )
-    if bs_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", bs_idxs
-        )
-    run_rows = await postgres_pool.fetch(
-        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
-        f"{study_accession}:%",
-    )
-    run_idxs = [r["idx"] for r in run_rows]
-    if run_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
-            " (SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[]))",
-            run_idxs,
-        )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
-            run_idxs,
-        )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequencing_run WHERE idx = ANY($1::bigint[])", run_idxs
-        )
-    await postgres_pool.execute("DELETE FROM qiita.study_access WHERE study_idx = $1", study_idx)
-    await postgres_pool.execute("DELETE FROM qiita.study WHERE idx = $1", study_idx)
-
-
 @pytest_asyncio.fixture
 async def batch_cleanup(postgres_pool):
     batch_idxs: list[int] = []
     yield batch_idxs
     if batch_idxs:
         await postgres_pool.execute(
-            "DELETE FROM qiita.ena_import_batch WHERE idx = ANY($1::bigint[])", batch_idxs
+            "DELETE FROM qiita.ena_import_batch WHERE idx = ANY($1::bigint[])",
+            batch_idxs,
         )
 
 
@@ -479,7 +424,9 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
         " FROM qiita.ena_import_batch_item WHERE batch_idx = $1",
         batch_idx,
     )
-    assert item_row["state"] == BatchItemState.DOWNLOADING.value, item_row["failure_reason"]
+    assert item_row["state"] == BatchItemState.DOWNLOADING.value, item_row[
+        "failure_reason"
+    ]
     assert item_row["study_idx"] is not None
     assert len(item_row["download_work_ticket_idxs"]) == 1
     work_ticket_idx = item_row["download_work_ticket_idxs"][0]
@@ -514,7 +461,8 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     sequenced_pool_idx = ticket_row["sequenced_pool_idx"]
     assert sequenced_pool_idx is not None
     sequencing_run_idx = await postgres_pool.fetchval(
-        "SELECT sequencing_run_idx FROM qiita.sequenced_pool WHERE idx = $1", sequenced_pool_idx
+        "SELECT sequencing_run_idx FROM qiita.sequenced_pool WHERE idx = $1",
+        sequenced_pool_idx,
     )
     roster_rows = await fetch_sequenced_pool_ena_run_roster(
         postgres_pool, sequenced_pool_idx=sequenced_pool_idx
@@ -534,7 +482,9 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     from qiita_compute_orchestrator.jobs import ingest_ena_reads
     from qiita_compute_orchestrator.sequence_range import MintedSequenceRange
 
-    monkeypatch.setattr(ingest_ena_reads, "_stage_run_reads", _fake_stage_run_reads_factory(by_run))
+    monkeypatch.setattr(
+        ingest_ena_reads, "_stage_run_reads", _fake_stage_run_reads_factory(by_run)
+    )
 
     mint_calls: list[tuple[int, int]] = []
 
@@ -606,4 +556,4 @@ async def test_batch_driver_to_register_files_to_ducklake_full_span(
     assert biosample_count_after == 1
     assert _count_read_rows(data_plane, prep_sample_idxs) == total_reads
 
-    await _cleanup_study(postgres_pool, accession)
+    await cleanup_ena_study(postgres_pool, accession)
