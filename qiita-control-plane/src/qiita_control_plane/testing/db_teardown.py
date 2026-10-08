@@ -15,20 +15,22 @@ BIOSAMPLE = "biosample"
 PREP_SAMPLE = "prep_sample"
 
 # A column keyed this way names a genome rather than an entity, and is matched
-# through the genomes that belong to the caller's prep_samples. Only
-# qiita-derived genomes carry a prep_sample_idx (genome_qiita_origin_check), so
-# an external genbank/refseq genome is never in range.
+# through the genomes that belong to the caller's prep_samples. Only a
+# qiita-sourced genome carries a prep_sample_idx, so an external genbank or
+# refseq genome is never in range.
 GENOME_OF_PREP_SAMPLE = "genome_of_prep_sample"
 
 # The sweep, in delete order. Each entry is a table and the columns it is keyed
-# on; a table with several keys is matched on any of them. Tier order is
-# load-bearing — the tier-1 tables are referenced by tier-0 ones — while order
-# within a tier is free.
+# on; a table with several keys is matched on any of them. The tier-1 tables are
+# referenced by the tier-0 ones, so the tiers run in this order; order within a
+# tier is free.
 #
 # Hard-coded rather than derived from the catalog so a reader can see exactly
 # what a teardown touches. A parity test compares this list against the live
-# schema, so a table added to a migration and forgotten here fails on the schema
-# alone rather than waiting for something to seed a row into it.
+# schema, so a table carrying one of the key columns below and forgotten here
+# fails on the schema alone rather than waiting for something to seed a row into
+# it. A table that reaches an entity through some other column name is outside
+# what that test sees.
 SWEEP_TIERS = (
     (
         ("alignment_sample", (("prep_sample_idx", PREP_SAMPLE),)),
@@ -66,12 +68,12 @@ SWEEP_TIERS = (
 # by the time this runs, so the entities go in this order.
 ENTITY_DELETE_ORDER = (PREP_SAMPLE, BIOSAMPLE, STUDY)
 
-# Deliberately not swept, each for its own reason. A work ticket references a
-# study and a prep_sample, so a standing one fails the entity delete;
-# teardown_entity_graph's docstring states when the caller has to clear it. An
-# exclusion names its genome with a bare BIGINT and is meant to outlive it, but
-# it does reference the principals who recorded and unblocked it, so a caller
-# that touched one must clear the exclusion before delete_principal.
+# Not swept, each for its own reason. A work ticket references a study and a
+# prep_sample, so a standing one fails the entity delete; teardown_entity_graph's
+# docstring states when the caller has to clear it. An exclusion names its genome
+# with a bare BIGINT and is meant to outlive it, but it does reference the
+# principals who recorded and unblocked it, so a caller that touched one must
+# clear the exclusion before delete_principal.
 UNSWEPT_ENTITY_TABLES = frozenset({"work_ticket", "reference_exclusion"})
 
 _ENTITY_KEY_COLUMNS = {
@@ -80,6 +82,11 @@ _ENTITY_KEY_COLUMNS = {
     PREP_SAMPLE: "prep_sample_idx",
 }
 _GENOME_KEY_COLUMN = "genome_idx"
+
+# An ENA import names each sequencing run "<study accession>:<platform>", which
+# ena_import/registration.py composes, so a study's runs are matched on the
+# accession and that separator.
+_ENA_RUN_ID_LIKE = "{accession}:%"
 
 _KEY_BY_COLUMN = {column: key for key, column in _ENTITY_KEY_COLUMNS.items()}
 _KEY_BY_COLUMN[_GENOME_KEY_COLUMN] = GENOME_OF_PREP_SAMPLE
@@ -158,6 +165,10 @@ async def _entity_keyed_candidates(pool: asyncpg.Pool) -> list[asyncpg.Record]:
     Base tables only: a view carrying one of these columns would report its rows
     as survivors, and the entity skip matches on table name, so a view over an
     entity table carries a different one and slips past it.
+
+    Ordered by table name, then column name, so that a caller raising on the
+    first survivor names the same table and column every run when several
+    survive at once.
     """
     rows = await pool.fetch(
         "SELECT c.table_name, c.column_name FROM information_schema.columns c"
@@ -202,10 +213,12 @@ async def assert_entity_graph_swept(
 ) -> None:
     """Raise if any table keyed on an entity or a genome still holds rows for them.
 
-    Discovers the tables from the catalog rather than the sweep list, so a table
-    added to the schema and forgotten here fails the first time a test touches
-    it. The entity tables themselves are skipped, since they are deleted after
-    this runs.
+    Discovers the tables from the catalog rather than the sweep list, matching on
+    the four key column names above, so a table carrying one of them and
+    forgotten in the sweep list fails the first time a test touches it. A table
+    that reaches an entity through some other column name is not checked. The
+    entity tables themselves are skipped, since they are deleted after this
+    runs.
 
     `genome_idxs` names the genomes whose derived rows are checked too. They
     cannot be looked up here: qiita.genome is already gone by the time this
@@ -290,3 +303,79 @@ async def delete_principal(pool: asyncpg.Pool, principal_idxs) -> None:
         return
     await pool.execute("DELETE FROM qiita.user WHERE principal_idx = ANY($1::bigint[])", named)
     await delete_idxs(pool, "principal", named)
+
+
+async def resolve_ena_study_idxs(pool: asyncpg.Pool, accessions, *, by_ena_accession=False):
+    """Return the idxs of the studies registered under these accessions.
+
+    Matches bioproject_accession, and ena_study_accession as well when
+    `by_ena_accession` is set, for a caller that holds only the accession the
+    import echoed back. An accession no study carries contributes nothing.
+    """
+    named = list(accessions)
+    if not named:
+        return []
+    rows = await pool.fetch(
+        "SELECT idx FROM qiita.study"
+        " WHERE bioproject_accession = ANY($1::text[])"
+        "    OR ($2 AND ena_study_accession = ANY($1::text[]))",
+        named,
+        by_ena_accession,
+    )
+    study_idxs = [row["idx"] for row in rows]
+    return study_idxs
+
+
+async def teardown_ena_study_graph(
+    pool: asyncpg.Pool,
+    *,
+    study_idxs,
+    run_accessions,
+    extra_biosample_idxs=(),
+) -> None:
+    """Delete these studies, the entities linked to them, and their ENA runs.
+
+    `run_accessions` names the study accessions whose sequencing runs go too,
+    matched on the instrument_run_id prefix an import composes from them; a
+    study whose runs are not wanted passes none. `extra_biosample_idxs` names
+    biosamples that must go although no link to these studies survives, which
+    is how a biosample two studies share is dropped once.
+    """
+    named_studies = list(study_idxs)
+    # The link rows go with the sweep, so the entities they name are resolved
+    # while those rows still exist.
+    ps_rows = await pool.fetch(
+        "SELECT DISTINCT prep_sample_idx FROM qiita.prep_sample_to_study"
+        " WHERE study_idx = ANY($1::bigint[])",
+        named_studies,
+    )
+    bs_rows = await pool.fetch(
+        "SELECT DISTINCT biosample_idx FROM qiita.biosample_to_study"
+        " WHERE study_idx = ANY($1::bigint[])",
+        named_studies,
+    )
+    run_rows = await pool.fetch(
+        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE ANY($1::text[])",
+        [_ENA_RUN_ID_LIKE.format(accession=accession) for accession in run_accessions],
+    )
+    run_idxs = [row["idx"] for row in run_rows]
+    # A work ticket is never swept. It references the pool under RESTRICT, and
+    # may reference a study and a prep_sample too, so it goes ahead of both the
+    # sweep and the pool delete below.
+    await pool.execute(
+        "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
+        " (SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[]))",
+        run_idxs,
+    )
+    biosample_idxs = {row["biosample_idx"] for row in bs_rows} | set(extra_biosample_idxs)
+    await teardown_entity_graph(
+        pool,
+        study_idxs=named_studies,
+        biosample_idxs=sorted(biosample_idxs),
+        prep_sample_idxs=sorted({row["prep_sample_idx"] for row in ps_rows}),
+    )
+    await pool.execute(
+        "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
+        run_idxs,
+    )
+    await delete_idxs(pool, "sequencing_run", run_idxs)

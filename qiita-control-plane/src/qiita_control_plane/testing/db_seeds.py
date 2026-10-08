@@ -2,13 +2,14 @@
 
 Plain async functions (not pytest fixtures) so callers can pass test-local
 arguments, covering what a DB-row fixture needs to insert its rows, move them
-between states, and look up the reference data every test DB carries. Cleanup
-is the caller's responsibility and lives in db_teardown: the study / biosample
-/ prep_sample graph goes through the ordered sweep, a caller's own parents
-through its own teardown, and integration tests may rely on a session-scoped
-truncate. Helpers are pool-based
-and commit their writes — for repository-layer trigger tests that roll back,
-build the SQL inline against the open connection instead.
+between states, and look up the reference data every test DB carries. The study
+/ biosample / prep_sample graph is torn down by the ordered sweep in
+db_teardown, a caller's own parents by its own teardown, and integration tests
+may rely on a session-scoped truncate; the graphs that sweep does not reach —
+reference, terminology, action — are torn down by the helpers here, beside the
+seeders that build them. Helpers are pool-based and commit their writes — for
+repository-layer trigger tests that roll back, build the SQL inline against the
+open connection instead.
 """
 
 import json
@@ -488,7 +489,7 @@ async def seed_biosample_with_sequenced_prep_sample(
     Composes `seed_biosample` (owner + created_by both = owner_idx) and
     `seed_sequenced_prep_sample`. Use this from fixtures that need a
     sequenced prep_sample to scope a work_ticket or a sequence_range
-    against and want to track both rows for FK-reverse cleanup. Callers
+    against; both rows go to the sweep as entities. Callers
     that need a non-default prep_protocol pass `protocol_name`; the
     underlying helper resolves it by lookup against the seeded protocols
     (qiita.prep_protocol, populated by migration 20260501000010).
@@ -523,8 +524,9 @@ async def seed_sequenced_sample_subtype(
     populated — the sequenced_sample_pool_pair_consistent CHECK requires
     the pool idx and item id to be set together. Use this from fixtures
     that need a prep_sample carrying a pool item id (e.g. the
-    work_ticket fastq-filename-prefix gate). Caller does FK-reverse
-    cleanup: sequenced_sample, then sequenced_pool, then sequencing_run.
+    work_ticket fastq-filename-prefix gate). The sweep takes the
+    sequenced_sample with its prep_sample; the pool and then the run are the
+    caller's own to delete.
 
     Pass `sequencing_run_idx` + `sequenced_pool_idx` (both, as returned by an
     earlier call) to attach this sample to an EXISTING pool instead of standing
@@ -646,9 +648,9 @@ async def seed_local_study_field(
     """Create a purely-local study field for spec's entity and return its idx.
 
     Delegates to the repository get-or-create so the study-field INSERT and
-    inheritance rules stay single-sourced; the caller supplies display_name and
-    tracks the returned idx for cleanup. Runs inside an acquired transaction
-    because the underlying upsert requires one.
+    inheritance rules stay single-sourced; the caller supplies display_name. The
+    row is keyed on the study, so the sweep takes it. Runs inside an acquired
+    transaction because the underlying upsert requires one.
     """
     async with pool.acquire() as conn, conn.transaction():
         idx, _, _ = await _get_or_create_local_study_field(
@@ -675,12 +677,12 @@ async def seed_local_metadata_value(
     data_type: FieldDataType = FieldDataType.TEXT,
 ) -> tuple[int, int]:
     """Write one purely-local metadata value for spec's entity and return
-    (metadata_idx, study_field_idx) for cleanup.
+    (metadata_idx, study_field_idx).
 
     Delegates to the repository local writer so the study-field get-or-create
-    and the value insert stay single-sourced; the caller tracks both returned
-    idxs for FK-reverse teardown. Runs inside an acquired transaction because
-    the underlying writer requires one.
+    and the value insert stay single-sourced. Both rows are keyed on an entity
+    the sweep takes, so neither is the caller's to delete. Runs inside an
+    acquired transaction because the underlying writer requires one.
     """
     async with pool.acquire() as conn, conn.transaction():
         result = await write_local_metadata_or_diagnose(
@@ -709,9 +711,10 @@ async def seed_globally_linked_study_field(
     return its idx.
 
     Delegates to the repository get-or-create so the study-field INSERT and
-    inheritance rules stay single-sourced; the caller supplies display_name and
-    tracks the returned idx for cleanup. Runs inside an acquired transaction
-    because the underlying upsert requires one.
+    inheritance rules stay single-sourced; the caller supplies display_name. The
+    row is keyed on the study, so the sweep takes it; the global field it links
+    to is the caller's own. Runs inside an acquired transaction because the
+    underlying upsert requires one.
     """
     async with pool.acquire() as conn, conn.transaction():
         idx, _ = await _get_or_create_globally_linked_study_field(
@@ -977,8 +980,12 @@ async def seed_feature_genome(pool: asyncpg.Pool, *, feature_idx: int, genome_id
 async def cleanup_reference_graph(
     pool: asyncpg.Pool, *, reference_idx: int, feature_idxs=(), genome_idxs=()
 ) -> None:
-    """FK-reverse teardown for the seeders above: feature_genome, membership,
-    feature, genome, then the reference itself."""
+    """Delete a reference and the features and genomes built on it.
+
+    None of these hang off a study, biosample or prep_sample, so the entity
+    sweep does not reach them. Deletes in the order the references require:
+    feature_genome and membership, then feature, then genome, then the
+    reference."""
     if feature_idxs:
         await pool.execute(
             "DELETE FROM qiita.feature_genome WHERE feature_idx = ANY($1::bigint[])",

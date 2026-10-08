@@ -56,9 +56,9 @@ async def _count(pool, table, column, idxs) -> int:
 async def graph(postgres_pool):
     """A principal owning a study, a biosample, and a sequenced prep_sample.
 
-    The teardown here is best-effort and deliberately tolerant: it runs whether
-    or not the function under test did its job, so a failing run leaves nothing
-    behind for the rest of the session.
+    The teardown here is best-effort and tolerant: it runs whether or not the
+    function under test did its job, so a failing run leaves nothing behind for
+    the rest of the session.
     """
     principal_idx = await seed_user_principal(postgres_pool, prefix="teardown", suffix="probe")
     study_idx = await seed_study(postgres_pool, owner_idx=principal_idx, title="teardown probe")
@@ -89,12 +89,13 @@ async def graph(postgres_pool):
             " (SELECT genome_idx FROM qiita.genome WHERE prep_sample_idx = $1)",
             prep_sample_idx,
         )
-    # Replaying SWEEP_TIERS here would miss whatever the function under test
-    # misses; test_sweep_tiers_matches_the_live_schema is what closes that.
-    # Each column is matched on its own entity, the way the function under test
-    # does. Handing every column all three idxs would delete another test's rows
-    # whenever the idxs collide, which they do: study.idx and prep_sample.idx
-    # both restart at 25000, so the Nth of each carries the same number.
+    # This replay inherits whatever the function under test misses, since both
+    # read the same list; test_sweep_tiers_matches_the_live_schema is what
+    # catches a table missing from it. Each column is matched on its own entity,
+    # the way the function under test does. Handing every column all three idxs
+    # would delete another test's rows whenever the idxs collide, which they do:
+    # study.idx and prep_sample.idx both restart at 25000, so the Nth of each
+    # carries the same number.
     seeded = {STUDY: study_idx, BIOSAMPLE: biosample_idx, PREP_SAMPLE: prep_sample_idx}
     for tier in SWEEP_TIERS:
         for table, keys in tier:
@@ -108,21 +109,20 @@ async def graph(postgres_pool):
     await postgres_pool.execute(
         "DELETE FROM qiita.genome WHERE prep_sample_idx = $1", prep_sample_idx
     )
-    await delete_idxs(postgres_pool, "prep_sample", prep_sample_idx)
-    await delete_idxs(postgres_pool, "biosample", biosample_idx)
-    await delete_idxs(postgres_pool, "study", study_idx)
+    await delete_idxs(postgres_pool, PREP_SAMPLE, prep_sample_idx)
+    await delete_idxs(postgres_pool, BIOSAMPLE, biosample_idx)
+    await delete_idxs(postgres_pool, STUDY, study_idx)
     await delete_idxs(postgres_pool, "sequenced_pool", pool_idx)
     await delete_idxs(postgres_pool, "sequencing_run", run_idx)
-    await postgres_pool.execute("DELETE FROM qiita.user WHERE principal_idx = $1", principal_idx)
-    await delete_idxs(postgres_pool, "principal", principal_idx)
+    await delete_principal(postgres_pool, principal_idx)
 
 
 @pytest.mark.db
 async def test_teardown_entity_graph_sweeps_the_whole_graph(postgres_pool, graph):
     """Tests the case where entities carrying children are torn down.
 
-    `seed_biosample_with_sequenced_prep_sample` writes a sequenced_sample the
-    caller never names, which is the kind of row the sweep exists to catch.
+    The fixture's subtype chain leaves a sequenced_sample that the teardown call
+    below never names, which is the kind of row the sweep exists to catch.
     """
     await teardown_entity_graph(
         postgres_pool,
@@ -135,11 +135,9 @@ async def test_teardown_entity_graph_sweeps_the_whole_graph(postgres_pool, graph
         "sequenced_sample": await _count(
             postgres_pool, "sequenced_sample", "prep_sample_idx", [graph["prep_sample_idx"]]
         ),
-        "prep_sample": await _count(
-            postgres_pool, "prep_sample", "idx", [graph["prep_sample_idx"]]
-        ),
-        "biosample": await _count(postgres_pool, "biosample", "idx", [graph["biosample_idx"]]),
-        "study": await _count(postgres_pool, "study", "idx", [graph["study_idx"]]),
+        "prep_sample": await _count(postgres_pool, PREP_SAMPLE, "idx", [graph["prep_sample_idx"]]),
+        "biosample": await _count(postgres_pool, BIOSAMPLE, "idx", [graph["biosample_idx"]]),
+        "study": await _count(postgres_pool, STUDY, "idx", [graph["study_idx"]]),
     }
     assert survivors == {"sequenced_sample": 0, "prep_sample": 0, "biosample": 0, "study": 0}
 
@@ -221,8 +219,8 @@ async def test_teardown_entity_graph_accepts_empty_lists(postgres_pool):
 async def test_delete_principal_removes_the_user_row_first(postgres_pool):
     """Tests the case where a principal with a user row is deleted.
 
-    qiita.user references qiita.principal under RESTRICT, so the order is the
-    whole content of the function.
+    qiita.user references qiita.principal under RESTRICT, so the user row has to
+    go first.
     """
     principal_idx = await seed_user_principal(
         postgres_pool, prefix="teardown-principal", suffix="probe"
@@ -246,10 +244,15 @@ async def test_sweep_tiers_matches_the_live_schema(postgres_pool):
     `assert_entity_graph_swept` only names a forgotten table once some test
     seeds a row into it. This fails on the schema alone, so a table added to a
     migration is caught whether or not anything exercises it yet. It walks the
-    assertion's own candidate query, genome included, and checks both halves of
-    an entry: that the table is swept, and that it names every key it carries.
+    assertion's own candidate query, which matches on the four key column names
+    and so sees only tables that follow that convention; it checks both halves
+    of an entry: that the table is swept, and that it names every key it
+    carries.
     """
     entity_keyed = await _entity_keyed_candidates(postgres_pool)
+    # Every drift bucket empties together if the candidate query returns
+    # nothing, which would read as a pass.
+    assert entity_keyed
     all_tables = await postgres_pool.fetch(
         "SELECT table_name FROM information_schema.tables"
         " WHERE table_schema = 'qiita' AND table_type = 'BASE TABLE'"
@@ -347,7 +350,7 @@ async def test_teardown_entity_graph_sweeps_a_link_row_by_either_side(postgres_p
             "biosample_to_study": await _count(
                 postgres_pool, "biosample_to_study", "study_idx", [other_study_idx]
             ),
-            "study": await _count(postgres_pool, "study", "idx", [other_study_idx]),
+            "study": await _count(postgres_pool, STUDY, "idx", [other_study_idx]),
         }
         assert survivors == {"biosample_to_study": 0, "study": 1}
     finally:
@@ -357,7 +360,7 @@ async def test_teardown_entity_graph_sweeps_a_link_row_by_either_side(postgres_p
         await postgres_pool.execute(
             "DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", other_study_idx
         )
-        await delete_idxs(postgres_pool, "study", other_study_idx)
+        await delete_idxs(postgres_pool, STUDY, other_study_idx)
 
 
 @pytest.mark.db
@@ -395,8 +398,8 @@ async def test_teardown_entity_graph_leaves_a_reference_exclusion(postgres_pool,
         }
         assert survivors == {"reference_exclusion": 1, "genome": 0}
     finally:
-        # The exclusion is deliberately unswept and references the principal
-        # under RESTRICT, so leaving it would fail the fixture's own teardown.
+        # The exclusion is not swept and references the principal under
+        # RESTRICT, so leaving it would fail the fixture's own teardown.
         await postgres_pool.execute(
             "DELETE FROM qiita.reference_exclusion WHERE reference_exclusion_idx = $1",
             exclusion_idx,

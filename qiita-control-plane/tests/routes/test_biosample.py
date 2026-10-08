@@ -2987,7 +2987,6 @@ async def test_lookup_by_matrix_tube_id_rejects_bad_format_422(ctx):
 async def _post_biosample_field(client, ctx, study_idx: int, **body):
     """POST the create-field route and, on 201, track the created row."""
     return await post_study_field(
-        ctx,
         surface=BIOSAMPLE_FIELD_SURFACE,
         client=client,
         study_idx=study_idx,

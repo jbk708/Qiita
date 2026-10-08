@@ -37,9 +37,8 @@ from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_ME
 from qiita_control_plane.repositories.study import get_or_create_study_by_ena_accessions
 from qiita_control_plane.testing.db_seeds import seed_user_principal
 from qiita_control_plane.testing.db_teardown import (
-    delete_idxs,
     delete_principal,
-    teardown_entity_graph,
+    teardown_ena_study_graph,
 )
 from qiita_control_plane.testing.unique_names import unique_accession, unique_ena_accession
 
@@ -124,42 +123,14 @@ class _Tracker:
 
 
 async def _cleanup(pool, tracker: _Tracker) -> None:
-    study_idxs = tracker.study_idxs
-    if study_idxs:
-        # The sweep takes explicit entity lists and cannot derive them, so the
-        # entities this tier reaches through its study links are resolved first.
-        ps_rows = await pool.fetch(
-            "SELECT DISTINCT prep_sample_idx FROM qiita.prep_sample_to_study"
-            " WHERE study_idx = ANY($1::bigint[])",
-            study_idxs,
-        )
-        bs_rows = await pool.fetch(
-            "SELECT DISTINCT biosample_idx FROM qiita.biosample_to_study"
-            " WHERE study_idx = ANY($1::bigint[])",
-            study_idxs,
-        )
-        await teardown_entity_graph(
-            pool,
-            study_idxs=study_idxs,
-            biosample_idxs=[r["biosample_idx"] for r in bs_rows],
-            prep_sample_idxs=[r["prep_sample_idx"] for r in ps_rows],
-        )
-
-    # Runs are named after the accession that produced them, which is the only
-    # handle this tier keeps on them; the pools hang off those runs.
-    if tracker.study_accessions:
-        run_rows = await pool.fetch(
-            "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE ANY($1::text[])",
-            [f"{acc}:%" for acc in tracker.study_accessions],
-        )
-        run_idxs = [r["idx"] for r in run_rows]
-        if run_idxs:
-            await pool.execute(
-                "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
-                run_idxs,
-            )
-            await delete_idxs(pool, "sequencing_run", run_idxs)
-
+    """Tear down everything a test registered: the studies it tracked, their
+    sample graphs, the runs named after the accessions it tracked, and its
+    principals."""
+    await teardown_ena_study_graph(
+        pool,
+        study_idxs=tracker.study_idxs,
+        run_accessions=tracker.study_accessions,
+    )
     await delete_principal(pool, tracker.principal_idxs)
 
 

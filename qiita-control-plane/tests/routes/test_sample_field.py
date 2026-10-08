@@ -101,7 +101,6 @@ async def test_create_study_field_accepts_unique_in_study(ctx, surface):
     display_name = unique_field_name("Local")
 
     resp = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -122,7 +121,6 @@ async def test_create_study_field_defaults_unique_in_study_false(ctx, surface):
     study_idx = await _study_with_admin_grant(ctx, "uis-def")
 
     resp = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -150,7 +148,6 @@ async def test_create_study_field_rejects_unique_on_ineligible_type(ctx, surface
         extra["terminology_idx"] = await _seed_terminology(ctx)
 
     resp = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -172,7 +169,6 @@ async def test_create_study_field_rejects_unique_on_linked_field(ctx, surface):
     study_idx = await _study_with_admin_grant(ctx, "uis-linked")
 
     resp = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -193,7 +189,6 @@ async def test_list_study_fields_reports_unique_in_study(ctx, surface):
     study_idx = await _study_with_admin_grant(ctx, "uis-list")
     display_name = unique_field_name("Local")
     await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -224,7 +219,6 @@ async def _seed_terminology(ctx):
 async def _seed_editable_field(ctx, surface, *, study_idx, data_type="text", **body):
     """Create one purely-local field on `study_idx` and return its idx."""
     resp = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -279,7 +273,6 @@ async def test_patch_study_field_authz(
         # answers before the idx in the path is resolved.
         if case == "nonexistent_study":
             return await patch_study_field(
-                ctx_,
                 surface=surface_,
                 client=client,
                 study_idx=study_idx,
@@ -288,7 +281,6 @@ async def test_patch_study_field_authz(
                 description="edited",
             )
         resp = await post_study_field(
-            ctx_,
             surface=surface_,
             client=ctx_["wet"],
             study_idx=study_idx,
@@ -298,7 +290,6 @@ async def test_patch_study_field_authz(
         assert resp.status_code == 201, resp.text
         field_idx = resp.json()[surface_.idx_key]
         return await patch_study_field(
-            ctx_,
             surface=surface_,
             client=client,
             study_idx=study_idx,
@@ -328,7 +319,6 @@ async def test_patch_study_field_edits_and_returns_new_etag(ctx, surface):
     before = await _etag(ctx, surface, field_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -352,7 +342,6 @@ async def test_patch_study_field_without_if_match_428(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -373,7 +362,6 @@ async def test_patch_study_field_stale_if_match_412(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
     stale = await _etag(ctx, surface, field_idx)
     first = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -384,7 +372,6 @@ async def test_patch_study_field_stale_if_match_412(ctx, surface):
     assert first.status_code == 200, first.text
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -405,7 +392,6 @@ async def test_patch_study_field_enables_unique_in_study(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -428,7 +414,6 @@ async def test_patch_study_field_unique_on_ineligible_type_422(ctx, surface, dat
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx, data_type=data_type)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -453,7 +438,6 @@ async def test_patch_study_field_inherited_attribute_on_linked_422(ctx, surface,
     study_idx = await _study_with_admin_grant(ctx, "pat-linked")
     global_idx = await _seed_field_global(ctx, surface=surface, label="pat")
     created = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -464,7 +448,6 @@ async def test_patch_study_field_inherited_attribute_on_linked_422(ctx, surface,
     field_idx = created.json()[surface.idx_key]
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -485,7 +468,6 @@ async def test_patch_study_field_display_name_collision_409(ctx, surface):
     study_idx = await _study_with_admin_grant(ctx, "pat-dup")
     taken = unique_field_name("Taken")
     first = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -496,7 +478,6 @@ async def test_patch_study_field_display_name_collision_409(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -519,7 +500,6 @@ async def test_patch_study_field_from_another_study_404(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=owning_study_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=other_study_idx,
@@ -537,7 +517,6 @@ async def test_patch_study_field_absent_404(ctx, surface):
     study_idx = await _study_with_admin_grant(ctx, "pat-absent")
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -563,7 +542,7 @@ async def test_get_study_field_returns_the_row_and_an_etag(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
 
     resp = await get_study_field(
-        ctx, surface=surface, client=ctx["user"], study_idx=study_idx, study_field_idx=field_idx
+        surface=surface, client=ctx["user"], study_idx=study_idx, study_field_idx=field_idx
     )
 
     assert resp.status_code == 200, resp.text
@@ -582,12 +561,11 @@ async def test_get_study_field_etag_is_accepted_as_if_match(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
 
     read = await get_study_field(
-        ctx, surface=surface, client=ctx["user"], study_idx=study_idx, study_field_idx=field_idx
+        surface=surface, client=ctx["user"], study_idx=study_idx, study_field_idx=field_idx
     )
     assert read.status_code == 200, read.text
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -607,7 +585,6 @@ async def test_create_study_field_etag_is_accepted_as_if_match(ctx, surface):
     """
     study_idx = await _study_with_admin_grant(ctx, "post-rt")
     created = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -617,7 +594,6 @@ async def test_create_study_field_etag_is_accepted_as_if_match(ctx, surface):
     assert created.status_code == 201, created.text
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -639,7 +615,6 @@ async def test_get_study_field_from_another_study_404(ctx, surface):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=holding_study_idx)
 
     resp = await get_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=other_study_idx,
@@ -657,7 +632,6 @@ async def test_get_study_field_absent_404(ctx, surface):
     study_idx = await _study_with_admin_grant(ctx, "get-absent")
 
     resp = await get_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -686,7 +660,6 @@ async def test_patch_study_field_enable_unique_over_duplicates_409(ctx, surface)
         )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -717,7 +690,6 @@ async def test_patch_study_field_enable_unique_over_missing_marker_422(ctx, surf
     )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -752,7 +724,6 @@ async def test_patch_study_field_unique_on_published_sample_409(ctx, surface):
     )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -788,7 +759,6 @@ async def test_patch_study_field_relax_unique_in_study_422(ctx, surface, publish
     )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -818,7 +788,6 @@ async def test_patch_study_field_unique_in_study_no_op_allowed(ctx, surface, sto
     renamed = unique_field_name("Renamed")
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -861,7 +830,6 @@ async def test_patch_study_field_resends_unique_on_published_sample(ctx, surface
     renamed = unique_field_name("Renamed")
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -900,7 +868,6 @@ async def test_patch_study_field_widens_to_text(ctx, surface):
     before = await _etag(ctx, surface, field_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -925,7 +892,6 @@ async def test_patch_study_field_widens_and_enables_unique_in_study(ctx, surface
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx, data_type="boolean")
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -959,7 +925,6 @@ async def test_patch_study_field_widen_terminology_422(ctx, surface):
     )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -984,7 +949,6 @@ async def test_patch_study_field_narrowing_target_422(ctx, surface, target):
     field_idx = await _seed_editable_field(ctx, surface, study_idx=study_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1007,7 +971,6 @@ async def test_patch_study_field_widen_already_text_unchanged(ctx, surface):
     before = await _etag(ctx, surface, field_idx)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1040,7 +1003,6 @@ async def test_patch_study_field_widen_published_409(ctx, surface):
     )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1072,7 +1034,6 @@ async def test_patch_study_field_widen_retired_link_409(ctx, surface):
     )
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1105,7 +1066,6 @@ async def test_patch_study_field_widen_contention_503(ctx, surface, error, monke
     monkeypatch.setattr(route_helpers, "widen_study_field_to_text", _contended)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1138,7 +1098,6 @@ async def test_patch_study_field_unique_contention_503(ctx, surface, error, monk
     monkeypatch.setattr(route_helpers, "update_study_field", _contended)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1171,7 +1130,6 @@ async def test_patch_study_field_row_read_contention_503(ctx, surface, error, mo
     monkeypatch.setattr(route_helpers, "fetch_study_field_in_study", _contended)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,
@@ -1242,7 +1200,6 @@ async def test_patch_study_field_widen_admits_a_concurrent_write(ctx, surface, m
     monkeypatch.setattr(route_helpers, "widen_study_field_to_text", _write_then_widen)
 
     resp = await patch_study_field(
-        ctx,
         surface=surface,
         client=ctx["user"],
         study_idx=study_idx,

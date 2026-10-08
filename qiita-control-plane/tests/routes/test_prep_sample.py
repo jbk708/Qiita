@@ -384,7 +384,6 @@ async def test_retire_prep_sample_anonymous_401(ctx):
 async def _post_prep_sample_field(client, ctx, study_idx: int, **body):
     """POST the create-field route and, on 201, track the created row."""
     return await post_study_field(
-        ctx,
         surface=PREP_SAMPLE_FIELD_SURFACE,
         client=client,
         study_idx=study_idx,

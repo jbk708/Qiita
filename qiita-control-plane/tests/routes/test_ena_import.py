@@ -22,7 +22,10 @@ from qiita_control_plane.ena_import import (
     DOWNLOAD_ENA_STUDY_ACTION_VERSION,
 )
 from qiita_control_plane.ena_import.batch import build_ena_import_study_semaphore
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    resolve_ena_study_idxs,
+    teardown_ena_study_graph,
+)
 from qiita_control_plane.testing.unique_names import unique_ena_accession
 
 pytestmark = pytest.mark.db
@@ -277,44 +280,12 @@ async def download_ena_study_action(postgres_pool):
 
 
 async def _cleanup_study(postgres_pool, study_accession: str) -> None:
-    study_idx = await postgres_pool.fetchval(
-        "SELECT idx FROM qiita.study WHERE bioproject_accession = $1", study_accession
+    """Tear down the study registered under this accession, its sample graph,
+    and the runs it registered."""
+    study_idxs = await resolve_ena_study_idxs(postgres_pool, [study_accession])
+    await teardown_ena_study_graph(
+        postgres_pool, study_idxs=study_idxs, run_accessions=[study_accession]
     )
-    if study_idx is None:
-        return
-    # The link rows are what name this study's samples, and the sweep clears
-    # them, so both resolves run ahead of it.
-    ps_rows = await postgres_pool.fetch(
-        "SELECT prep_sample_idx FROM qiita.prep_sample_to_study WHERE study_idx = $1", study_idx
-    )
-    bs_rows = await postgres_pool.fetch(
-        "SELECT biosample_idx FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx
-    )
-    run_rows = await postgres_pool.fetch(
-        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE $1",
-        f"{study_accession}:%",
-    )
-    run_idxs = [r["idx"] for r in run_rows]
-    if run_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
-            " (SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[]))",
-            run_idxs,
-        )
-    await teardown_entity_graph(
-        postgres_pool,
-        study_idxs=[study_idx],
-        biosample_idxs=[r["biosample_idx"] for r in bs_rows],
-        prep_sample_idxs=[r["prep_sample_idx"] for r in ps_rows],
-    )
-    if run_idxs:
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[])",
-            run_idxs,
-        )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.sequencing_run WHERE idx = ANY($1::bigint[])", run_idxs
-        )
 
 
 async def _await_batch_tasks(eib_client) -> None:

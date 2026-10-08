@@ -327,7 +327,7 @@ async def _grant_study_access(ctx, *, study_idx, principal_idx, tier, granted_by
 
 async def _seed_study(ctx, *, owner_idx: int, suffix: str) -> int:
     """Insert a minimal study owned by `owner_idx`, append its idx to
-    `ctx['created']['study']` for FK-reverse teardown, and return the idx.
+    `ctx['created']['study']` so the sweep is given it, and return the idx.
 
     The title is uniquified with `suffix` plus a random token so concurrent
     tests never collide.
@@ -358,7 +358,6 @@ class SampleFieldSurface(NamedTuple):
     url_template: str  # create and list share this study-scoped path
     by_idx_url_template: str  # the edit path, addressing one field under a study
     idx_key: str  # response key naming the study-local row
-    created_key: str  # ctx cleanup bucket for created study-local rows
     global_fk_key: str  # request/response key naming the global-field link
     seed_global_field: Callable[..., Awaitable[int]]
     global_created_key: str  # ctx cleanup bucket for created global rows
@@ -388,7 +387,6 @@ BIOSAMPLE_FIELD_SURFACE = SampleFieldSurface(
     url_template=URL_BIOSAMPLE_STUDY_FIELD_BY_STUDY,
     by_idx_url_template=URL_BIOSAMPLE_STUDY_FIELD_BY_IDX,
     idx_key="biosample_study_field_idx",
-    created_key="biosample_study_field",
     global_fk_key="biosample_global_field_idx",
     seed_global_field=seed_biosample_global_field,
     global_created_key="biosample_global_field",
@@ -402,7 +400,6 @@ PREP_SAMPLE_FIELD_SURFACE = SampleFieldSurface(
     url_template=URL_PREP_SAMPLE_STUDY_FIELD_BY_STUDY,
     by_idx_url_template=URL_PREP_SAMPLE_STUDY_FIELD_BY_IDX,
     idx_key="prep_sample_study_field_idx",
-    created_key="prep_sample_study_field",
     global_fk_key="prep_sample_global_field_idx",
     seed_global_field=seed_prep_sample_global_field,
     global_created_key="prep_sample_global_field",
@@ -535,14 +532,13 @@ def sibling_field_surface(surface: SampleFieldSurface) -> SampleFieldSurface:
     return sibling
 
 
-async def post_study_field(ctx, *, surface: SampleFieldSurface, client, study_idx: int, **body):
+async def post_study_field(*, surface: SampleFieldSurface, client, study_idx: int, **body):
     """POST one entity's create-field route."""
     resp = await client.post(surface.url_template.format(study_idx=study_idx), json=body)
     return resp
 
 
 async def patch_study_field(
-    ctx,
     *,
     surface: SampleFieldSurface,
     client,
@@ -553,8 +549,7 @@ async def patch_study_field(
 ):
     """PATCH one entity's edit-field route and return the response untouched.
 
-    if_match None omits the header, which is how the 428 case is driven; the
-    row is already tracked by whoever created it, so nothing is tracked here.
+    if_match None omits the header, which is how the 428 case is driven.
     """
     headers = {} if if_match is None else {"If-Match": if_match}
     return await client.patch(
@@ -565,12 +560,9 @@ async def patch_study_field(
 
 
 async def get_study_field(
-    ctx, *, surface: SampleFieldSurface, client, study_idx: int, study_field_idx: int
+    *, surface: SampleFieldSurface, client, study_idx: int, study_field_idx: int
 ):
-    """GET one entity's read-field route and return the response untouched.
-
-    Nothing is tracked: a read creates no row.
-    """
+    """GET one entity's read-field route and return the response untouched."""
     return await client.get(
         surface.by_idx_url_template.format(study_idx=study_idx, study_field_idx=study_field_idx)
     )
@@ -674,7 +666,6 @@ async def assert_study_field_authz(
 async def _send_study_field_create(ctx, surface, client, study_idx):
     """Issue the create request one access case needs."""
     return await post_study_field(
-        ctx,
         surface=surface,
         client=client,
         study_idx=study_idx,
@@ -781,7 +772,6 @@ async def _send_study_field_get(ctx, surface, client, study_idx):
     before the path's field idx is looked up either way.
     """
     seeded = await post_study_field(
-        ctx,
         surface=surface,
         client=ctx["wet"],
         study_idx=study_idx,
@@ -790,7 +780,6 @@ async def _send_study_field_get(ctx, surface, client, study_idx):
     )
     study_field_idx = seeded.json()[surface.idx_key] if seeded.status_code == 201 else 1
     return await get_study_field(
-        ctx,
         surface=surface,
         client=client,
         study_idx=study_idx,
@@ -839,7 +828,6 @@ async def assert_study_field_create_conflict(
         global_a = await _seed_field_global(ctx, surface=surface, label="cfa")
         global_b = await _seed_field_global(ctx, surface=surface, label="cfb")
         first = await post_study_field(
-            ctx,
             surface=surface,
             client=ctx["user"],
             study_idx=study_idx,
@@ -850,7 +838,6 @@ async def assert_study_field_create_conflict(
         body = {"display_name": display_name, surface.global_fk_key: global_b}
     else:
         first = await post_study_field(
-            ctx,
             surface=surface,
             client=ctx["user"],
             study_idx=study_idx,
@@ -860,9 +847,7 @@ async def assert_study_field_create_conflict(
         assert first.status_code == 201, first.text
         body = {"display_name": display_name, "data_type": "text"}
 
-    resp = await post_study_field(
-        ctx, surface=surface, client=ctx["user"], study_idx=study_idx, **body
-    )
+    resp = await post_study_field(surface=surface, client=ctx["user"], study_idx=study_idx, **body)
     assert resp.status_code == expected_status, resp.text
     if case == "duplicate_name":
         assert "already" in resp.json()["detail"]
@@ -1031,14 +1016,14 @@ async def resolve_ineligible_owner_idx(
     prefix: str,
     created: dict,
 ) -> int:
-    """Resolve the owner_idx for one ineligibility kind; track any seeded
-    rows in `created` for FK-reverse cleanup at teardown.
+    """Resolve the owner_idx for one ineligibility kind, seeding a principal
+    when the kind needs one.
 
-    Caller passes the route-specific `prefix` (e.g., 'bs-route-elig',
-    'st-route-elig') so seeded principal display_names stay scoped to the
-    suite. Caller is also responsible for passing a `created` dict with the
-    standard 'user_principals' / 'service_account_principals' keys used by
-    the route's _cleanup_tracked.
+    A seeded principal hangs off no entity, so it is recorded in `created` for
+    the caller's own teardown. Caller passes the route-specific `prefix` (e.g.,
+    'bs-route-elig', 'st-route-elig') so seeded display_names stay scoped to the
+    suite, and a `created` dict carrying the 'user_principals' and
+    'service_account_principals' keys this appends to.
     """
     # The system principal exists but has no qiita.user row → is_user=False.
     if kind is IneligibilityKind.SYSTEM_PRINCIPAL:
