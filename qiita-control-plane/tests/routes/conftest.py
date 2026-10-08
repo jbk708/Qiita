@@ -3,8 +3,8 @@
 Holds the three-role AsyncClient triple, a PAT-minting client factory used
 by the per-route no-scope fixtures, a generic FK-reverse delete helper, and
 the parametrise source + driver for the owner-eligibility 422 surface. Each
-route test still owns its own `ctx` and `_cleanup_tracked` because the
-tracked table set differs per route.
+route test owns its own `ctx`, because what a route needs seeded differs
+per route; teardown does not, and goes through the ordered sweep.
 """
 
 import secrets

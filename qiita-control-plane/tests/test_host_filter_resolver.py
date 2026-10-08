@@ -120,9 +120,7 @@ async def ctx(postgres_pool):
     # SECOND study (the cross-study uniqueness test); the auto-seeded pair above
     # is torn down separately at the end.
     created: dict[str, list[int]] = {
-        "biosample_metadata": [],
         "biosample": [],
-        "biosample_study_field": [],
         "studies": [],
     }
     state = {

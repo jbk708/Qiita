@@ -64,13 +64,9 @@ async def ctx(role_keyed_clients):
     """Per-test fixture: route-keyed clients plus a `created` tracker for
     FK-reverse teardown over every table the seeds touch."""
     created: dict = {
-        "prep_sample_to_study": [],
         "prep_sample": [],
-        "biosample_to_study": [],
         "biosample": [],
-        "prep_sample_study_field": [],
         "prep_sample_global_field": [],
-        "study_access": [],
         "study": [],
     }
     yield {**role_keyed_clients, "created": created}

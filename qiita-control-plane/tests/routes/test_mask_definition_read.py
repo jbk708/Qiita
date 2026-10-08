@@ -166,16 +166,11 @@ async def ctx(role_keyed_clients):  # noqa: F811
     }
     role_keyed_clients["created"] = {
         "work_ticket": [],
-        "mask_sample": [],
         "mask": [],
-        "sequenced_sample": [],
         "sequenced_pool": [],
         "sequencing_run": [],
-        "prep_sample_to_study": [],
-        "biosample_to_study": [],
         "prep_sample": [],
         "biosample": [],
-        "study_access": [],
         "study": [],
     }
     yield role_keyed_clients

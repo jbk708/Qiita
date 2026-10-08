@@ -50,17 +50,10 @@ async def ctx(role_keyed_clients):
     """
     created: dict = {
         "terminology": [],
-        "biosample_metadata": [],
-        "prep_sample_metadata": [],
-        "biosample_to_study": [],
-        "prep_sample_to_study": [],
         "prep_sample": [],
         "biosample": [],
-        "biosample_study_field": [],
-        "prep_sample_study_field": [],
         "biosample_global_field": [],
         "prep_sample_global_field": [],
-        "study_access": [],
         "study": [],
     }
     yield {**role_keyed_clients, "created": created}

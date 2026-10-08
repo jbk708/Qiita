@@ -92,7 +92,6 @@ async def ctx(role_keyed_clients):
     The session principals (admin, wet_lab_admin, regular_user) are
     fixture-managed and never go in the cleanup list."""
     created: dict = {
-        "study_access": [],
         "study": [],
         "user_principals": [],
         "service_account_principals": [],

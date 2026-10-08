@@ -155,13 +155,9 @@ async def ctx(role_keyed_clients):
     rows) or by `_post_biosample` (for rows the route created on success).
     """
     created: dict = {
-        "biosample_metadata": [],
         "missing_value_reason": [],
-        "biosample_study_field": [],
         "biosample_global_field": [],
-        "biosample_to_study": [],
         "biosample": [],
-        "study_access": [],
         "study": [],
         "metadata_checklist": [],
         "user_principals": [],
