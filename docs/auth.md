@@ -294,6 +294,8 @@ That function also decides the **orphan** case, and decides it differently from 
 
 prep_sample-scoped **work-ticket** submission reuses the same per-study ADMIN check (`_check_prep_sample_study_access` walks the prep_sample's non-retired study links). All four paths bypass at `wet_lab_admin`, so the operator experience is uniform even though the user-facing predicate differs per route.
 
+Listing pools, by contrast, has a **study-first read**: `GET /api/v1/study/{study_idx}/sequenced-pool` returns the distinct pools a study's active samples sit in — `study:read` + `require_study_access(min_tier=VIEWER)` (wet_lab_admin+ bypass), the same gate and exclusions as the study's sequenced-sample idx listing. Each row carries the pool/run idx, the run's `instrument_model`, and this study's `sample_count` in that pool. It **withholds** the run-level `run_preflight_filename` that the run-first pool list (`require_caller_owns_run`) exposes, since a pool can hold other studies' samples and a study viewer need not own the run.
+
 ### Token-vs-OIDC scope source
 
 The token path returns the token's **own** `scopes` frozenset (whatever the mint stored). The OIDC path (no token; bearer is a fresh JWT) hands back the **role's full ceiling** — `POST /auth/pat` is the route that narrows this when it mints a PAT. Per-request bearers always carry their own scope set via the token path.
