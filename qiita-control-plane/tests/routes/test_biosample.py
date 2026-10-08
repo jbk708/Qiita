@@ -4784,10 +4784,11 @@ async def test_patch_biosample_metadata_by_unique_field_retired_biosample_409(ct
     resp = await _patch_by_unique_field(ctx["wet"], study_idx, id_field, "Sample 1")
 
     assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert "retired" in detail
-    assert "through field" in detail, detail
-    assert str(bs_idx) not in detail, detail
+    expected_detail = (
+        f"the biosample on study {study_idx} carrying 'Sample 1'"
+        f" through field {id_field!r} is retired"
+    )
+    assert resp.json()["detail"] == expected_detail
 
 
 async def test_patch_biosample_metadata_by_unique_field_empty_metadata_422(ctx):

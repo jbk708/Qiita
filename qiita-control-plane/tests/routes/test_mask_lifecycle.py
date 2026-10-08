@@ -475,12 +475,18 @@ async def test_align_planning_refuses_a_deprecated_mask(postgres_pool, client, l
         owner_idx=lifecycle["principal_idx"],
         sequenced_pool_item_id=f"item-{secrets.token_hex(4)}",
     )
+    # The control below needs reference resolution to be what fails, and any
+    # fixed idx stops being bogus if some other test using this database mints it.
+    bogus_reference_idx = (
+        await postgres_pool.fetchval("SELECT COALESCE(MAX(reference_idx), 0) FROM qiita.reference")
+        + 1_000_000
+    )
     try:
         kwargs = dict(
             app=None,
             sequencing_run_idx=run_idx,
             sequenced_pool_idx=pool_idx,
-            reference_idx=1,
+            reference_idx=bogus_reference_idx,
             mask_idx=lifecycle["mask_idx"],
             only_missing=False,
             originator_principal_idx=lifecycle["principal_idx"],
