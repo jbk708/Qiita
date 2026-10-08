@@ -831,6 +831,31 @@ async def test_registration_fails_before_any_run_when_ncbi_taxonomy_is_not_loade
     )
 
 
+@pytest.mark.parametrize("tag", ["taxon id", "host taxon id"])
+async def test_attribute_tag_naming_a_written_taxon_field_is_skipped_with_a_warning(reg, tag):
+    study_accession = unique_ena_accession("PRJNA")
+    run = _fixture_run("ena_runs_human_gut.json", study_accession=study_accession)
+    attrs = EnaSampleAttributes(
+        sample_accession=run.sample_accession, attributes={tag: ["408170"], "site": ["lab"]}
+    )
+
+    result = await _register(
+        reg,
+        study_header=_study_header(study_accession=study_accession),
+        ena_runs=[run],
+        sample_attributes=[attrs],
+    )
+
+    (outcome,) = result.ena_runs
+    assert outcome.status == EnaRunRegistrationStatus.REGISTERED, outcome.failure_reason
+    assert any(repr(tag) in w for w in outcome.harmonization.warnings)
+    assert outcome.harmonization.retained_unmapped == ["site"]
+    assert await _taxon_fields(reg["pool"], run.sample_accession) == {
+        "host taxon id": "9606",
+        "taxon id": "408170",
+    }
+
+
 async def test_a_second_run_on_the_same_sample_carries_no_warnings(reg):
     study_accession = unique_ena_accession("PRJNA")
     first = _fixture_run("ena_runs_host_text_only.json", study_accession=study_accession)

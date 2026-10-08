@@ -258,15 +258,25 @@ their GSC-MIxS display-name twins) stay unmapped in either vocabulary — see
 "No ENVO harmonization or free-text host matching" below.
 
 **Taxon ids come from ENA.** A new biosample's `taxon id` is the run's `tax_id` and its
-`host taxon id` is the run's `host_tax_id`; when ENA gives no host, the host implied by
-`tax_id` in the curated table (`_HOST_BY_SAMPLE_TAXON`, shared with
-`qiita-admin backfill host-taxon-id`) is used, and `not applicable` is written for a
-hostless environment. An id is written only if it is a loaded NCBI Taxonomy term
-(`qiita-admin terminology prepare-taxdump` loads more); anything else is written as
-`not provided` and listed in the run's `metadata_warnings`, as is a `host_tax_id` that
-disagrees with the table. A warning appears only on the run that created the biosample,
-so after a re-import or for a later run on the same sample, check the creating batch.
-The stored `not provided` still stops host filtering at submit.
+`host taxon id` is the run's `host_tax_id`. An id is written only if it is a loaded NCBI
+Taxonomy term (`qiita-admin terminology prepare-taxdump` loads more, but biosamples
+already imported are not revisited); anything else is written as `not provided` and
+listed in the run's `metadata_warnings`. A `host_tax_id` that is loaded is written even
+when it disagrees with the host the sample's `tax_id` implies, with a warning. A
+`host_tax_id` naming the sample's own taxon or another metagenome taxon is not a host and
+is ignored, with a warning.
+
+With no usable `host_tax_id`, a free-text `host` that is not a missing-value term such as
+`missing` gives `not provided` and a warning quoting the text. Otherwise the host comes
+from the sample taxon: human or mouse metagenomes give that host, and a hostless
+environment such as seawater or soil gives `not applicable`, meaning the sample is
+submitted with no host depletion. A taxon the table does not cover gives `not provided`.
+`qiita-admin backfill host-taxon-id` reads the same table. An attribute tag named `taxon
+id` or `host taxon id` is dropped with a warning, since ENA's ids fill those fields.
+
+A warning appears only on the run that created the biosample, so after a re-import or for
+a later run on the same sample, check the creating batch. The stored `not provided` still
+stops host filtering at submit.
 
 ## Scope and limits
 

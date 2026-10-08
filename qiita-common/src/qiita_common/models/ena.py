@@ -126,6 +126,12 @@ class EnaRunRecord(BaseModel):
     host_tax_id: str | None = None
     host: str | None = None
 
+    @field_validator("tax_id", "host_tax_id", mode="before")
+    @classmethod
+    def _taxon_id_to_str(cls, v: object) -> object:
+        # read_ena returns tax_id as BIGINT and host_tax_id as VARCHAR.
+        return str(v) if isinstance(v, int) else v
+
     @field_validator(
         "library_layout",
         "library_strategy",
@@ -137,7 +143,7 @@ class EnaRunRecord(BaseModel):
     )
     @classmethod
     def _normalize_blank_to_none(cls, v: str | None) -> str | None:
-        # read_ena reports a missing library field as "", not NULL -- normalize
+        # read_ena reports a missing text field as "", not NULL -- normalize
         # so a consumer's `is not None` means "ENA reported one", as on
         # EnaStudyHeader.
         if v is not None and not v.strip():

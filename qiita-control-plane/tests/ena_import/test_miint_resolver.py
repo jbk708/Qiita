@@ -212,6 +212,20 @@ def test_resolve_runs_carries_sample_taxon_and_host_fields(monkeypatch, fixture,
     assert (run.tax_id, run.host_tax_id, run.host) == expected
 
 
+def test_run_record_accepts_the_integer_tax_id_miint_returns():
+    run = EnaRunRecord(
+        run_accession="SRR1",
+        experiment_accession="SRX1",
+        sample_accession="SAMN1",
+        study_accession="PRJNA1",
+        status="public",
+        tax_id=408170,
+        host_tax_id=9606,
+    )
+
+    assert (run.tax_id, run.host_tax_id) == ("408170", "9606")
+
+
 def test_run_record_normalizes_blank_taxon_and_host_to_none():
     base = {
         "run_accession": "SRR1",

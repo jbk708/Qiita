@@ -1,5 +1,5 @@
 {
-  "_source": "recorded through miint read_ena(\"PRJNA753658\", fields=...) (Portal result=read_run) on 2026-10-05; first 3 runs with a blank tax_id of the study, trimmed to keep the file small; list and integer columns re-typed from the extension's semicolon-joined strings",
+  "_source": "recorded through miint read_ena(\"PRJNA753658\", fields=...) (Portal result=read_run) on 2026-10-05; first 3 runs with a blank tax_id of the study, trimmed to keep the file small; list and integer columns (tax_id is BIGINT) re-typed from the extension's semicolon-joined strings",
   "columns": [
     "run_accession",
     "experiment_accession",

@@ -3,11 +3,12 @@
 import json
 from pathlib import Path
 
+import pytest
 from qiita_common.models.ena import EnaRunRecord
 
 from qiita_control_plane import ena_import
-from qiita_control_plane.backfill.host_taxon import implied_hosts
 from qiita_control_plane.ena_import.harmonization import build_biosample_metadata
+from qiita_control_plane.host_by_sample_taxon import implied_hosts
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -70,6 +71,95 @@ def test_host_text_without_a_host_tax_id_is_not_provided_and_the_warning_quotes_
     assert any("insect5" in w and run.sample_accession in w for w in warnings)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "quoted"),
+    [
+        ({"host": "Homo sapiens"}, "Homo sapiens"),
+        ({"tax_id": "408170", "host": "Mus musculus"}, "Mus musculus"),
+        ({"host": "Anaerobic reactor treating cattle manure"}, "Anaerobic reactor"),
+    ],
+)
+def test_host_text_without_a_host_tax_id_beats_the_table(overrides, quoted):
+    run = _run("ena_runs_seawater.json", **overrides)
+    run2 = _run("ena_runs_human_gut.json", host_tax_id=None, **overrides)
+
+    for r in (run, run2):
+        host, _, warnings = _fields(r)
+        assert host == "not provided"
+        assert any(quoted in w and r.sample_accession in w for w in warnings)
+
+
+@pytest.mark.parametrize(
+    "text", ["missing", "Not Collected", " unknown ", "missing: control sample"]
+)
+def test_missing_value_host_text_falls_back_to_the_table(text):
+    run = _run("ena_runs_human_gut.json", host_tax_id=None, host=text)
+
+    assert _fields(run) == ("9606", "408170", [])
+
+
+def test_long_host_text_is_truncated_in_the_warning():
+    run = _run("ena_runs_seawater.json", host="x" * 500)
+
+    _, _, warnings = _fields(run)
+
+    assert max(len(w) for w in warnings) < 250
+
+
+@pytest.mark.parametrize("host_tax_id", ["1561972", "256318", "408170"])
+def test_host_tax_id_naming_an_environment_is_not_a_host(host_tax_id):
+    run = _run("ena_runs_seawater.json", host_tax_id=host_tax_id)
+
+    host, _, warnings = _fields(run)
+
+    assert host == "not applicable"
+    assert any(host_tax_id in w and "not a host" in w for w in warnings)
+
+
+def test_host_tax_id_equal_to_the_sample_taxon_is_not_a_host_even_off_the_table():
+    run = _run("ena_runs_host_text_only.json", host_tax_id="749906", host=None)
+
+    host, _, warnings = _fields(run)
+
+    assert host == "not provided"
+    assert any("749906" in w and "not a host" in w for w in warnings)
+
+
+def test_environment_host_tax_id_still_falls_back_to_the_table_host():
+    run = _run("ena_runs_human_gut.json", host_tax_id="1561972", host=None)
+
+    host, _, warnings = _fields(run)
+
+    assert host == "9606"
+    assert any("1561972" in w and "not a host" in w for w in warnings)
+
+
+def test_host_tax_id_on_a_hostless_environment_is_reported_as_a_conflict():
+    run = _run("ena_runs_seawater.json", host_tax_id="9606")
+
+    host, _, warnings = _fields(run)
+
+    assert host == "9606"
+    assert any("9606" in w and "differs" in w and "none" in w for w in warnings)
+
+
+def test_absent_tax_id_is_reported_without_printing_none():
+    _, taxon, warnings = _fields(_run("ena_runs_missing_sample_record.json"))
+
+    assert taxon == "not provided"
+    assert not any("None" in w for w in warnings)
+
+
+@pytest.mark.parametrize("tag", ["taxon id", "host taxon id"])
+def test_attribute_tag_naming_a_written_taxon_field_is_dropped_and_reported(tag):
+    global_metadata, local_metadata, result = _build(_HUMAN_GUT, {tag: ["1"], "site": ["lab"]})
+
+    assert (global_metadata["host taxon id"], global_metadata["taxon id"]) == ("9606", "408170")
+    assert local_metadata == {"site": "lab"}
+    assert result.retained_unmapped == ["site"]
+    assert any(repr(tag) in w for w in result.warnings)
+
+
 def test_run_without_a_sample_record_has_both_fields_not_provided_and_two_warnings():
     host, taxon, warnings = _fields(_run("ena_runs_missing_sample_record.json"))
 
@@ -97,7 +187,7 @@ def test_host_tax_id_wins_over_a_conflicting_table_host_and_the_conflict_is_repo
 
 
 def test_table_host_that_is_not_loaded_is_not_provided_with_a_warning():
-    run = _run("ena_runs_human_gut.json", host_tax_id=None)
+    run = _run("ena_runs_human_gut.json", host_tax_id=None, host=None)
     global_metadata, _, result = build_biosample_metadata(
         {},
         ena_run=run,

@@ -20,14 +20,15 @@ import secrets
 
 import pytest
 import pytest_asyncio
+from qiita_common.models import NCBI_TAXONOMY_NAME
 
 from qiita_control_plane.backfill.host_taxon import (
     HostTaxonSource,
     apply_backfill,
     classify,
-    implied_hosts,
     plan_backfill,
 )
+from qiita_control_plane.host_by_sample_taxon import implied_hosts
 from qiita_control_plane.repositories._sample_helpers import (
     _get_or_create_globally_linked_study_field,
     insert_entity_to_study,
@@ -108,16 +109,19 @@ def test_host_associated_metagenome_implies_its_host(sample_taxon, host):
         "1671699",
         "527640",
         "496921",
-        "942017",
-        "1076179",
         "1260732",
-        "1768876",
     ],
 )
 def test_hostless_environment_implies_no_host(sample_taxon):
     a = _classify(sample_taxon_term_id=sample_taxon)
     assert a.source is HostTaxonSource.NO_HOST
     assert a.missing_reason == "not applicable"
+
+
+@pytest.mark.parametrize("sample_taxon", ["942017", "1076179", "1768876"])
+def test_engineered_environment_stays_unresolved(sample_taxon):
+    """ENA records a host on many of these samples, so the environment alone settles nothing."""
+    assert _classify(sample_taxon_term_id=sample_taxon).source is HostTaxonSource.UNRESOLVED
 
 
 def test_implied_hosts_restricts_the_table_to_the_given_taxa():
@@ -199,7 +203,7 @@ async def ctx(postgres_pool):
             created_by_idx=principal_idx,
         )
 
-    created: dict[str, list[int]] = {"biosample": []}
+    created: dict[str, list[int]] = {"biosample": [], "term": []}
     state = {
         "pool": pool,
         "principal_idx": principal_idx,
@@ -219,6 +223,9 @@ async def ctx(postgres_pool):
     )
     await pool.execute(
         "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", created["biosample"]
+    )
+    await pool.execute(
+        "DELETE FROM qiita.terminology_term WHERE idx = ANY($1::bigint[])", created["term"]
     )
     # Bulk-delete by study rather than by tracked idx: the backfill CREATES the
     # study's host_taxon_id field as a side effect (that is the point), so the
@@ -246,7 +253,14 @@ async def _seed_biosample_with_taxon(ctx, term_id):
     ctx["created"]["biosample"].append(bs_idx)
 
     term = await fetch_ncbi_taxonomy_term(ctx["pool"], term_id)
-    assert term is not None, f"NCBI term {term_id} should be seeded"
+    if term is None:
+        term = await ctx["pool"].fetchrow(
+            "INSERT INTO qiita.terminology_term (terminology_idx, term_id, label)"
+            " SELECT idx, $2, $2 FROM qiita.terminology WHERE name = $1 RETURNING idx",
+            NCBI_TAXONOMY_NAME,
+            term_id,
+        )
+        ctx["created"]["term"].append(term["idx"])
     await ctx["pool"].execute(
         "INSERT INTO qiita.biosample_metadata"
         " (biosample_idx, biosample_study_field_idx, value_terminology_term_idx, created_by_idx)"
@@ -300,6 +314,19 @@ async def test_plan_then_apply_writes_the_resolvable_and_skips_the_rest(ctx):
     assert (await _host_taxon_of(ctx, human))["term_id"] == NCBI_TAXONOMY_HUMAN_TERM_ID
     assert (await _host_taxon_of(ctx, water))["reason"] == "not applicable"
     assert await _host_taxon_of(ctx, generic) is None
+
+
+@pytest.mark.db
+async def test_backfill_writes_not_applicable_for_a_hostless_taxon_added_to_the_table(ctx):
+    soil = await _seed_biosample_with_taxon(ctx, _SOIL_METAGENOME)
+
+    plan = await plan_backfill(ctx["pool"])
+    mine = [a for a in plan.assignments if a.biosample_idx == soil]
+    written = await apply_backfill(ctx["pool"], mine, principal_idx=ctx["principal_idx"])
+
+    assert [a.source for a in mine] == [HostTaxonSource.NO_HOST]
+    assert written == 1
+    assert (await _host_taxon_of(ctx, soil))["reason"] == "not applicable"
 
 
 @pytest.mark.db

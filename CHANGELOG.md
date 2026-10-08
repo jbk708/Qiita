@@ -4036,14 +4036,15 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 - **An ENA import now writes `host taxon id` and `taxon id` from ENA instead of
   `not provided` for every sample (#653).** Each run's `host_tax_id` and `tax_id` are read with
   the run list; a taxon id is written only if it is a loaded NCBI Taxonomy term, and
-  otherwise the field is `not provided` and the gap is reported in the run's
-  `metadata_warnings` on `GET /ena-import-batch/{idx}`. With no `host_tax_id`, the host
-  comes from the curated sample-taxon table (`not applicable` for a hostless environment).
-  The table gains human and human-skin metagenomes (human), mouse gut and skin metagenomes
-  (mouse), and twelve abiotic or engineered environments such as soil, marine sediment and
-  activated sludge (no host). This also changes `qiita-admin backfill host-taxon-id`:
-  biosamples with those taxa are now written instead of reported unresolved. Biosamples imported
-  earlier are unchanged.
+  otherwise the field is `not provided` and the gap is reported in `metadata_warnings` on
+  the run entry of `GET /ena-import-batch/{idx}`. A `host_tax_id` naming an environment
+  rather than a host is ignored with a warning, and so is a sample attribute tagged
+  `taxon id` or `host taxon id`. With no `host_tax_id`, free-text `host` that names an
+  organism gives `not provided`; otherwise the host comes from the curated sample-taxon
+  table, which gains the human, human skin, mouse gut and mouse skin metagenomes and nine
+  natural hostless environments such as soil and marine sediment (`not applicable`).
+  `qiita-admin backfill host-taxon-id` shares the table, so biosamples with those taxa are
+  now written instead of reported unresolved. Biosamples imported earlier are unchanged.
 
 - **Declaring a sample field unique within its study no longer lets a concurrent write
   slip past the new policy (#628).** The propagation that mirrors the policy onto the

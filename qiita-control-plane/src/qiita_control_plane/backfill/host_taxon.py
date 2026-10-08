@@ -10,8 +10,8 @@ The organism is not derivable from the taxonomy tree. `qiita.terminology_term`
 stores only `(term_id, label)` — no parent, no lineage — and NCBI's metagenome
 taxa do not sit under their host anyway (`human gut metagenome` is not a
 descendant of *Homo sapiens*). So the mapping cannot be computed; it is an
-explicit, curated table, `_HOST_BY_SAMPLE_TAXON` below. That is the point: the
-judgment is small, visible, and reviewable rather than buried in a heuristic.
+explicit, curated table, `host_by_sample_taxon.HOST_BY_SAMPLE_TAXON`. That is the
+point: the judgment is small, visible, and reviewable rather than buried in a heuristic.
 
 Two facts drive each biosample, in this order:
 
@@ -51,60 +51,14 @@ from qiita_common.models import (
     MISSING_REASON_CONTROL_SAMPLE,
     MISSING_REASON_NOT_APPLICABLE,
     MISSING_REASON_VALUE_COLUMN,
-    NCBI_TAXONOMY_HUMAN_TERM_ID,
     NCBI_TAXONOMY_NAME,
     TERMINOLOGY_TERM_VALUE_COLUMN,
 )
 
+from ..host_by_sample_taxon import HOST_BY_SAMPLE_TAXON
 from ..preflight import control_samples_from_blob
 from ..repositories._sample_helpers import _get_or_create_globally_linked_study_field
 from ..repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
-
-# ---------------------------------------------------------------------------
-# The curated mapping. THIS IS THE JUDGMENT — everything else is mechanism.
-# ---------------------------------------------------------------------------
-# Keyed on the sample's OWN taxon (`taxon_id`), which for a metagenome names the
-# environment it was drawn from. The value is the host that environment implies.
-#
-# Deliberately NOT exhaustive over NCBI. A taxon that is absent here is not
-# "assumed hostless" — it is UNRESOLVED, and the submit path aborts on it. Add a
-# row only when the host is genuinely implied by the environment, and note why.
-_HOST_BY_SAMPLE_TAXON: dict[str, str | None] = {
-    # A human gut metagenome is, by construction, drawn from a human gut.
-    "408170": NCBI_TAXONOMY_HUMAN_TERM_ID,
-    # Seawater has no host. This is a decision ('not applicable'), not a gap —
-    # and it means such samples are NOT host-depleted. Whether human reads should
-    # still be removed from a host-LESS sample for contamination/privacy reasons
-    # is a separate question this table cannot express; it is tracked separately.
-    "1561972": None,
-    "646099": NCBI_TAXONOMY_HUMAN_TERM_ID,
-    "539655": NCBI_TAXONOMY_HUMAN_TERM_ID,  # human skin metagenome
-    "410661": "10090",  # mouse gut metagenome
-    "540485": "10090",  # mouse skin metagenome
-    # Abiotic or engineered environments, hostless like seawater.
-    "410658": None,  # soil
-    "412755": None,  # marine sediment
-    "556182": None,  # freshwater sediment
-    "408172": None,  # marine
-    "1504975": None,  # salt marsh
-    "1671699": None,  # sand
-    "527640": None,  # microbial mat
-    "496921": None,  # stromatolite
-    "942017": None,  # activated sludge
-    "1076179": None,  # bioreactor
-    "1260732": None,  # coal
-    "1768876": None,  # oil field
-    # Deliberately ABSENT: '256318' (the bare `metagenome` root). It names no
-    # environment, so it implies no host. On the live data these are almost
-    # entirely blanks, which rule 1 catches before this table is consulted; what
-    # is left over is genuinely under-specified metadata and must be curated, not
-    # guessed at here.
-}
-
-
-def implied_hosts(sample_term_ids: Iterable[str]) -> dict[str, str | None]:
-    """The curated table restricted to `sample_term_ids`; absent means unresolved, None no host."""
-    return {t: _HOST_BY_SAMPLE_TAXON[t] for t in sample_term_ids if t in _HOST_BY_SAMPLE_TAXON}
 
 
 @dataclass
@@ -198,7 +152,7 @@ def classify(
     # human. `not in` rather than `.get(...) is None` — the table maps a taxon to
     # None to MEAN "this environment has no host", which is a decision, and that
     # is a different answer from "we have no row for this taxon".
-    if sample_taxon_term_id not in _HOST_BY_SAMPLE_TAXON:
+    if sample_taxon_term_id not in HOST_BY_SAMPLE_TAXON:
         return BiosampleAssignment(
             biosample_idx=biosample_idx,
             study_idx=study_idx,
@@ -207,7 +161,7 @@ def classify(
             sample_taxon_label=sample_taxon_label,
         )
 
-    host_term_id = _HOST_BY_SAMPLE_TAXON[sample_taxon_term_id]
+    host_term_id = HOST_BY_SAMPLE_TAXON[sample_taxon_term_id]
     if host_term_id is None:
         return BiosampleAssignment(
             biosample_idx=biosample_idx,
@@ -448,7 +402,7 @@ async def apply_backfill(
 async def _fetch_ncbi_term_idxs(conn: asyncpg.Connection) -> dict[str, int]:
     """Resolve every host term_id the curated table can assign, up front, so a
     missing seed fails once here rather than partway through a 3000-row write."""
-    wanted = sorted({t for t in _HOST_BY_SAMPLE_TAXON.values() if t is not None})
+    wanted = sorted({t for t in HOST_BY_SAMPLE_TAXON.values() if t is not None})
     rows = await conn.fetch(
         "SELECT tt.term_id, tt.idx"
         "  FROM qiita.terminology_term tt"

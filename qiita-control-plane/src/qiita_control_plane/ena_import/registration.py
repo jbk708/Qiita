@@ -51,7 +51,7 @@ from qiita_common.models.ena import (
     EnaStudyHeader,
 )
 
-from qiita_control_plane.backfill.host_taxon import implied_hosts
+from qiita_control_plane.host_by_sample_taxon import implied_hosts
 from qiita_control_plane.repositories import require_transaction
 from qiita_control_plane.repositories._sample_helpers import (
     fetch_metadata_checklist_idx_by_name,
