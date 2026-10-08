@@ -30,7 +30,6 @@ from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADA
 from qiita_control_plane.routes import _helpers as route_helpers
 from qiita_control_plane.routes import biosample as routes_biosample
 from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
     fetch_seeded_metagenome_term,
     retire_biosample,
     retire_biosample_to_study_link,
@@ -41,7 +40,11 @@ from qiita_control_plane.testing.db_seeds import (
     seed_local_study_field,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 from qiita_control_plane.testing.unique_names import (
     unique_accession,
     unique_field_name,

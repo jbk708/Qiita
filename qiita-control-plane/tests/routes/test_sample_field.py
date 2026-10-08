@@ -14,8 +14,8 @@ import pytest_asyncio
 from qiita_common.models import FieldDataType
 
 from qiita_control_plane.routes import _helpers as route_helpers
-from qiita_control_plane.testing.db_seeds import delete_idxs, seed_terminology
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
+from qiita_control_plane.testing.db_seeds import seed_terminology
+from qiita_control_plane.testing.db_teardown import delete_idxs, teardown_entity_graph
 from qiita_control_plane.testing.unique_names import unique_field_name
 
 from .conftest import (

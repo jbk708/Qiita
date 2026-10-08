@@ -20,12 +20,15 @@ from qiita_common.models import ReadMaskReason
 
 from qiita_control_plane.actions.library import persist_read_metrics
 from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 
 pytestmark = pytest.mark.db
 

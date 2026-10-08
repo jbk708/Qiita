@@ -1,15 +1,14 @@
-"""Ordered teardown of the study / biosample / prep_sample graph.
+"""Teardown helpers: the ordered entity-graph sweep, and the by-idx primitive.
 
-Deletes by parent FK rather than by row idx, so a caller needs no per-row
-bookkeeping and a row nothing recorded — one a trigger or a cascade produced —
-goes with the rest. The caller supplies three entity idx lists and nothing
-else; these cannot be derived, because these entities may legitimately carry no
-study link.
+The sweep deletes by parent FK rather than by row idx, so a caller needs no
+per-row bookkeeping and a row nothing recorded — one a trigger or a cascade
+produced — goes with the rest. The caller supplies three entity idx lists and
+nothing else; these cannot be derived, because these entities may legitimately
+carry no study link. Everything above that graph — pools, runs, principals —
+the caller deletes itself, which is what delete_idxs is for.
 """
 
 import asyncpg
-
-from .db_seeds import _reject_non_identifiers, delete_idxs
 
 STUDY = "study"
 BIOSAMPLE = "biosample"
@@ -104,6 +103,37 @@ class EntityGraphNotSweptError(AssertionError):
             f"{surviving} row(s) survive in qiita.{table} for the swept entities"
             f" (matched on {column}); the sweep list is missing this table"
         )
+
+
+def _reject_non_identifiers(caller: str, *names: str) -> None:
+    """Raise unless every name is a bare identifier.
+
+    These names are interpolated into the statement rather than bound, which
+    no placeholder can do for a table or a column.
+    """
+    for name in names:
+        if not name.isidentifier():
+            raise ValueError(f"{caller} rejects a non-identifier name: {name!r}")
+
+
+async def delete_idxs(pool: asyncpg.Pool, table: str, idxs) -> None:
+    """Delete rows by idx from qiita.<table>.
+
+    `idxs` may be a scalar int or an iterable of ints; an empty iterable is a
+    no-op. The scalar form is normalised so callers can pass a single
+    auto-seeded idx without wrapping it in a list. `table` is interpolated into
+    the statement, so it must be a literal the caller wrote, never input.
+    """
+    _reject_non_identifiers("delete_idxs", table)
+    # Normalize a bare int into a one-element list so callers can pass either.
+    if isinstance(idxs, int):
+        idxs = [idxs]
+    if not idxs:
+        return
+    await pool.execute(
+        f"DELETE FROM qiita.{table} WHERE idx = ANY($1::bigint[])",
+        idxs,
+    )
 
 
 async def _fetch_genome_idxs(pool: asyncpg.Pool, prep_sample_idxs: list[int]) -> list[int]:

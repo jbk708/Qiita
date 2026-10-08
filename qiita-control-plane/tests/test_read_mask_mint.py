@@ -30,7 +30,6 @@ from qiita_control_plane.repositories.reference_membership import (
     reference_sequence_set_hash,
 )
 from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
     delete_reference_with_sequences,
     seed_biosample_with_sequenced_prep_sample,
     seed_legacy_mask_definition,
@@ -38,7 +37,11 @@ from qiita_control_plane.testing.db_seeds import (
     seed_sequenced_sample_subtype,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 
 
 def _step(name: str, params: dict | None = None) -> WorkflowStep:

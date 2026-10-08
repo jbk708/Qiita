@@ -16,8 +16,12 @@ from fastapi import HTTPException
 from qiita_common.auth_constants import SYSTEM_PRINCIPAL_IDX, Scope, SystemRole
 from qiita_common.models import Tier
 
-from qiita_control_plane.testing.db_seeds import delete_idxs, seed_study
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_seeds import seed_study
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 
 
 def _human(*, role=SystemRole.USER, scopes=frozenset(), profile_complete=True):

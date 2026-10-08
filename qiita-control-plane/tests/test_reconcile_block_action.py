@@ -37,13 +37,16 @@ from qiita_control_plane.repositories.mask_definition import mint_mask_definitio
 from qiita_control_plane.repositories.sequence_range import mint_sequence_range
 from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
-    delete_idxs,
     seed_action_if_absent,
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 
 pytestmark = pytest.mark.db
 

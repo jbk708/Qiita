@@ -32,13 +32,16 @@ from qiita_control_plane.repositories.ena_import_batch import (
 from qiita_control_plane.repositories.study import create_study
 from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
-    delete_idxs,
     seed_action_if_absent,
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 from qiita_control_plane.testing.unique_names import unique_ena_accession
 
 pytestmark = pytest.mark.db

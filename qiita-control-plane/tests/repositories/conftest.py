@@ -35,7 +35,6 @@ from qiita_control_plane.repositories.biosample import insert_biosample
 from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
 from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_METADATA_SPEC
 from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
     seed_biosample_global_field,
     seed_biosample_with_sequenced_prep_sample,
     seed_local_study_field,
@@ -44,7 +43,11 @@ from qiita_control_plane.testing.db_seeds import (
     seed_study,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 from qiita_control_plane.testing.unique_names import unique_field_name
 
 # Both stacks run every test parameterized over this; pytest reports ids as

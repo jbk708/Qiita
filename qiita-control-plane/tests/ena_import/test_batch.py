@@ -35,12 +35,11 @@ from qiita_control_plane.ena_import.registration import EnaRunRegistrationStatus
 from qiita_control_plane.repositories.sequence_range import mint_sequence_range
 from qiita_control_plane.repositories.study import create_study
 from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
     disable_principal,
     retire_principal,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import delete_idxs, teardown_entity_graph
 from qiita_control_plane.testing.postgres import POSTGRES_POOL_MAX_SIZE
 from qiita_control_plane.testing.unique_names import (
     unique_accession,

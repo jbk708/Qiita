@@ -35,7 +35,6 @@ from qiita_control_plane.repositories.sequence_range import mint_sequence_range
 from qiita_control_plane.runner import AdapterSetHashes
 from qiita_control_plane.testing.db_seeds import (
     NCBI_TAXONOMY_HUMAN_TERM_ID,
-    delete_idxs,
     fetch_missing_value_reason_idx,
     fetch_ncbi_taxonomy_term,
     fetch_seeded_metagenome_term,
@@ -44,7 +43,11 @@ from qiita_control_plane.testing.db_seeds import (
     seed_host_reference,
     seed_user_principal,
 )
-from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import (
+    delete_idxs,
+    delete_principal,
+    teardown_entity_graph,
+)
 
 pytestmark = pytest.mark.db
 

@@ -10,7 +10,6 @@ import pytest
 from qiita_common.models import GenomeSource
 
 from qiita_control_plane.testing.db_seeds import (
-    delete_idxs,
     seed_bare_feature,
     seed_biosample_with_sequenced_prep_sample,
     seed_feature_genome,
@@ -31,6 +30,7 @@ from qiita_control_plane.testing.db_teardown import (
     _entity_keyed_candidates,
     _sweep_table,
     assert_entity_graph_swept,
+    delete_idxs,
     delete_principal,
     teardown_entity_graph,
 )

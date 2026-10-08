@@ -28,13 +28,12 @@ from qiita_common.models import ScopeTargetKind
 
 from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
-    delete_idxs,
     seed_action_if_absent,
     seed_biosample_to_study_link,
     seed_biosample_with_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
 )
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
+from qiita_control_plane.testing.db_teardown import delete_idxs, teardown_entity_graph
 
 from .conftest import (  # noqa: F401
     _grant_study_access,
