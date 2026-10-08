@@ -81,9 +81,7 @@ async def _attach_sample_with_reports(db, *, owner, pool_idx, item_id, raw_mate,
 @pytest_asyncio.fixture
 async def seeded_pool(ctx):
     """Seed a run + pool with two processed sequenced_samples carrying QC reports
-    (raw mean_quality 30 over 1000 bases, 20 over 3000 → pooled 22.5). The first
-    sample establishes the run + pool via the shared helper;
-    the second attaches to that same pool with a direct insert."""
+    (raw mean_quality 30 over 1000 bases, 20 over 3000 → pooled 22.5)."""
     db = ctx["pool"]
     owner = ctx["wet_session"]["principal_idx"]
     created = []

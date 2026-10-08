@@ -1019,10 +1019,9 @@ async def resolve_ineligible_owner_idx(
     """Resolve the owner_idx for one ineligibility kind, seeding a principal
     when the kind needs one.
 
-    A seeded principal is recorded in `created`. Caller passes the
-    route-specific `prefix` (e.g.,
-    'bs-route-elig', 'st-route-elig') so seeded display_names stay scoped to the
-    suite, and a `created` dict carrying the 'user_principals' and
+    Caller passes the route-specific `prefix` (e.g., 'bs-route-elig',
+    'st-route-elig') so seeded display_names stay scoped to the suite, and a
+    `created` dict carrying the 'user_principals' and
     'service_account_principals' keys this appends to.
     """
     # The system principal exists but has no qiita.user row → is_user=False.

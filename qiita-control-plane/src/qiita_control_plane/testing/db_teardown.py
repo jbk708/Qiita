@@ -370,9 +370,9 @@ async def teardown_ena_study_graph(
         " WHERE study_idx = ANY($1::bigint[])",
         named_studies,
     )
-    # The runs are only in range once a study is: their pools are referenced by
-    # the sequenced_samples the sweep removes, and with no entity in range those
-    # rows survive and the pool delete below fails on them.
+    # The runs go only when a study does: their pools are referenced by the
+    # sequenced_samples the sweep removes, and it removes none when no
+    # prep_sample is in range, so the pool delete below would fail on them.
     run_idxs: list[int] = []
     if named_studies:
         run_rows = await pool.fetch(

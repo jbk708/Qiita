@@ -7,9 +7,9 @@ atomic state transition, the idempotent PENDING gate materialization, and the
 work_ticket back-fill that closes the mint-ordering cycle.
 
 Each test seeds its own principal + sequenced prep_samples + a mask_definition,
-which the sweep then takes, so the suite can run against the shared
-postgres_pool fixture. Blocks a test creates are tracked in `blk['created_blocks']`
-so teardown targets exactly those rows (parallel-safe — no global block sweep).
+so the suite can run against the shared postgres_pool fixture. Blocks that a
+test creates are tracked in `blk['created_blocks']` so teardown targets exactly
+those rows (parallel-safe — no global block sweep).
 """
 
 import secrets

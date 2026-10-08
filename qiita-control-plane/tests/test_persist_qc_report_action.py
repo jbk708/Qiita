@@ -7,8 +7,8 @@ consuming the qc_report.json sidecars from the qc_report_raw / qc_report_filtere
 steps.
 
 Each test seeds its own principal -> biosample -> prep_sample chain (and, where
-needed, the sequenced_sample subtype), which the sweep then takes, so the file
-runs against the shared postgres_pool fixture.
+needed, the sequenced_sample subtype), so the file runs against the shared
+postgres_pool fixture.
 """
 
 import json

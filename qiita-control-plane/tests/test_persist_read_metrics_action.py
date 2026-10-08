@@ -6,8 +6,8 @@ onto the 1:1 sequenced_sample for a prep_sample. It is the in-process action
 fastq-to-parquet runs after host_filter, reading the mask host_filter emitted.
 
 Each test seeds its own principal -> biosample -> prep_sample chain (and, where
-needed, the sequenced_sample subtype), which the sweep then takes, so the file
-runs against the shared postgres_pool fixture.
+needed, the sequenced_sample subtype), so the file runs against the shared
+postgres_pool fixture.
 """
 
 import secrets

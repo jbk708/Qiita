@@ -1311,7 +1311,6 @@ async def _seed_one_sequenced_sample(
     protocol_idx = await _fetch_prep_protocol_idx(ctx)
     item_id = _unique_item_id(suffix.upper())
 
-    # Land the composite; the route records each entity in ctx for the sweep.
     resp = await _post_sequenced_sample(
         ctx["wet"],
         ctx,
@@ -4253,10 +4252,9 @@ async def test_patch_sequenced_sample_metadata_admin_tier_writes(ctx):
 
 async def _seed_roster_case(ctx, suffix: str) -> tuple[int, int, int, int, int]:
     """Seed one roster test's precondition chain: run, pool, study, a
-    biosample linked to the study, and the prep-protocol idx. The entities go
-    to the sweep; the run and pool are dropped after it. The wet_lab_admin
-    principal owns every row, so the
-    default POST passes the route's ownership and study-admin gates."""
+    biosample linked to the study, and the prep-protocol idx. The wet_lab_admin
+    principal owns every row, so the default POST passes the route's ownership
+    and study-admin gates."""
     run_idx, pool_idx = await _seed_run_and_pool(ctx, suffix)
     study_idx = await _seed_study(ctx, owner_idx=ctx["wet_session"]["principal_idx"], suffix=suffix)
     bs_idx = await _seed_biosample_linked_to_study(

@@ -1359,9 +1359,9 @@ async def test_post_biosample_metadata_uses_seeded_globals(ctx):
 
 
 async def _seed_link_to_study(ctx, *, study_idx, owner_idx):
-    """Seed a biosample owned by `owner_idx`, link it to `study_idx`, and
-    record the biosample in `ctx['created']`. Wraps the
-    db_seeds primitives so the per-test setup stays a single line."""
+    """Seed a biosample owned by `owner_idx` and link it to `study_idx`.
+
+    Wraps the db_seeds primitives so the per-test setup stays a single line."""
     bs_idx = await seed_biosample(ctx["pool"], owner_idx=owner_idx, created_by_idx=owner_idx)
     ctx["created"]["biosample"].append(bs_idx)
     await seed_biosample_to_study_link(

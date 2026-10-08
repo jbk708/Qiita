@@ -6,10 +6,14 @@ alone; and a table missing from the sweep list is named rather than surfacing
 later as a foreign-key violation.
 """
 
+import secrets
+
 import pytest
 from qiita_common.models import GenomeSource
 
 from qiita_control_plane.testing.db_seeds import (
+    delete_action_if_created,
+    seed_action_if_absent,
     seed_bare_feature,
     seed_biosample_to_study_link,
     seed_biosample_with_sequenced_prep_sample,
@@ -450,7 +454,7 @@ async def test__sweep_table_rejects_a_non_identifier_column():
 
 @pytest.fixture
 async def ena_graph(postgres_pool):
-    """A study registered under an accession, with one linked sample and one run.
+    """A study registered under an accession, with its linked entities and a run.
 
     Shaped the way an ENA import leaves things: the study carries both accession
     columns, the biosample and prep_sample reach it only through their link
@@ -461,13 +465,14 @@ async def ena_graph(postgres_pool):
     under test.
     """
     accession = unique_ena_accession("PRJNA")
+    ena_accession = unique_ena_accession("ERP")
     principal_idx = await seed_user_principal(postgres_pool, prefix="ena-td", suffix="probe")
     study_idx = await seed_study(postgres_pool, owner_idx=principal_idx, title=accession)
     await postgres_pool.execute(
         "UPDATE qiita.study SET bioproject_accession = $2, ena_study_accession = $3 WHERE idx = $1",
         study_idx,
         accession,
-        f"ERP{accession[-6:]}",
+        ena_accession,
     )
     biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
         postgres_pool, owner_idx=principal_idx
@@ -498,7 +503,7 @@ async def ena_graph(postgres_pool):
     )
     yield {
         "accession": accession,
-        "ena_accession": f"ERP{accession[-6:]}",
+        "ena_accession": ena_accession,
         "principal_idx": principal_idx,
         "study_idx": study_idx,
         "biosample_idx": biosample_idx,
@@ -677,3 +682,87 @@ async def test_teardown_ena_study_graph_no_study(postgres_pool, ena_graph):
         "study": await _count(postgres_pool, STUDY, "idx", [ena_graph["study_idx"]]),
     }
     assert survivors == {"sequencing_run": 1, "sequenced_pool": 1, "study": 1}
+
+
+@pytest.mark.db
+async def test_teardown_ena_study_graph_leaves_another_accessions_run(postgres_pool, ena_graph):
+    """Tests the case where a second run is named for a different accession.
+
+    The runs are the one thing this matches by string rather than by foreign
+    key, so a neighbouring accession sharing the prefix must stay out of range.
+    """
+    other_accession = f"{ena_graph['accession']}-other"
+    other_run_idx = await postgres_pool.fetchval(
+        "INSERT INTO qiita.sequencing_run (instrument_run_id, platform, created_by_idx)"
+        " VALUES ($1, 'illumina'::qiita.platform, $2) RETURNING idx",
+        f"{other_accession}:illumina",
+        ena_graph["principal_idx"],
+    )
+
+    try:
+        await teardown_ena_study_graph(
+            postgres_pool,
+            study_idxs=[ena_graph["study_idx"]],
+            run_accessions=[ena_graph["accession"]],
+        )
+
+        survivors = {
+            "seeded_run": await _count(
+                postgres_pool, "sequencing_run", "idx", [ena_graph["run_idx"]]
+            ),
+            "other_run": await _count(postgres_pool, "sequencing_run", "idx", [other_run_idx]),
+        }
+        assert survivors == {"seeded_run": 0, "other_run": 1}
+    finally:
+        await delete_idxs(postgres_pool, "sequencing_run", other_run_idx)
+
+
+@pytest.mark.db
+async def test_teardown_ena_study_graph_clears_a_pool_scoped_ticket(postgres_pool, ena_graph):
+    """Tests the case where a work ticket references the pool being dropped.
+
+    A ticket is never swept and references its pool under RESTRICT, so one left
+    standing would fail the pool delete rather than go with it.
+    """
+    action_id = "ena-teardown-probe-action"
+    version = f"v-{secrets.token_hex(4)}"
+    created = await seed_action_if_absent(
+        postgres_pool, action_id=action_id, version=version, target_kind="sequenced_pool"
+    )
+    ticket_idx = await postgres_pool.fetchval(
+        "INSERT INTO qiita.work_ticket"
+        " (action_id, action_version, originator_principal_idx, scope_target_kind,"
+        "  sequenced_pool_idx, action_context, state)"
+        " VALUES ($1, $2, $3, 'sequenced_pool'::qiita.scope_target_kind, $4,"
+        "         '{}'::jsonb, 'completed'::qiita.work_ticket_state)"
+        " RETURNING work_ticket_idx",
+        action_id,
+        version,
+        ena_graph["principal_idx"],
+        ena_graph["pool_idx"],
+    )
+
+    try:
+        await teardown_ena_study_graph(
+            postgres_pool,
+            study_idxs=[ena_graph["study_idx"]],
+            run_accessions=[ena_graph["accession"]],
+        )
+
+        survivors = {
+            "work_ticket": await _count(
+                postgres_pool, "work_ticket", "work_ticket_idx", [ticket_idx]
+            ),
+            "sequenced_pool": await _count(
+                postgres_pool, "sequenced_pool", "idx", [ena_graph["pool_idx"]]
+            ),
+        }
+        assert survivors == {"work_ticket": 0, "sequenced_pool": 0}
+    finally:
+        # work_ticket's key is work_ticket_idx, which delete_idxs cannot address.
+        await postgres_pool.execute(
+            "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = $1", ticket_idx
+        )
+        await delete_action_if_created(
+            postgres_pool, action_id=action_id, version=version, created=created
+        )

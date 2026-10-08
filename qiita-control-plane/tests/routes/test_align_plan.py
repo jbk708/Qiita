@@ -217,8 +217,6 @@ async def planned(ctx, monkeypatch):
         "owner": owner,
     }
 
-    # Tickets and blocks go first, then the sweep, then what hangs off no
-    # entity: pool, run, mask, reference. All id-scoped.
     await db.execute(
         "DELETE FROM qiita.work_ticket WHERE block_idx IN"
         " (SELECT bm.block_idx FROM qiita.block_member bm"

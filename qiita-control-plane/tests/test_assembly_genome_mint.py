@@ -190,10 +190,10 @@ async def _setup(postgres_pool, tmp_path, *, label):
 
 
 async def _teardown(pool, *, prep_sample_idx, reference_idx, feature_idxs):
-    """The order matters: qiita.genome cannot go while a
-    feature_genome row points at it (bare FK) or an assembly_membership row does
-    (likewise). Robust to a test that failed part-way, which is when it runs, and
-    to a test that deleted the prep_sample itself as its subject."""
+    """The order matters: qiita.genome cannot go while a feature_genome row
+    points at it (bare FK) or an assembly_membership row does (likewise). Robust
+    to a test that failed part-way, which is when it runs, and to a test that
+    deleted the prep_sample itself as its subject."""
     await pool.execute(
         "DELETE FROM qiita.assembly_membership WHERE prep_sample_idx = $1", prep_sample_idx
     )
