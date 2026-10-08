@@ -4578,8 +4578,11 @@ async def test_lookup_biosample_in_study_by_unique_field_retired_biosample_404(c
     resp = await _lookup_by_unique_field(ctx["wet"], study_idx, display_name, "Sample 1")
 
     assert resp.status_code == 404, resp.text
-    assert "through field" in resp.json()["detail"], resp.text
-    assert str(bs_idx) not in resp.json()["detail"], resp.text
+    expected_detail = (
+        f"there is no biosample on study {study_idx} carrying 'Sample 1'"
+        f" through field {display_name!r}"
+    )
+    assert resp.json()["detail"] == expected_detail
 
 
 @pytest.mark.parametrize("case", STUDY_SCOPED_SAMPLE_AUTHZ_CASES)
