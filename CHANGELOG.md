@@ -4016,9 +4016,9 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   kept their own copy of is now one helper beside the sweep, shared across the
   control-plane and integration suites. A parity test compares the sweep list against
   the live schema, and fails when a table carrying one of the four entity key columns
-  is missing from the list, or is swept without naming every key that it carries. Table and column
-  names that these helpers interpolate into SQL are now rejected unless they are bare
-  identifiers.
+  is missing from the list, or is swept without naming every key that it carries.
+  Table and column names that these helpers interpolate into SQL are now rejected
+  unless they are bare identifiers.
 - **`qiita biosample create-field` validates its flags before reading the auth token
   (#639).** An invalid flag combination now exits 2 naming the flag, where it previously
   reported a missing token first and left the real problem to be found on the retry. The

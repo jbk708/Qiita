@@ -124,7 +124,7 @@ class _Tracker:
 
 async def _cleanup(pool, tracker: _Tracker) -> None:
     """Tear down everything a test registered: the studies it tracked, their
-    sample graphs, the runs named after the accessions it tracked, and its
+    entity graphs, the runs named after the accessions it tracked, and its
     principals."""
     await teardown_ena_study_graph(
         pool,

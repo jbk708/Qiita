@@ -487,12 +487,12 @@ async def seed_biosample_with_sequenced_prep_sample(
     return `(biosample_idx, prep_sample_idx)`.
 
     Composes `seed_biosample` (owner + created_by both = owner_idx) and
-    `seed_sequenced_prep_sample`. Use this from fixtures that need a
-    sequenced prep_sample to scope a work_ticket or a sequence_range
-    against; both rows go to the sweep as entities. Callers
-    that need a non-default prep_protocol pass `protocol_name`; the
-    underlying helper resolves it by lookup against the seeded protocols
-    (qiita.prep_protocol, populated by migration 20260501000010).
+    `seed_sequenced_prep_sample`. Use this from fixtures that need a sequenced
+    prep_sample to scope a work_ticket or a sequence_range against; both rows go
+    to the sweep as entities. Callers that need a non-default prep_protocol pass
+    `protocol_name`; the underlying helper resolves it by lookup against the
+    seeded protocols (qiita.prep_protocol, populated by migration
+    20260501000010).
     """
     biosample_idx = await seed_biosample(pool, owner_idx=owner_idx, created_by_idx=owner_idx)
     prep_sample_idx = await seed_sequenced_prep_sample(
@@ -985,7 +985,8 @@ async def cleanup_reference_graph(
     None of these hang off a study, biosample or prep_sample, so the entity
     sweep does not reach them. Deletes in the order the references require:
     feature_genome and membership, then feature, then genome, then the
-    reference."""
+    reference.
+    """
     if feature_idxs:
         await pool.execute(
             "DELETE FROM qiita.feature_genome WHERE feature_idx = ANY($1::bigint[])",

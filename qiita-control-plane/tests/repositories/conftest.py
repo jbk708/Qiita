@@ -424,11 +424,11 @@ async def _seed_global_field_for_spec(
 ):
     """Seed one global field of the given data_type for spec.entity_kind.
 
-    The row hangs off no entity, so it is tracked for the post-sweep
-    cleanup. Returns a FieldRow shape so the
-    caller can drive metadata writes against it directly. terminology_idx
-    must be supplied when data_type=TERMINOLOGY (the *_global_field
-    CHECK enforces the iff coupling) and omitted otherwise. internal_name
+    The row hangs off no entity, so it is tracked for the post-sweep cleanup.
+    Returns a FieldRow shape so the caller can drive metadata writes against it
+    directly. terminology_idx must be supplied when data_type=TERMINOLOGY (the
+    *_global_field CHECK enforces the iff coupling) and omitted otherwise.
+    internal_name
     defaults to a generated unique value; pass it when a test keys on the
     internal_name (internal-name resolution), since FieldRow carries only
     the display_name.

@@ -280,7 +280,7 @@ async def download_ena_study_action(postgres_pool):
 
 
 async def _cleanup_study(postgres_pool, study_accession: str) -> None:
-    """Tear down the study registered under this accession, its sample graph,
+    """Tear down the study registered under this accession, its entity graph,
     and the runs it registered."""
     study_idxs = await resolve_ena_study_idxs(postgres_pool, [study_accession])
     await teardown_ena_study_graph(

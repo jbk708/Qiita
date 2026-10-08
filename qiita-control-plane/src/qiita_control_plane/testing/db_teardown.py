@@ -1,12 +1,20 @@
-"""Teardown helpers: the ordered entity-graph sweep, and the by-idx primitive.
+"""Teardown helpers: the entity-graph sweep, the by-idx primitive, and the
+teardowns composed from them.
 
 The sweep deletes by parent FK rather than by row idx, so a caller needs no
 per-row bookkeeping and a row nothing recorded — one a trigger or a cascade
-produced — goes with the rest. The caller supplies three entity idx lists and
-nothing else; these cannot be derived, because these entities may legitimately
-carry no study link. Everything above that graph — pools, runs, principals —
-the caller deletes itself, which is what delete_idxs is for.
+produced — goes with the rest. It covers the study / biosample / prep_sample
+graph only, and the caller supplies those three idx lists itself, because an
+entity may legitimately carry no study link.
+
+A caller that owns parents above that graph — pools, runs, principals — either
+deletes them with delete_idxs once the sweep has returned, or calls one of the
+composed teardowns here, which take a whole shape at once: delete_principal for
+a principal and its user row, teardown_ena_study_graph for an ENA import's
+studies together with the runs and pools they registered.
 """
+
+from collections.abc import Iterable
 
 import asyncpg
 
@@ -236,9 +244,10 @@ async def assert_entity_graph_swept(
         # prep_sample is the only entity table this query reaches — study and
         # biosample key on a column named `idx`, which it does not ask for —
         # and it carries a biosample_idx of its own, which would read as a
-        # survivor though it goes with the entities afterwards. qiita.genome is
-        # not skipped: the sweep deletes it, so a row left behind is exactly
-        # what this is here to catch.
+        # survivor though a caller that named it goes on to delete it. One the
+        # caller did not name is skipped here and fails the biosample delete
+        # instead. qiita.genome is not skipped: the sweep deletes it, so a row
+        # left behind is exactly what this is here to catch.
         if table in _ENTITY_TABLES or table in UNSWEPT_ENTITY_TABLES:
             continue
         _reject_non_identifiers("assert_entity_graph_swept", table, column)
@@ -305,7 +314,9 @@ async def delete_principal(pool: asyncpg.Pool, principal_idxs) -> None:
     await delete_idxs(pool, "principal", named)
 
 
-async def resolve_ena_study_idxs(pool: asyncpg.Pool, accessions, *, by_ena_accession=False):
+async def resolve_ena_study_idxs(
+    pool: asyncpg.Pool, accessions: Iterable[str], *, by_ena_accession: bool = False
+) -> list[int]:
     """Return the idxs of the studies registered under these accessions.
 
     Matches bioproject_accession, and ena_study_accession as well when
@@ -329,17 +340,22 @@ async def resolve_ena_study_idxs(pool: asyncpg.Pool, accessions, *, by_ena_acces
 async def teardown_ena_study_graph(
     pool: asyncpg.Pool,
     *,
-    study_idxs,
-    run_accessions,
-    extra_biosample_idxs=(),
+    study_idxs: Iterable[int],
+    run_accessions: Iterable[str],
+    extra_biosample_idxs: Iterable[int] = (),
 ) -> None:
     """Delete these studies, the entities linked to them, and their ENA runs.
 
     `run_accessions` names the study accessions whose sequencing runs go too,
     matched on the instrument_run_id prefix an import composes from them; a
-    study whose runs are not wanted passes none. `extra_biosample_idxs` names
+    study whose runs are not wanted passes none. Resolving no study at all
+    leaves the runs standing, since nothing is then in range to clear the
+    sequenced_samples that reference their pools. `extra_biosample_idxs` names
     biosamples that must go although no link to these studies survives, which
-    is how a biosample two studies share is dropped once.
+    is how a biosample two studies share is dropped once. Every prep_sample on
+    such a biosample has to be reachable from `study_idxs`: the sweep is given
+    no prep_samples of its own for it, so one belonging to a study outside the
+    call fails the biosample delete with a bare foreign-key error.
     """
     named_studies = list(study_idxs)
     # The link rows go with the sweep, so the entities they name are resolved
@@ -354,11 +370,16 @@ async def teardown_ena_study_graph(
         " WHERE study_idx = ANY($1::bigint[])",
         named_studies,
     )
-    run_rows = await pool.fetch(
-        "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE ANY($1::text[])",
-        [_ENA_RUN_ID_LIKE.format(accession=accession) for accession in run_accessions],
-    )
-    run_idxs = [row["idx"] for row in run_rows]
+    # The runs are only in range once a study is: their pools are referenced by
+    # the sequenced_samples the sweep removes, and with no entity in range those
+    # rows survive and the pool delete below fails on them.
+    run_idxs: list[int] = []
+    if named_studies:
+        run_rows = await pool.fetch(
+            "SELECT idx FROM qiita.sequencing_run WHERE instrument_run_id LIKE ANY($1::text[])",
+            [_ENA_RUN_ID_LIKE.format(accession=accession) for accession in run_accessions],
+        )
+        run_idxs = [row["idx"] for row in run_rows]
     # A work ticket is never swept. It references the pool under RESTRICT, and
     # may reference a study and a prep_sample too, so it goes ahead of both the
     # sweep and the pool delete below.

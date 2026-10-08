@@ -11,9 +11,11 @@ from qiita_common.models import GenomeSource
 
 from qiita_control_plane.testing.db_seeds import (
     seed_bare_feature,
+    seed_biosample_to_study_link,
     seed_biosample_with_sequenced_prep_sample,
     seed_feature_genome,
     seed_genome,
+    seed_prep_sample_to_study_link,
     seed_sequenced_sample_subtype,
     seed_study,
     seed_user_principal,
@@ -32,8 +34,11 @@ from qiita_control_plane.testing.db_teardown import (
     assert_entity_graph_swept,
     delete_idxs,
     delete_principal,
+    resolve_ena_study_idxs,
+    teardown_ena_study_graph,
     teardown_entity_graph,
 )
+from qiita_control_plane.testing.unique_names import unique_ena_accession
 
 
 def _sweep_drift_message(drift: dict[str, list[str]]) -> str:
@@ -436,3 +441,239 @@ async def test__sweep_table_rejects_a_non_identifier_column():
             (("study_idx; SELECT 1 --", STUDY),),
             {STUDY: [1]},
         )
+
+
+# ---------------------------------------------------------------------------
+# The ENA-shaped teardown composed on top of the sweep
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def ena_graph(postgres_pool):
+    """A study registered under an accession, with one linked sample and one run.
+
+    Shaped the way an ENA import leaves things: the study carries both accession
+    columns, the biosample and prep_sample reach it only through their link
+    rows, and the sequencing run is named after the accession.
+
+    Teardown is best-effort and tolerant, so a run that fails mid-test leaves
+    nothing behind. It names the rows directly rather than calling the function
+    under test.
+    """
+    accession = unique_ena_accession("PRJNA")
+    principal_idx = await seed_user_principal(postgres_pool, prefix="ena-td", suffix="probe")
+    study_idx = await seed_study(postgres_pool, owner_idx=principal_idx, title=accession)
+    await postgres_pool.execute(
+        "UPDATE qiita.study SET bioproject_accession = $2, ena_study_accession = $3 WHERE idx = $1",
+        study_idx,
+        accession,
+        f"ERP{accession[-6:]}",
+    )
+    biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
+        postgres_pool, owner_idx=principal_idx
+    )
+    await seed_biosample_to_study_link(
+        postgres_pool,
+        biosample_idx=biosample_idx,
+        study_idx=study_idx,
+        created_by_idx=principal_idx,
+    )
+    await seed_prep_sample_to_study_link(
+        postgres_pool,
+        prep_sample_idx=prep_sample_idx,
+        study_idx=study_idx,
+        created_by_idx=principal_idx,
+    )
+    run_idx, pool_idx, _ss_idx = await seed_sequenced_sample_subtype(
+        postgres_pool,
+        prep_sample_idx=prep_sample_idx,
+        owner_idx=principal_idx,
+        sequenced_pool_item_id="E1",
+    )
+    # An import names the run after the accession; the teardown matches that.
+    await postgres_pool.execute(
+        "UPDATE qiita.sequencing_run SET instrument_run_id = $2 WHERE idx = $1",
+        run_idx,
+        f"{accession}:illumina",
+    )
+    yield {
+        "accession": accession,
+        "ena_accession": f"ERP{accession[-6:]}",
+        "principal_idx": principal_idx,
+        "study_idx": study_idx,
+        "biosample_idx": biosample_idx,
+        "prep_sample_idx": prep_sample_idx,
+        "run_idx": run_idx,
+        "pool_idx": pool_idx,
+    }
+
+    await postgres_pool.execute(
+        "DELETE FROM qiita.sequenced_sample WHERE prep_sample_idx = $1", prep_sample_idx
+    )
+    await postgres_pool.execute(
+        "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1", prep_sample_idx
+    )
+    await postgres_pool.execute(
+        "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1", biosample_idx
+    )
+    await delete_idxs(postgres_pool, PREP_SAMPLE, prep_sample_idx)
+    await delete_idxs(postgres_pool, BIOSAMPLE, biosample_idx)
+    await delete_idxs(postgres_pool, STUDY, study_idx)
+    await delete_idxs(postgres_pool, "sequenced_pool", pool_idx)
+    await delete_idxs(postgres_pool, "sequencing_run", run_idx)
+    await delete_principal(postgres_pool, principal_idx)
+
+
+@pytest.mark.db
+async def test_resolve_ena_study_idxs_matches_the_bioproject_accession(postgres_pool, ena_graph):
+    """Tests the case where a study is looked up by the accession it was registered under."""
+    resolved = await resolve_ena_study_idxs(postgres_pool, [ena_graph["accession"]])
+
+    assert resolved == [ena_graph["study_idx"]]
+
+
+@pytest.mark.db
+async def test_resolve_ena_study_idxs_by_ena_accession(postgres_pool, ena_graph):
+    """Tests the case where the caller holds only the accession the import echoed back.
+
+    The ena_study_accession column is searched only when asked for, so the same
+    value finds nothing by default.
+    """
+    found = await resolve_ena_study_idxs(
+        postgres_pool, [ena_graph["ena_accession"]], by_ena_accession=True
+    )
+    not_found = await resolve_ena_study_idxs(postgres_pool, [ena_graph["ena_accession"]])
+
+    assert (found, not_found) == ([ena_graph["study_idx"]], [])
+
+
+@pytest.mark.db
+async def test_resolve_ena_study_idxs_unknown_accession(postgres_pool):
+    """Tests the case where no study carries the accession, and where none is given."""
+    unknown = await resolve_ena_study_idxs(postgres_pool, [unique_ena_accession("PRJNA")])
+    empty = await resolve_ena_study_idxs(postgres_pool, [])
+
+    assert (unknown, empty) == ([], [])
+
+
+@pytest.mark.db
+async def test_teardown_ena_study_graph_drops_the_study_its_samples_and_its_runs(
+    postgres_pool, ena_graph
+):
+    """Tests the case where an import's whole footprint is torn down from the accession.
+
+    The biosample and prep_sample are named nowhere in the call: they are
+    reached through the link rows, which the sweep then deletes.
+    """
+    await teardown_ena_study_graph(
+        postgres_pool,
+        study_idxs=[ena_graph["study_idx"]],
+        run_accessions=[ena_graph["accession"]],
+    )
+
+    survivors = {
+        "study": await _count(postgres_pool, STUDY, "idx", [ena_graph["study_idx"]]),
+        "biosample": await _count(postgres_pool, BIOSAMPLE, "idx", [ena_graph["biosample_idx"]]),
+        "prep_sample": await _count(
+            postgres_pool, PREP_SAMPLE, "idx", [ena_graph["prep_sample_idx"]]
+        ),
+        "sequenced_sample": await _count(
+            postgres_pool, "sequenced_sample", "prep_sample_idx", [ena_graph["prep_sample_idx"]]
+        ),
+        "sequenced_pool": await _count(
+            postgres_pool, "sequenced_pool", "idx", [ena_graph["pool_idx"]]
+        ),
+        "sequencing_run": await _count(
+            postgres_pool, "sequencing_run", "idx", [ena_graph["run_idx"]]
+        ),
+    }
+    assert survivors == {
+        "study": 0,
+        "biosample": 0,
+        "prep_sample": 0,
+        "sequenced_sample": 0,
+        "sequenced_pool": 0,
+        "sequencing_run": 0,
+    }
+
+
+@pytest.mark.db
+async def test_teardown_ena_study_graph_without_run_accessions(postgres_pool, ena_graph):
+    """Tests the case where the caller keeps the runs its study registered.
+
+    Naming no accession leaves the run and its pool standing, which is what
+    lets a caller that owns them tear the entity graph down first.
+    """
+    await teardown_ena_study_graph(
+        postgres_pool, study_idxs=[ena_graph["study_idx"]], run_accessions=[]
+    )
+
+    survivors = {
+        "study": await _count(postgres_pool, STUDY, "idx", [ena_graph["study_idx"]]),
+        "prep_sample": await _count(
+            postgres_pool, PREP_SAMPLE, "idx", [ena_graph["prep_sample_idx"]]
+        ),
+        "sequenced_pool": await _count(
+            postgres_pool, "sequenced_pool", "idx", [ena_graph["pool_idx"]]
+        ),
+        "sequencing_run": await _count(
+            postgres_pool, "sequencing_run", "idx", [ena_graph["run_idx"]]
+        ),
+    }
+    assert survivors == {
+        "study": 0,
+        "prep_sample": 0,
+        "sequenced_pool": 1,
+        "sequencing_run": 1,
+    }
+
+
+@pytest.mark.db
+async def test_teardown_ena_study_graph_drops_a_biosample_named_directly(postgres_pool, ena_graph):
+    """Tests the case where a biosample must go although its link is already gone.
+
+    This is the shape two studies sharing one biosample leave behind: the
+    caller names the biosample, and the sweep takes it even though nothing
+    reaches it from the study.
+    """
+    await postgres_pool.execute(
+        "DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1",
+        ena_graph["biosample_idx"],
+    )
+
+    await teardown_ena_study_graph(
+        postgres_pool,
+        study_idxs=[ena_graph["study_idx"]],
+        run_accessions=[ena_graph["accession"]],
+        extra_biosample_idxs=[ena_graph["biosample_idx"]],
+    )
+
+    survivors = {
+        "biosample": await _count(postgres_pool, BIOSAMPLE, "idx", [ena_graph["biosample_idx"]]),
+        "study": await _count(postgres_pool, STUDY, "idx", [ena_graph["study_idx"]]),
+    }
+    assert survivors == {"biosample": 0, "study": 0}
+
+
+@pytest.mark.db
+async def test_teardown_ena_study_graph_no_study(postgres_pool, ena_graph):
+    """Tests the case where no study resolves but the accession's runs still exist.
+
+    With no entity in range the sweep clears no sequenced_sample, so the pools
+    those rows reference cannot go either; the runs are left standing rather
+    than failing the teardown on a foreign key.
+    """
+    await teardown_ena_study_graph(
+        postgres_pool, study_idxs=[], run_accessions=[ena_graph["accession"]]
+    )
+
+    survivors = {
+        "sequencing_run": await _count(
+            postgres_pool, "sequencing_run", "idx", [ena_graph["run_idx"]]
+        ),
+        "sequenced_pool": await _count(
+            postgres_pool, "sequenced_pool", "idx", [ena_graph["pool_idx"]]
+        ),
+        "study": await _count(postgres_pool, STUDY, "idx", [ena_graph["study_idx"]]),
+    }
+    assert survivors == {"sequencing_run": 1, "sequenced_pool": 1, "study": 1}
