@@ -48,6 +48,7 @@ from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
     seed_action_if_absent,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from conftest import ducklake_connect
 
@@ -314,23 +315,17 @@ async def block_pool(postgres_pool, human_admin_session):
     await delete_action_if_created(
         postgres_pool, action_id=action_id, version=version, created=created_action
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.mask_sample WHERE mask_idx = $1", mask_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequenced_sample WHERE idx = ANY($1::bigint[])", [ss_a, ss_b]
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[bs_a, bs_b],
+        prep_sample_idxs=[prep_a, prep_b],
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", [prep_a, prep_b]
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", [bs_a, bs_b]
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.mask_definition WHERE mask_idx = $1", mask_idx

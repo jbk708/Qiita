@@ -42,6 +42,7 @@ from qiita_common.api_paths import (
     PATH_ADMIN_SEQUENCED_POOL_MASKED_READ_EXPORT,
 )
 from qiita_common.models import MaskedReadExportTicketRequest, ReadMaskReason
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from conftest import ducklake_connect
 
@@ -114,7 +115,7 @@ async def seeded(postgres_pool, human_admin_session):
     ps = await seed_sequenced_prep_sample(
         postgres_pool, biosample_idx=bs, owner_idx=owner
     )
-    run_idx, pool_idx, ss = await seed_sequenced_sample_subtype(
+    run_idx, pool_idx, _ss = await seed_sequenced_sample_subtype(
         postgres_pool,
         prep_sample_idx=ps,
         owner_idx=owner,
@@ -149,20 +150,18 @@ async def seeded(postgres_pool, human_admin_session):
         "mask_idx": mask_idx,
     }
 
-    await postgres_pool.execute(
-        "DELETE FROM qiita.mask_sample WHERE mask_idx = $1 AND prep_sample_idx = $2",
-        mask_idx,
-        ps,
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[bs],
+        prep_sample_idxs=[ps],
     )
-    await postgres_pool.execute("DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss)
     await postgres_pool.execute(
         "DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx
     )
-    await postgres_pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", ps)
-    await postgres_pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", bs)
     await postgres_pool.execute(
         "DELETE FROM qiita.mask_definition WHERE mask_idx = $1", mask_idx
     )

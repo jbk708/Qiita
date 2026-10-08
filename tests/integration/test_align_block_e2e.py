@@ -49,6 +49,7 @@ from pathlib import Path
 import duckdb
 import pytest
 from qiita_common.api_paths import LOOPBACK_HOST
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from conftest import ducklake_connect
 
@@ -232,7 +233,7 @@ async def align_block_pool(postgres_pool, human_admin_session):
     bs_a, prep_a = await seed_biosample_with_sequenced_prep_sample(
         postgres_pool, owner_idx=owner
     )
-    run_idx, pool_idx, ss_a = await seed_sequenced_sample_subtype(
+    run_idx, pool_idx, _ss_a = await seed_sequenced_sample_subtype(
         postgres_pool,
         prep_sample_idx=prep_a,
         owner_idx=owner,
@@ -241,10 +242,10 @@ async def align_block_pool(postgres_pool, human_admin_session):
     bs_b, prep_b = await seed_biosample_with_sequenced_prep_sample(
         postgres_pool, owner_idx=owner
     )
-    ss_b = await postgres_pool.fetchval(
+    await postgres_pool.execute(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx)"
-        " VALUES ($1, $2, $3, $4) RETURNING idx",
+        " VALUES ($1, $2, $3, $4)",
         prep_b,
         pool_idx,
         f"b-{suffix}",
@@ -347,23 +348,17 @@ async def align_block_pool(postgres_pool, human_admin_session):
     await postgres_pool.execute(
         "DELETE FROM qiita.action WHERE action_id = $1", action_id
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.alignment_sample WHERE alignment_idx = $1", alignment_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequenced_sample WHERE idx = ANY($1::bigint[])", [ss_a, ss_b]
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[bs_a, bs_b],
+        prep_sample_idxs=[prep_a, prep_b],
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", [prep_a, prep_b]
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", [bs_a, bs_b]
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.alignment_definition WHERE alignment_idx = $1", alignment_idx

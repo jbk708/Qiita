@@ -46,6 +46,7 @@ import duckdb
 import pytest
 from qiita_common.api_paths import LOOPBACK_HOST
 from qiita_common.models import ReadMaskReason
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from conftest import ducklake_connect
 
@@ -155,20 +156,17 @@ async def sequenced_prep_sample(postgres_pool, human_admin_session):
     )
     yield {"prep_sample_idx": prep_sample_idx, "sequenced_sample_idx": ss_idx}
 
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss_idx
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[biosample_idx],
+        prep_sample_idxs=[prep_sample_idx],
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = $1", prep_sample_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = $1", biosample_idx
     )
 
 

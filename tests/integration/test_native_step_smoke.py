@@ -36,6 +36,7 @@ from pathlib import Path
 import duckdb
 import pytest
 from qiita_common.models import WorkTicketState
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 from _runner_helpers import LocalComputeBackendClient
 
@@ -103,12 +104,15 @@ async def smoke_prep_sample(postgres_pool, human_admin_session):
     yield idx
     # The composer used the seeded `short_read_metagenomics` prep_protocol
     # (system-owned), so we don't delete the protocol here.
+    # The ticket references the prep_sample under RESTRICT, so it goes first.
     await postgres_pool.execute(
         "DELETE FROM qiita.work_ticket WHERE prep_sample_idx = $1", idx
     )
-    await postgres_pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", idx)
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = $1", biosample_idx
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=[biosample_idx],
+        prep_sample_idxs=[idx],
     )
 
 

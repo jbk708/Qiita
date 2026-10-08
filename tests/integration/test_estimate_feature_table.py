@@ -53,6 +53,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 _YAML_PATH = (
     Path(__file__).parent.parent.parent
@@ -220,11 +221,11 @@ async def feature_table_scenario(postgres_pool, data_plane):
     await postgres_pool.execute(
         "DELETE FROM qiita.alignment_definition WHERE alignment_idx = $1", alignment_idx
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.prep_sample WHERE idx = ANY($1::bigint[])", prep_sample_idxs
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", biosample_idxs
+    await teardown_entity_graph(
+        postgres_pool,
+        study_idxs=[],
+        biosample_idxs=biosample_idxs,
+        prep_sample_idxs=prep_sample_idxs,
     )
     await postgres_pool.execute(
         "DELETE FROM qiita.reference_membership WHERE reference_idx = $1", reference_idx
