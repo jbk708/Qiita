@@ -2084,6 +2084,13 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **`ingest_ena_reads` retries an ENA md5 mismatch and a run miint skipped instead of failing permanently (#661).**
+  miint documents a transfer truncated on a clean gzip member boundary as indistinguishable
+  from a genuinely bad digest and advises bounded retries, so the ticket's `max_retries`
+  is the backstop. A skipped run (a failed open or a mid-download failure) is retried the
+  same way. A genuinely bad digest, a corrupt body or a permanent open failure such as a
+  404 now fails only after the retries are used up. A run with zero reads and no warning
+  still fails permanently.
 - **An ENA study whose sample repeats an attribute tag no longer fails at resolve (#650).**
   `read_ena_attributes` can return a tag more than once (for example `BioSampleModel` or
   `ENA-FIRST-PUBLIC`), which made the per-sample map fail with `Map keys must be unique`

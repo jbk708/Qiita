@@ -12,15 +12,17 @@ Gotchas specific to the ENA source:
 - md5 verification is miint's, not this job's: `read_ena_sequences`'s
   `verify_md5` defaults to true (duckdb-miint#172, docs/insdc_ena.md) and a
   single-run scan raises `duckdb.IOException` naming the md5 mismatch, which
-  `_classify_ena_fetch_error` classifies.
+  `_classify_ena_fetch_error` classifies retriable (a truncated transfer and a
+  bad digest are indistinguishable; `max_retries` bounds it).
 - One FRESH DuckDB connection PER RUN. `miint_warnings()` accumulates across
   queries in a session (duckdb-miint/docs/utilities.md), so a reused connection
   would leak one run's warnings into the next run's fail-loud check.
 - Fail loud on a silent skip. `read_ena_sequences` does not raise on a run that
   fails to open or fails mid-stream — it retries once, then skips/truncates and
   records a `miint_warnings()` entry, returning fewer/zero rows. So a "skip"
-  warning (`_skip_warnings`) OR a clean 0-row result fails the run BAD_INPUT (an
-  ENA run never legitimately has zero reads, unlike a demux well). A raised
+  warning (`_skip_warnings`) fails the run retriably (a re-run recovers the
+  data) and a clean 0-row result fails it BAD_INPUT (an ENA run never
+  legitimately has zero reads, unlike a demux well). A raised
   `duckdb.Error` is classified separately (`_classify_ena_fetch_error`).
 """
 
@@ -152,7 +154,7 @@ def _classify_ena_fetch_error(
     run_accession: str, exc: duckdb.Error, *, step_name: str
 ) -> BackendFailure:
     """Classify a raised `duckdb.Error` from `_stage_run_reads` as retriable
-    (transport/network-shaped) or permanent (md5-verification, format/parse, or
+    (transport/network-shaped or md5 mismatch) or permanent (format/parse, or
     anything not confidently network-shaped). A raised exception means miint's
     internal open-retry-then-skip did NOT run, so there is no `miint_warnings()`
     entry — the exception text is all the caller has.
@@ -170,22 +172,19 @@ def _classify_ena_fetch_error(
                 f"ENA run {run_accession}: transient fetch error ({type(exc).__name__}): {exc}"
             ),
         )
-    # Permanent is the deliberate choice, not a documented one: miint raises the
-    # same error for a truncated transfer and for bytes that genuinely disagree
-    # with ENA's digest (duckdb-miint#274).
+    # miint raises the same error for a truncated transfer and for bytes that
+    # genuinely disagree with ENA's digest (docs/insdc_ena.md): retry, bounded.
     if "md5" in text:
         return BackendFailure(
-            kind=FailureKind.BAD_INPUT,
+            kind=FailureKind.EXTERNAL_FETCH_TRANSIENT,
             stage=WorkTicketFailureStage.STEP_RUN,
             step_name=step_name,
             reason=(
                 f"ENA run {run_accession}: downloaded bytes don't match ENA's "
-                f"declared fastq_md5. Compare the run's fastq_md5 in the ENA "
-                f"Portal API against the value reported here: if they agree, "
-                f"ENA's own file disagrees with its digest and a re-import "
-                f"fails the same way; if they differ, the download was "
-                f"corrupted and re-importing the study retries it "
-                f"({type(exc).__name__}): {exc}"
+                f"declared fastq_md5; a truncated transfer cannot be told from a "
+                f"bad digest, so the step is retried. If it keeps failing, "
+                f"compare the run's fastq_md5 in the ENA Portal API against the "
+                f"value reported here ({type(exc).__name__}): {exc}"
             ),
         )
     return BackendFailure(
@@ -251,14 +250,14 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                 skip_msgs = _skip_warnings(warnings)
                 if skip_msgs:
                     raise BackendFailure(
-                        kind=FailureKind.BAD_INPUT,
+                        kind=FailureKind.EXTERNAL_FETCH_TRANSIENT,
                         stage=WorkTicketFailureStage.STEP_RUN,
                         step_name=YAML_STEP_NAME,
                         reason=(
                             f"ENA run {run_accession} (prep_sample {prep_sample_idx}) "
-                            "reported download warning(s) -- its data is missing or "
-                            "partial; refusing to silently register an incomplete "
-                            f"read set: {'; '.join(skip_msgs)}"
+                            "was skipped by miint -- its data is missing or partial; "
+                            "refusing to register an incomplete read set, a re-run "
+                            f"is expected to recover it: {'; '.join(skip_msgs)}"
                         ),
                     )
                 if count == 0:

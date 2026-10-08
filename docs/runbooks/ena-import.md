@@ -298,9 +298,16 @@ not a hand-rolled ENA client:
 **md5 verification is miint's.** `read_ena_sequences` verifies each downloaded FASTQ
 file against ENA's published `fastq_md5` by default (`verify_md5`, duckdb-miint#172;
 see miint's [`insdc_ena` docs](https://the-miint.github.io/duckdb-miint/insdc_ena/)),
-and a mismatch fails the run. Where verification does not apply (an SFF run, a file
-that is not gzip-compressed, no `fastq_md5` from ENA) the run still registers. A run
-that comes back truncated or empty fails loud either way.
+and a mismatch fails the step. miint cannot tell a transfer truncated on a gzip member
+boundary from bytes that really disagree with the digest, so the step is retried up to
+the ticket's retry limit; when the retries run out the ticket ends FAILED with
+failure_type `retriable` and both digests in the reason, to compare against the ENA
+Portal. A run miint skipped (a failed open or a mid-download failure, including a
+corrupt body that surfaces mid-stream) is retried the same way, so a permanent open
+failure such as a 404 costs the full retry limit before it fails. Where verification
+does not apply (an SFF run, a file that is not gzip-compressed, no `fastq_md5` from
+ENA) the run still registers. A run that comes back empty with no warning fails
+permanently.
 
 **Network access.** The control-plane host resolves metadata from `www.ebi.ac.uk`, and
 the SLURM compute nodes running `ingest_ena_reads` reach both `www.ebi.ac.uk` and
