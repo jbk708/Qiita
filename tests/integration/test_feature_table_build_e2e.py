@@ -341,9 +341,9 @@ async def publishable_cohort(postgres_pool, human_admin_session, regular_user_se
         "source_ids": source_ids,
     }
 
-    # Postgres teardown in FK-reverse order. The DuckLake rows stay: the catalog is
-    # module-scoped and reset on the next module, and every id here is freshly minted,
-    # so the signed ticket's filter can only ever match this test's own rows.
+    # The DuckLake rows stay: the catalog is module-scoped and reset on the
+    # next module, and every id here is freshly minted, so the signed ticket's
+    # filter can only ever match this test's own rows.
     bio_idxs = [bs for bs, _, _ in samples]
     await teardown_entity_graph(
         db,

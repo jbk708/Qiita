@@ -85,7 +85,7 @@ async def seeded(ctx):
       - C: retired prep_sample; same pool — must be excluded from the manifest.
       - D: ENA-flagged sequenced_sample; same pool — must be excluded too.
 
-    Plus a mask_definition. FK-reverse cleanup at teardown.
+    Plus a mask_definition.
     """
     pool = ctx["pool"]
     owner = ctx["admin_session"]["principal_idx"]

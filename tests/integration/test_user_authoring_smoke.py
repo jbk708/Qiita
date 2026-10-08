@@ -350,9 +350,8 @@ async def test_user_authoring_smoke_via_cli(
         # valid WorkTicketState.
         assert status["state"] in _WORK_TICKET_STATES
     finally:
-        # FK-reverse cleanup of every row the flow created. The server
-        # committed these to the shared test DB; teardown runs them
-        # through the test's own pool.
+        # The server committed these to the shared test DB;
+        # teardown runs them through the test's own pool.
         if created_ticket_idxs:
             await postgres_pool.execute(
                 "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",

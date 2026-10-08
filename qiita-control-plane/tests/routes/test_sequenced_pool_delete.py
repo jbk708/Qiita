@@ -75,7 +75,7 @@ async def _seed_pool_with_sample(pool, owner_idx):
     sequenced_sample chain plus the two study links the triggers need.
 
     Returns a dict of every idx so the cascade's per-table effects can be
-    asserted and a blocked delete can be cleaned up FK-reverse."""
+    asserted and a blocked delete can still be torn down."""
     study_idx = await seed_study(
         pool, owner_idx=owner_idx, title=f"pool-del-{secrets.token_hex(4)}"
     )
@@ -111,8 +111,7 @@ async def _seed_pool_with_sample(pool, owner_idx):
 
 
 async def _cleanup(pool, ids):
-    """FK-reverse teardown, tolerant of rows a successful delete already
-    removed."""
+    """Teardown tolerant of rows a successful delete already removed."""
     ps = ids["prep_sample_idx"]
     await pool.execute(
         "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx = $1", ids["pool_idx"]

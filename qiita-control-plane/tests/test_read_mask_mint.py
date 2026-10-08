@@ -80,8 +80,8 @@ def test_workflow_needs_mask_false_without_mask_param():
 @pytest_asyncio.fixture
 async def seeded(postgres_pool):
     """Seed principal + biosample + sequenced prep_sample + sequenced_sample
-    subtype; yield the ids plus `adapter_reference(sequences)`, and clean up
-    FK-reverse. Adapter references go through the tracker so the principal
+    subtype; yield the ids plus `adapter_reference(sequences)`. The entities go
+    to the sweep; adapter references go through the tracker so the principal
     cleanup below is not blocked by reference.created_by_idx (ON DELETE
     RESTRICT)."""
     principal_idx = await seed_user_principal(postgres_pool, prefix="mask-mint", suffix="owner")

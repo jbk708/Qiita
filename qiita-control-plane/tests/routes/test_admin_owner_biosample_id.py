@@ -62,8 +62,8 @@ async def seeded(ctx):
         link — so it appears in both the study-wide and pool-filtered exports.
       - bs_b: no accession, no prep_sample — study-wide export only.
 
-    FK-reverse cleanup at teardown; the owning principal is the admin session
-    principal (user-kind, cleaned by its own fixture).
+    The owning principal is the admin session principal (user-kind, cleaned by
+    its own fixture).
     """
     pool = ctx["pool"]
     owner = ctx["admin_session"]["principal_idx"]

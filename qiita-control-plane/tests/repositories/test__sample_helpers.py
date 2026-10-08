@@ -13,8 +13,8 @@ and a prep_sample-spec sanity test that proves
 PREP_SAMPLE_METADATA_SPEC's identifiers and callables are correctly
 bound.
 
-Biosample tests use the ctx fixture (Pattern 2: committed rows + FK-reverse
-cleanup) so the diagnostic SELECT sees the prior writer's committed row.
+Biosample tests use the ctx fixture (Pattern 2: committed rows + swept
+teardown) so the diagnostic SELECT sees the prior writer's committed row.
 The prep_sample sanity test uses Pattern 1 (per-test transaction rollback)
 because the prep_sample side has no committed-fixture pattern yet.
 parse_text_for_data_type tests are pure-unit and need no fixture.

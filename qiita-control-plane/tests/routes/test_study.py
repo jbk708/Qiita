@@ -60,7 +60,7 @@ def _unique_title(prefix: str = "study") -> str:
 
 
 # ---------------------------------------------------------------------------
-# FK-reverse cleanup
+# Teardown
 # ---------------------------------------------------------------------------
 
 
@@ -87,7 +87,7 @@ async def _cleanup_tracked(pool, created: dict) -> None:
 @pytest_asyncio.fixture
 async def ctx(role_keyed_clients):
     """Per-test fixture wrapping role_keyed_clients with a route-specific
-    `created` tracker for FK-reverse cleanup at teardown.
+    `created` tracker the teardown reads.
 
     The session principals (admin, wet_lab_admin, regular_user) are
     fixture-managed and never go in the cleanup list."""

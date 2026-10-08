@@ -6,8 +6,8 @@ work_ticket link, the cover-map member inserts (PK + min<=max CHECK), the
 atomic state transition, the idempotent PENDING gate materialization, and the
 work_ticket back-fill that closes the mint-ordering cycle.
 
-Each test seeds its own principal + sequenced prep_samples + a mask_definition
-so cleanup runs in FK-reverse order and the suite can run against the shared
+Each test seeds its own principal + sequenced prep_samples + a mask_definition,
+which the sweep then takes, so the suite can run against the shared
 postgres_pool fixture. Blocks a test creates are tracked in `blk['created_blocks']`
 so teardown targets exactly those rows (parallel-safe — no global block sweep).
 """
@@ -66,10 +66,9 @@ async def _new_block(blk) -> int:
 async def blk(postgres_pool):
     """Seed a principal, two sequenced prep_samples, and a mask_definition.
 
-    Yields the ids + pool + a `created_blocks` list tests append to. FK-reverse
-    cleanup sweeps exactly the tracked block rows (block_member cascades), the
-    mask_sample gate rows for this mask, then the sample chain, the mask, the
-    user, and the principal."""
+    Yields the ids + pool + a `created_blocks` list tests append to. Teardown
+    clears exactly the tracked block rows (block_member cascades), sweeps the
+    entity graph, then drops the mask and the principal."""
     suffix = secrets.token_hex(4)
     principal_idx = await seed_user_principal(postgres_pool, prefix="block-test", suffix=suffix)
     bs1, ps1 = await seed_biosample_with_sequenced_prep_sample(

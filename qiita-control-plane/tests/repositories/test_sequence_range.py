@@ -29,7 +29,7 @@ pytestmark = pytest.mark.db
 
 @pytest_asyncio.fixture
 async def parent_chain(postgres_pool):
-    """Seed one principal + one prep_sample for the test; FK-reverse cleanup.
+    """Seed one principal + one prep_sample for the test.
 
     Tests that need a SECOND prep_sample (e.g., concurrent / disjoint
     range tests) call `seed_biosample_with_sequenced_prep_sample` again

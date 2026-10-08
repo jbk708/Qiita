@@ -41,7 +41,7 @@ async def _seed_gate(pool, principal_idx, *, state):
     """Seed a real (prep_sample, mask_definition) pair, plus a mask_sample gate row
     in `state` when `state` is not None (no row otherwise). Returns
     `(prep_sample_idx, mask_idx, biosample_idx)`; caller cleans up via
-    `_cleanup_gate` (FK-reverse)."""
+    `_cleanup_gate`."""
     biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
         pool, owner_idx=principal_idx
     )
@@ -89,7 +89,7 @@ def _decode_ticket_payload(ticket_b64: str) -> dict:
 @pytest_asyncio.fixture
 async def ctx(postgres_pool, regular_user_session, compute_worker_service_account):
     """Route-test context: the three AsyncClients (anon, regular user, compute
-    SA) plus a seeded principal for FK-reverse mask cleanup."""
+    SA) plus a seeded principal that owns the masks."""
     from qiita_control_plane.config import Settings
     from qiita_control_plane.main import app
 

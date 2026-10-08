@@ -68,8 +68,7 @@ async def rb(postgres_pool):
     """Seed principal + one sequenced prep_sample with its sequenced_sample
     subtype + a minted sequence_range + a mask_definition + the PENDING
     mask_sample gate. Yields the ids + a `make_block(members, state)` helper that
-    creates a block, a ticket carrying the mask_idx, and the cover-map, tracked
-    for FK-reverse cleanup."""
+    creates a block, a ticket carrying the mask_idx, and the cover-map."""
     suffix = secrets.token_hex(4)
     principal_idx = await seed_user_principal(postgres_pool, prefix="rb-test", suffix=suffix)
     biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(

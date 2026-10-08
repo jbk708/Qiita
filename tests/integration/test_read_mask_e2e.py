@@ -136,7 +136,7 @@ _EXPECTED_QUALITY_FILTERED_R1R2 = 2
 @pytest.fixture
 async def sequenced_prep_sample(postgres_pool, human_admin_session):
     """A sequenced prep_sample WITH its 1:1 sequenced_sample subtype row (the
-    target persist-read-metrics UPDATEs). Reverse-FK cleanup on teardown."""
+    target persist-read-metrics UPDATEs)."""
     import secrets
 
     from qiita_control_plane.testing.db_seeds import (

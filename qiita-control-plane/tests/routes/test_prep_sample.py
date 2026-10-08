@@ -42,7 +42,7 @@ pytestmark = pytest.mark.db
 
 
 # ---------------------------------------------------------------------------
-# FK-reverse cleanup
+# Teardown
 # ---------------------------------------------------------------------------
 
 
@@ -60,8 +60,7 @@ async def _cleanup_tracked(pool, created: dict) -> None:
 
 @pytest_asyncio.fixture
 async def ctx(role_keyed_clients):
-    """Per-test fixture: route-keyed clients plus a `created` tracker for
-    FK-reverse teardown over every table the seeds touch."""
+    """Per-test fixture: route-keyed clients plus a `created` tracker."""
     created: dict = {
         "prep_sample": [],
         "biosample": [],

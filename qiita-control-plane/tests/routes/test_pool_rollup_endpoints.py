@@ -7,7 +7,7 @@
 
 One fixture seeds a run + pool with three samples: a clean one (never an
 exception), a zero-reads-and-missing-accession one, and an unprocessed +
-no-accessions + failed-ticket one. FK-reverse cleanup.
+no-accessions + failed-ticket one.
 """
 
 import json

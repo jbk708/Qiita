@@ -10,7 +10,7 @@ per-sample and the block masking paths.
 Each test seeds one principal + one run + one pool + the masking actions, then
 attaches samples via `add_sample`, per-sample tickets via `add_ticket`, gate rows
 via `add_gate`, and block work via `add_block` (a block, its members, and its
-block-scoped ticket). Cleanup is FK-reverse on the shared postgres_pool fixture.
+block-scoped ticket).
 """
 
 import json

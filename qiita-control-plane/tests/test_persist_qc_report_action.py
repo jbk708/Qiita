@@ -7,8 +7,8 @@ consuming the qc_report.json sidecars from the qc_report_raw / qc_report_filtere
 steps.
 
 Each test seeds its own principal -> biosample -> prep_sample chain (and, where
-needed, the sequenced_sample subtype) so cleanup is FK-reverse and order-stable
-on the shared postgres_pool fixture.
+needed, the sequenced_sample subtype), which the sweep then takes, so the file
+runs against the shared postgres_pool fixture.
 """
 
 import json
@@ -60,7 +60,8 @@ _FILTERED_REPORT = {**_RAW_REPORT, "point": "filtered", "read_pairs": 90}
 async def chain(postgres_pool):
     """Seed one principal + biosample + sequenced prep_sample; yield a context
     with a `seed_subtype()` helper that attaches the run -> pool ->
-    sequenced_sample subtype on demand and records idxs for FK-reverse cleanup."""
+    sequenced_sample subtype on demand. The entities go to the sweep; the pool
+    and run are dropped after it."""
     principal_idx = await seed_user_principal(postgres_pool, prefix="pqc-test", suffix="owner")
     biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
         postgres_pool, owner_idx=principal_idx

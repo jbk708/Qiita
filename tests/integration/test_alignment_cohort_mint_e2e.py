@@ -59,8 +59,7 @@ async def two_study_pool(postgres_pool, human_admin_session, regular_user_sessio
     """One pool, two studies, one alignment over both — and a reader who holds
     Tier.VIEWER on only the first study.
 
-    Yields the identifiers the test drives; tears everything down in FK-reverse
-    order.
+    Yields the identifiers the test drives.
     """
     db = postgres_pool
     owner = human_admin_session["principal_idx"]

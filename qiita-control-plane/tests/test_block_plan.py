@@ -80,8 +80,7 @@ async def planapp(monkeypatch):
 
 @pytest_asyncio.fixture
 async def pooled(postgres_pool):
-    """Seed a run + pool + block action; yield helpers to add samples. FK-reverse
-    cleanup keyed on the tracked ids (parallel-safe — no global sweeps)."""
+    """Seed a run + pool + block action; yield helpers to add samples."""
     suffix = secrets.token_hex(4)
     principal_idx = await seed_user_principal(postgres_pool, prefix="plan-test", suffix=suffix)
     run_idx = await postgres_pool.fetchval(
@@ -148,7 +147,6 @@ async def pooled(postgres_pool):
         "prep_samples": prep_samples,
     }
 
-    # FK-reverse cleanup keyed on the seeded prep_samples / ids.
     ps_arr = prep_samples
     # Block tickets first (cascades their blocks + members via block.work_ticket_idx).
     await postgres_pool.execute(

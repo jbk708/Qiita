@@ -42,7 +42,7 @@ pytestmark = pytest.mark.db
 
 
 # ---------------------------------------------------------------------------
-# Seed helper (committed; cleanup via the ctx fixture's FK-reverse sweep)
+# Seed helper (committed; cleanup via the ctx fixture's entity sweep)
 # ---------------------------------------------------------------------------
 
 

@@ -105,10 +105,7 @@ async def _set_unique_in_study(ctx, spec, field_idx, value):
 
 
 async def _write_value(ctx, spec, *, entity_idx, field_idx, data_type, value):
-    """Write one metadata row and return its idx.
-
-    The row is keyed on its entity, so the sweep takes it; nothing is tracked.
-    """
+    """Write one metadata row and return its idx."""
     async with ctx["pool"].acquire() as conn, conn.transaction():
         meta_idx = await _insert_metadata(
             conn,
@@ -194,8 +191,7 @@ async def ctx(postgres_pool):
 
     Each test gets fresh seed rows (suffixed with a token to avoid collisions
     across re-runs) plus an empty `created` dict the test populates with idxs
-    of any rows it inserts. Teardown sweeps the entity graph, then deletes what
-    hangs off no entity in the order its references require.
+    of any rows it inserts.
 
     Both principals are promoted to user-kind via qiita.user rows so
     they can serve as study.owner_idx and biosample.owner_idx; the
@@ -424,7 +420,6 @@ async def _seed_global_field_for_spec(
 ):
     """Seed one global field of the given data_type for spec.entity_kind.
 
-    The row hangs off no entity, so it is tracked for the post-sweep cleanup.
     Returns a FieldRow shape so the caller can drive metadata writes against it
     directly. terminology_idx must be supplied when data_type=TERMINOLOGY (the
     *_global_field CHECK enforces the iff coupling) and omitted otherwise.

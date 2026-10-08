@@ -5,7 +5,8 @@ isolation.
 
 `register_ena_study` commits its own writes (one registration transaction, savepoint
 isolation per run), so nothing can be wrapped in an outer rolled-back transaction;
-`_cleanup` below removes tracked rows FK-reverse.
+`_cleanup` below sweeps each tracked study's entity graph, then its runs and
+principals.
 """
 
 from decimal import Decimal
@@ -111,7 +112,7 @@ async def _library_metadata_by_run(pool, run_accessions: list[str]) -> dict[str,
 
 
 # ---------------------------------------------------------------------------
-# Per-test tracker fixture + FK-reverse cleanup
+# Per-test tracker fixture + teardown
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +137,7 @@ async def _cleanup(pool, tracker: _Tracker) -> None:
 
 @pytest_asyncio.fixture
 async def reg(postgres_pool):
-    """Per-test (pool, owner_idx, caller_idx, tracker); tracked rows cleaned FK-reverse."""
+    """Per-test (pool, owner_idx, caller_idx, tracker)."""
     tracker = _Tracker()
     owner_idx = await seed_user_principal(postgres_pool, prefix="ena-owner", suffix="t02")
     caller_idx = await seed_user_principal(postgres_pool, prefix="ena-caller", suffix="t02")

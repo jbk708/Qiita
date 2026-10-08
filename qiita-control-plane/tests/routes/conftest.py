@@ -1019,8 +1019,8 @@ async def resolve_ineligible_owner_idx(
     """Resolve the owner_idx for one ineligibility kind, seeding a principal
     when the kind needs one.
 
-    A seeded principal hangs off no entity, so it is recorded in `created` for
-    the caller's own teardown. Caller passes the route-specific `prefix` (e.g.,
+    A seeded principal is recorded in `created`. Caller passes the
+    route-specific `prefix` (e.g.,
     'bs-route-elig', 'st-route-elig') so seeded display_names stay scoped to the
     suite, and a `created` dict carrying the 'user_principals' and
     'service_account_principals' keys this appends to.

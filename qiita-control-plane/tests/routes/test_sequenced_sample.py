@@ -107,7 +107,7 @@ def _unique_item_id(prefix: str = "ITEM") -> str:
 
 
 # ---------------------------------------------------------------------------
-# FK-reverse cleanup
+# Teardown
 # ---------------------------------------------------------------------------
 
 
@@ -164,9 +164,9 @@ async def _cleanup_tracked(pool, created: dict) -> None:
 
 @pytest_asyncio.fixture
 async def ctx(role_keyed_clients):
-    """Per-test fixture: route-keyed clients plus a `created` tracker for
-    FK-reverse teardown over every table the composer writes (plus its
-    inputs the test seeds). Also seeds the download-ena-study action row
+    """Per-test fixture: route-keyed clients plus a `created` tracker.
+
+    Also seeds the download-ena-study action row
     that a staged-roster work_ticket FKs, and removes it afterwards iff
     this test created it."""
     created: dict = {
@@ -1311,7 +1311,7 @@ async def _seed_one_sequenced_sample(
     protocol_idx = await _fetch_prep_protocol_idx(ctx)
     item_id = _unique_item_id(suffix.upper())
 
-    # Land the composite; route tracks each row in ctx for FK-reverse cleanup.
+    # Land the composite; the route records each entity in ctx for the sweep.
     resp = await _post_sequenced_sample(
         ctx["wet"],
         ctx,
@@ -4253,8 +4253,9 @@ async def test_patch_sequenced_sample_metadata_admin_tier_writes(ctx):
 
 async def _seed_roster_case(ctx, suffix: str) -> tuple[int, int, int, int, int]:
     """Seed one roster test's precondition chain: run, pool, study, a
-    biosample linked to the study, and the prep-protocol idx, all tracked for
-    FK-reverse teardown. The wet_lab_admin principal owns every row, so the
+    biosample linked to the study, and the prep-protocol idx. The entities go
+    to the sweep; the run and pool are dropped after it. The wet_lab_admin
+    principal owns every row, so the
     default POST passes the route's ownership and study-admin gates."""
     run_idx, pool_idx = await _seed_run_and_pool(ctx, suffix)
     study_idx = await _seed_study(ctx, owner_idx=ctx["wet_session"]["principal_idx"], suffix=suffix)

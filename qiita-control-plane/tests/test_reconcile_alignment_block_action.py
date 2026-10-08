@@ -48,7 +48,7 @@ async def ab(postgres_pool):
     """Seed principal + one sequenced prep_sample (+ sequence_range) + a minted
     alignment_definition + the PENDING alignment_sample gate. Yields the ids + a
     `make_block(members, state)` helper (block + a ticket carrying the
-    alignment_idx + the cover-map), tracked for FK-reverse cleanup."""
+    alignment_idx + the cover-map)."""
     suffix = secrets.token_hex(4)
     principal_idx = await seed_user_principal(postgres_pool, prefix="ab-test", suffix=suffix)
     biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(

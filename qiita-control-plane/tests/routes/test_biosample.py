@@ -101,7 +101,7 @@ async def _seed_metadata_checklist(pool, *, suffix: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# FK-reverse cleanup
+# Teardown
 # ---------------------------------------------------------------------------
 
 
@@ -152,7 +152,7 @@ async def _cleanup_tracked(pool, created: dict) -> None:
 @pytest_asyncio.fixture
 async def ctx(role_keyed_clients):
     """Per-test fixture wrapping role_keyed_clients with a route-specific
-    `created` tracker for FK-reverse cleanup at teardown.
+    `created` tracker the teardown reads.
 
     `created` lists are populated either by the test (for seeded support
     rows) or by `_post_biosample` (for rows the route created on success).
@@ -1360,7 +1360,7 @@ async def test_post_biosample_metadata_uses_seeded_globals(ctx):
 
 async def _seed_link_to_study(ctx, *, study_idx, owner_idx):
     """Seed a biosample owned by `owner_idx`, link it to `study_idx`, and
-    track both rows in `ctx['created']` for FK-reverse cleanup. Wraps the
+    record the biosample in `ctx['created']`. Wraps the
     db_seeds primitives so the per-test setup stays a single line."""
     bs_idx = await seed_biosample(ctx["pool"], owner_idx=owner_idx, created_by_idx=owner_idx)
     ctx["created"]["biosample"].append(bs_idx)

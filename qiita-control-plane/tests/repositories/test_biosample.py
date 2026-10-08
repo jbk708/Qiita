@@ -1837,8 +1837,8 @@ async def test_fetch_biosample_idxs_by_natural_key_invalid_key_raises(ctx):
 #
 # Tests below use Pattern 1 (transaction-rollback per test): all seed and
 # assertions happen inside a single transaction that is rolled back at the
-# end, with no shared fixture and no FK-reverse cleanup. The rest of this
-# file uses Pattern 2 (committed `ctx` fixture + FK-reverse cleanup).
+# end, with no shared fixture and no teardown at all. The rest of this file
+# uses Pattern 2 (committed `ctx` fixture + swept teardown).
 # Pattern 1 fits trigger tests because triggers fire per-statement and the
 # test does not need to commit; Pattern 2 is needed elsewhere — notably
 # `test_import_biosample_from_owner_biosample_id_rejects_non_transactional_connection`,

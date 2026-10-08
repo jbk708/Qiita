@@ -94,7 +94,7 @@ def _bridge_http(manifest_dict: dict, tickets_by_prep: dict[int, str], pool_idx:
 async def seeded(postgres_pool, human_admin_session):
     """One sequenced_pool with a single sequenced sample (accession set) plus a
     mask_definition, in the integration Postgres. Returns the ids the DuckLake
-    seed + the export need; FK-reverse cleanup on teardown."""
+    seed + the export need."""
     from qiita_control_plane.repositories.mask_definition import mint_mask_definition
     from qiita_control_plane.testing.db_seeds import (
         seed_biosample,

@@ -7,11 +7,11 @@ references a user.
 
 Tests use Pattern 1 (transaction-rollback per test): all seed and
 assertions happen inside a single transaction that is rolled back at
-the end. No shared fixture, no FK-reverse cleanup. This pattern fits
+the end. No shared fixture, no teardown at all. This pattern fits
 trigger tests because triggers fire per-statement and the test does not
 need to commit. Tests that exercise commit-time behavior or
-cross-transaction scenarios use Pattern 2 (committed fixture +
-FK-reverse cleanup) — see tests/repositories/test_biosample.py.
+cross-transaction scenarios use Pattern 2 (committed fixture + swept
+teardown) — see tests/repositories/test_biosample.py.
 """
 
 import json

@@ -208,7 +208,7 @@ async def align_block_pool(postgres_pool, human_admin_session):
     sequenced_sample subtype + a minted sequence_range (4 reads), a minted
     `alignment_definition`, and a PENDING `alignment_sample` gate per sample. Yields
     the ids + a `make_block(members, state)` helper (block + a block work_ticket
-    carrying the alignment_idx + the cover-map), tracked for FK-reverse cleanup."""
+    carrying the alignment_idx + the cover-map)."""
     from qiita_control_plane.repositories.alignment_definition import (
         mint_alignment_definition,
     )
@@ -330,7 +330,7 @@ async def align_block_pool(postgres_pool, human_admin_session):
         "make_block": make_block,
     }
 
-    # FK-reverse Postgres cleanup. The DuckLake `alignment` rows we registered are
+    # The DuckLake `alignment` rows we registered are
     # left as harmless orphans (each test run uses a unique alignment_idx, and the
     # catalog is reset between integration phases) — the same discipline the
     # read-mask block e2e uses for its read_mask rows.

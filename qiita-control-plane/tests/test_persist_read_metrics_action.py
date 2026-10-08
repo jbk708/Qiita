@@ -6,8 +6,8 @@ onto the 1:1 sequenced_sample for a prep_sample. It is the in-process action
 fastq-to-parquet runs after host_filter, reading the mask host_filter emitted.
 
 Each test seeds its own principal -> biosample -> prep_sample chain (and, where
-needed, the sequenced_sample subtype) so cleanup is FK-reverse and order-stable
-on the shared postgres_pool fixture.
+needed, the sequenced_sample subtype), which the sweep then takes, so the file
+runs against the shared postgres_pool fixture.
 """
 
 import secrets
@@ -68,7 +68,8 @@ def _write_read_mask(
 async def chain(postgres_pool):
     """Seed one principal + biosample + sequenced prep_sample; yield a context
     with a `seed_subtype()` helper that attaches the run -> pool ->
-    sequenced_sample subtype on demand and records idxs for FK-reverse cleanup."""
+    sequenced_sample subtype on demand. The entities go to the sweep; the pool
+    and run are dropped after it."""
     principal_idx = await seed_user_principal(postgres_pool, prefix="prm-test", suffix="owner")
     biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
         postgres_pool, owner_idx=principal_idx
@@ -92,8 +93,6 @@ async def chain(postgres_pool):
         "seed_subtype": seed_subtype,
     }
 
-    # FK-reverse cleanup: sequenced_sample -> sequenced_pool -> sequencing_run,
-    # then prep_sample (cascades sequence_range), biosample, user, principal.
     await teardown_entity_graph(
         postgres_pool,
         study_idxs=[],

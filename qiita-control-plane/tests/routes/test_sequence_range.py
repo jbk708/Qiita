@@ -45,7 +45,7 @@ async def ctx(
 ):
     """Yield a route-test context with one prep_sample plus the
     AsyncClient triple needed by every test (anonymous, regular user,
-    compute SA), and a `created` dict for FK-reverse teardown.
+    compute SA), and a `created` dict the teardown reads.
 
     The compute_worker_service_account fixture is extended in
     qiita_control_plane.testing.sessions to include Scope.SEQUENCE_RANGE_MINT

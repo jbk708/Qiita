@@ -185,7 +185,7 @@ async def block_pool(postgres_pool, human_admin_session):
     sequenced_sample subtype + a minted sequence_range (4 reads), a shared
     mask_definition, and a PENDING mask_sample gate per sample. Yields the ids +
     a `make_block(members, state)` helper (block + a block work_ticket carrying
-    the mask_idx + the cover-map), tracked for FK-reverse cleanup."""
+    the mask_idx + the cover-map)."""
     from qiita_control_plane.repositories.block import (
         add_block_members,
         create_block,

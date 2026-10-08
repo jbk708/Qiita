@@ -36,7 +36,7 @@ def ctx(role_keyed_clients):
 @pytest_asyncio.fixture
 async def seeded_pool(ctx):
     """Seed a run + pool + one processed sequenced_sample (raw=1000, bio=900,
-    qf=850) owned by the wet-admin principal; FK-reverse cleanup."""
+    qf=850) owned by the wet-admin principal."""
     db = ctx["pool"]
     owner = ctx["wet_session"]["principal_idx"]
     bs_idx, ps_idx = await seed_biosample_with_sequenced_prep_sample(db, owner_idx=owner)

@@ -174,7 +174,7 @@ async def _add_pool_ticket(db, *, action, owner, sequenced_pool_idx, state):
 @pytest_asyncio.fixture
 async def seeded_pool(ctx):
     """Seed a run + pool with two samples: one with a COMPLETED read-mask
-    ticket, one with none (not-submitted). FK-reverse cleanup."""
+    ticket, one with none (not-submitted)."""
     db = ctx["pool"]
     owner = ctx["wet_session"]["principal_idx"]
     action = await _seed_fastq_action(db)
