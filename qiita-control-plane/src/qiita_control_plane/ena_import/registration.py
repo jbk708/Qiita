@@ -55,6 +55,7 @@ from qiita_control_plane.host_by_sample_taxon import implied_hosts
 from qiita_control_plane.repositories import require_transaction
 from qiita_control_plane.repositories._sample_helpers import (
     fetch_metadata_checklist_idx_by_name,
+    fetch_terminology_term_idxs_by_term_ids,
     insert_entity_to_study,
     resolve_local_study_field,
     write_local_metadata_on_resolved_field,
@@ -78,6 +79,7 @@ from qiita_control_plane.repositories.sequencing_run import (
     insert_sequencing_run,
     lock_sequencing_run,
 )
+from qiita_control_plane.repositories.terminology import fetch_terminology_idx_by_name
 
 from .harmonization import HarmonizationResult, build_biosample_metadata
 from .platform_mapping import UnmappableEnaPlatformError, map_ena_platform
@@ -436,15 +438,13 @@ async def _taxon_lookups(
         | {r.host_tax_id for r in ena_runs if r.host_tax_id}
         | {h for h in implied.values() if h}
     )
-    rows = await conn.fetch(
-        "SELECT tt.term_id"
-        "  FROM qiita.terminology_term tt"
-        "  JOIN qiita.terminology t ON t.idx = tt.terminology_idx AND t.name = $1"
-        " WHERE tt.term_id = ANY($2::text[])",
-        NCBI_TAXONOMY_NAME,
-        sorted(candidates),
+    terminology_idx = await fetch_terminology_idx_by_name(conn, NCBI_TAXONOMY_NAME)
+    if terminology_idx is None:
+        return implied, frozenset()
+    loaded = await fetch_terminology_term_idxs_by_term_ids(
+        conn, terminology_idx=terminology_idx, term_ids=candidates
     )
-    return implied, frozenset(row["term_id"] for row in rows)
+    return implied, frozenset(loaded)
 
 
 def _library_metadata(ena_run: EnaRunRecord) -> dict[str, str]:

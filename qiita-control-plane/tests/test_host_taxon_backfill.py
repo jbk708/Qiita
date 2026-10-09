@@ -20,7 +20,11 @@ import secrets
 
 import pytest
 import pytest_asyncio
-from qiita_common.models import NCBI_TAXONOMY_MOUSE_TERM_ID, NCBI_TAXONOMY_NAME
+from qiita_common.models import (
+    NCBI_TAXONOMY_METAGENOME_TERM_ID,
+    NCBI_TAXONOMY_MOUSE_TERM_ID,
+    NCBI_TAXONOMY_NAME,
+)
 
 from qiita_control_plane.backfill.host_taxon import (
     HostTaxonSource,
@@ -37,7 +41,6 @@ from qiita_control_plane.repositories.biosample import insert_biosample
 from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
 from qiita_control_plane.testing.db_seeds import (
     NCBI_TAXONOMY_HUMAN_TERM_ID,
-    NCBI_TAXONOMY_METAGENOME_TERM_ID,
     fetch_ncbi_taxonomy_term,
     seed_user_principal,
 )

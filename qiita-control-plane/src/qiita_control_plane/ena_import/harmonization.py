@@ -19,6 +19,7 @@ from qiita_common.models import (
     BIOSAMPLE_DISPLAY_HOST_TAXON_ID,
     BIOSAMPLE_DISPLAY_TAXON_ID,
     MISSING_REASON_NOT_APPLICABLE,
+    MISSING_REASON_NOT_PROVIDED,
 )
 from qiita_common.models.ena import EnaRunRecord
 
@@ -26,7 +27,6 @@ from qiita_control_plane.host_by_sample_taxon import NON_HOST_TAXA
 
 from .attribute_mapping import map_ena_attributes
 
-_MISSING_REASON_NOT_PROVIDED = "not provided"
 _TAXON_DISPLAY_NAMES = frozenset({BIOSAMPLE_DISPLAY_HOST_TAXON_ID, BIOSAMPLE_DISPLAY_TAXON_ID})
 
 
@@ -45,13 +45,13 @@ class HarmonizationResult:
     warnings: list[str] = field(default_factory=list)
 
 
-# The full vocabulary is `qiita.missing_value_reason`; this is the subset ENA host text uses.
+# INSDC missing-value terms, plus `missing` and `unknown`, which ENA host text also uses.
 _MISSING_HOST_TEXT = frozenset(
     {
         "missing",
         MISSING_REASON_NOT_APPLICABLE,
         "not collected",
-        _MISSING_REASON_NOT_PROVIDED,
+        MISSING_REASON_NOT_PROVIDED,
         "restricted access",
         "unknown",
     }
@@ -98,13 +98,13 @@ def _host_taxon_id(
         if host_tax_id in loaded_term_ids:
             return host_tax_id, warnings
         warnings.append(f"{who}: host_tax_id {host_tax_id} is not a loaded NCBI Taxonomy term")
-        return _MISSING_REASON_NOT_PROVIDED, warnings
+        return MISSING_REASON_NOT_PROVIDED, warnings
 
     text = _host_text(run)
     if text is not None:
         shown = text if len(text) <= _HOST_TEXT_MAX else text[:_HOST_TEXT_MAX] + "..."
         warnings.append(f"{who}: ENA gives host text {shown!r} but no usable host_tax_id")
-        return _MISSING_REASON_NOT_PROVIDED, warnings
+        return MISSING_REASON_NOT_PROVIDED, warnings
 
     if implied and implied_host is None:
         return MISSING_REASON_NOT_APPLICABLE, warnings
@@ -115,7 +115,7 @@ def _host_taxon_id(
             f"{who}: host {implied_host} implied by tax_id {run.tax_id} is not a loaded"
             " NCBI Taxonomy term"
         )
-        return _MISSING_REASON_NOT_PROVIDED, warnings
+        return MISSING_REASON_NOT_PROVIDED, warnings
 
     reason = (
         "ENA gives no tax_id"
@@ -123,15 +123,15 @@ def _host_taxon_id(
         else f"the table has no row for tax_id {run.tax_id}"
     )
     warnings.append(f"{who}: ENA gives no host_tax_id and {reason}")
-    return _MISSING_REASON_NOT_PROVIDED, warnings
+    return MISSING_REASON_NOT_PROVIDED, warnings
 
 
 def _taxon_id(run: EnaRunRecord, loaded_term_ids: Collection[str]) -> tuple[str, list[str]]:
     if run.tax_id is None:
-        return _MISSING_REASON_NOT_PROVIDED, [f"{run.sample_accession}: ENA gives no tax_id"]
+        return MISSING_REASON_NOT_PROVIDED, [f"{run.sample_accession}: ENA gives no tax_id"]
     if run.tax_id in loaded_term_ids:
         return run.tax_id, []
-    return _MISSING_REASON_NOT_PROVIDED, [
+    return MISSING_REASON_NOT_PROVIDED, [
         f"{run.sample_accession}: tax_id {run.tax_id} is not a loaded NCBI Taxonomy term"
     ]
 

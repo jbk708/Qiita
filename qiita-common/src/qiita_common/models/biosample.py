@@ -212,10 +212,13 @@ BIOSAMPLE_DISPLAY_TAXON_ID = "taxon id"
 # invite exactly the mechanical widening the fail-closed rule is there to stop.
 MISSING_REASON_NOT_APPLICABLE = "not applicable"
 MISSING_REASON_CONTROL_SAMPLE = "missing: control sample"
+# Written by the ENA import for a taxon it cannot fill; the resolver does not recognise it.
+MISSING_REASON_NOT_PROVIDED = "not provided"
 
-# The terminology `taxon_id` / `host_taxon_id` name their terms in, and the
-# term_id of the human host. Shared so production code and the test seeds spell
-# them the same way — production must not reach into `testing/` for them.
+# The terminology `taxon_id` / `host_taxon_id` name their terms in, and the term_ids of
+# the human and mouse hosts and the bare `metagenome` root (seeded by the NCBI Taxonomy
+# seed migration). Shared so production code and the test seeds spell them the same
+# way — production must not reach into `testing/` for them.
 #
 # `NCBI_TAXONOMY_HUMAN_TERM_ID` is a STRING even though an NCBI taxon id is a number,
 # and that is not an oversight. It is a `qiita.terminology_term.term_id`, whose column

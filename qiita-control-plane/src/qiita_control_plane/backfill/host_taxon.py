@@ -2,7 +2,7 @@
 
 `host_taxon_id` (the host organism a sample was taken FROM) was added as a
 biosample global field after the biosamples we hold had been ingested, so those
-carry no value (ENA-imported biosamples now do). Until it is populated,
+carry no value (ENA imports write it). Until it is populated,
 `host_filter_resolver` reports such a sample as UNRESOLVED and the submit path
 has nothing to resolve against. This module fills it in.
 
