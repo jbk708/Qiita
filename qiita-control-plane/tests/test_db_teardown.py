@@ -33,6 +33,7 @@ from qiita_control_plane.testing.db_teardown import (
     SWEEP_TIERS,
     UNSWEPT_ENTITY_TABLES,
     EntityGraphNotSweptError,
+    _as_idx_list,
     _entity_keyed_candidates,
     _sweep_table,
     assert_entity_graph_swept,
@@ -413,6 +414,16 @@ async def test_teardown_entity_graph_leaves_a_reference_exclusion(postgres_pool,
             "DELETE FROM qiita.reference_exclusion WHERE reference_exclusion_idx = $1",
             exclusion_idx,
         )
+
+
+def test__as_idx_list():
+    """Tests the case where the idxs arrive as a scalar and as an iterator: both
+    come back as a list, so a caller can tell an empty run from a full one."""
+    assert (_as_idx_list(7), _as_idx_list(iter([1, 2])), _as_idx_list(iter([]))) == (
+        [7],
+        [1, 2],
+        [],
+    )
 
 
 async def test_delete_idxs_empty_iterator():

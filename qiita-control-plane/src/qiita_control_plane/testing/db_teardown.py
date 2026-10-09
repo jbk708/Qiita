@@ -77,7 +77,7 @@ SWEEP_TIERS = (
 # by the time this runs, so the entities go in this order.
 ENTITY_DELETE_ORDER = (PREP_SAMPLE, BIOSAMPLE, STUDY)
 
-# Not swept, each for its own reason. A work ticket references a study and a
+# Not swept, each for its own reason. A work ticket references a study or a
 # prep_sample, so a standing one fails the entity delete; teardown_entity_graph's
 # docstring states when the caller has to clear it. An exclusion names its genome
 # with a bare BIGINT and is meant to outlive it, but it does reference the
@@ -282,10 +282,10 @@ async def teardown_entity_graph(
     """Delete these entities and everything hanging off them.
 
     Sweeps each tier in order, verifies nothing survived, then deletes the
-    entities themselves. The caller keeps its own parents — pools, runs, masks,
-    references — and deletes them after this returns.
+    entities themselves. The caller keeps its own parents and deletes them
+    after this returns.
 
-    Work tickets go the other way: a ticket references its study and its
+    Work tickets go the other way: a ticket references its study or its
     prep_sample under RESTRICT, so the caller must clear its own tickets
     before calling this, or the entity delete at the end raises.
     """
