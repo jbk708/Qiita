@@ -4033,6 +4033,12 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **`GET /sequence-range/{prep_sample_idx}` checks per-study access for a human caller
+  (#668).** A `prep_sample:read` caller now needs `viewer` or higher on every study the
+  prep_sample is linked to (`wet_lab_admin` and above bypass). A caller without it gets
+  `403` whether or not a range exists, and for an unknown or unlinked prep_sample. A
+  `sequence_range:mint` caller (the compute service account) reads any range as before,
+  and the response body is unchanged.
 - **Tests tear down their fixtures by parent FK rather than by tracked row (#N).** A
   test passes `teardown_entity_graph` the idxs of its study, biosample and
   prep_sample, and the helper deletes every row that hangs off them. That now
