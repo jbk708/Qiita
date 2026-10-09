@@ -995,7 +995,8 @@ async def test_retry_exhausted_marks_failed_with_permanent_type(
     assert row["failure_type"] == "permanent"
     assert row["failure_stage"] == "step_run"
     assert row["failure_step_name"] == "hash"
-    assert row["failure_reason"].startswith("retries_exhausted (3/3); last failure [node_fail]")
+    exhausted = FailureKind.RETRIES_EXHAUSTED.value
+    assert row["failure_reason"].startswith(f"{exhausted} (3/3); last failure [node_fail]")
     # 4 total attempts: 1 initial + 3 retries.
     assert backend.attempts["hash"] == 4
 
@@ -4943,7 +4944,7 @@ async def test_resume_with_terminal_attempt_and_spent_budget_fails_retries_exhau
     )
     assert row["state"] == "failed"
     assert row["failure_type"] == "permanent"
-    assert row["failure_reason"].startswith("retries_exhausted (3/3)")
+    assert row["failure_reason"].startswith(f"{FailureKind.RETRIES_EXHAUSTED.value} (3/3)")
 
 
 async def test_resume_never_started_runs_from_scratch(postgres_pool, slurm_ticket, tmp_path):

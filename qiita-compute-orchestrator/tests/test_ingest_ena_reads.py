@@ -515,6 +515,25 @@ def test_many_failed_runs_cap_the_combined_reason(fake_mint, monkeypatch, tmp_pa
     assert reason.endswith("…")
 
 
+def test_deciding_permanent_run_keeps_its_full_reason_in_a_capped_reason(
+    fake_mint, monkeypatch, tmp_path
+):
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        if run_accession == "ERR009":
+            raise duckdb.InvalidInputException("read_ena_sequences: malformed FASTQ record")
+        raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    accessions = [f"ERR{i:03d}" for i in range(1, 11)]
+    inputs = _inputs(tmp_path, [(i, acc) for i, acc in enumerate(accessions, start=10)])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value.kind == FailureKind.BAD_INPUT
+    assert "ENA run ERR009: fetch failed" in exc.value.reason
+    assert "malformed FASTQ record" in exc.value.reason
+
+
 # ---------------------------------------------------------------------------
 # Range reuse — wiring only (see test_ingest_reads.py for the full matrix)
 # ---------------------------------------------------------------------------

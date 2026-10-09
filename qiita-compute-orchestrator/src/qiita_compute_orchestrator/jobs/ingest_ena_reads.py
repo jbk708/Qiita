@@ -72,7 +72,7 @@ _SKIP_WARNING_MARKER = "skip"
 # Also contains "skip", but reports a complete run whose md5 could not be
 # checked (SFF, a non-gzip file), not missing data.
 _MD5_SKIPPED_WARNING_MARKER = "md5 verification skipped"
-# miint's mid-stream failure warning; a re-run recovers it.
+# miint's mid-stream failure warning (https://the-miint.github.io/duckdb-miint/insdc_ena/).
 _MID_STREAM_WARNING_MARKER = "mid-stream"
 
 # Prefix of the transient-fetch reason; the live e2e test keys its skip on it.
@@ -204,15 +204,15 @@ def _classify_ena_fetch_error(
 def _combine_failures(failed: list[tuple[str, BackendFailure]]) -> BackendFailure:
     """One failure for the step from `(run_accession, failure)` pairs: a permanent
     outcome wins over a transient one so it is not retried. The reason gives the
-    first few runs in full and only lists the rest."""
-    failures = [f for _, f in failed]
-    lead = next((f for f in failures if not f.transient), failures[0])
+    first few runs in full (permanent ones first) and only lists the rest."""
     if len(failed) == 1:
-        return lead
+        return failed[0][1]
+    ordered = sorted(failed, key=lambda pair: pair[1].transient)
+    lead = ordered[0][1]
     reason = f"{len(failed)} runs failed: " + " | ".join(
-        f.reason for f in failures[:_REASON_FULL_RUNS]
+        f.reason for _, f in ordered[:_REASON_FULL_RUNS]
     )
-    rest = [acc for acc, _ in failed[_REASON_FULL_RUNS:]]
+    rest = [acc for acc, _ in ordered[_REASON_FULL_RUNS:]]
     if rest:
         listed = ", ".join(rest[:_REASON_LISTED_ACCESSIONS])
         ellipsis = "…" if len(rest) > _REASON_LISTED_ACCESSIONS else ""
@@ -284,7 +284,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                             "was skipped by miint -- its data is missing or partial; "
                             "refusing to register an incomplete read set"
                             + (
-                                "; miint reports a re-run recovers a mid-stream failure"
+                                "; miint's docs say a re-run recovers a mid-stream failure"
                                 if mid_stream
                                 else ""
                             )
@@ -341,9 +341,8 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     for outcome in outcomes:
         if isinstance(outcome, BaseException) and not isinstance(outcome, BackendFailure):
             raise outcome
-    # Unlike `ingest_reads` (which only raises BAD_INPUT, so the first failure
-    # decides nothing), a retriable and a permanent run can mix here: collect all
-    # so a permanent one is not retried behind a transient one.
+    # Retriable and permanent runs can mix; collect all so a permanent one
+    # decides the kind.
     failed = [(acc, o) for (_, acc), o in zip(roster, outcomes) if isinstance(o, BackendFailure)]
     if failed:
         raise _combine_failures(failed)

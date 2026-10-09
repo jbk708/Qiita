@@ -2092,10 +2092,11 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   404 now fails only after the retries are used up. A run with zero reads and no warning
   still fails permanently. When several runs of a pool fail, a permanent outcome decides
   the step's kind and the reason names every failed run.
-  A ticket that uses up `max_retries` on any retriable kind (`external_fetch_transient`, OOM, timeout) now
-  ends `permanent` with a reason starting `retries_exhausted` (the kind is identified by that prefix, not a stored column) followed by the last attempt's kind and reason,
-  so the notify digest emails it with its reason; before, it ended `retriable` and was
-  withheld. The digest's held line now reads "held after an infrastructure failure": it
+  A ticket that uses up `max_retries` on any retriable kind (`external_fetch_transient`,
+  OOM, timeout) now ends `permanent` with a reason starting `retries_exhausted` (the kind
+  is identified by that prefix, not a stored column) followed by the last attempt's kind
+  and reason, so the notify digest emails it with its reason; before, it ended `retriable`
+  and was withheld. The digest's held line now reads "held after an infrastructure failure": it
   counts only retriable tickets outside the step retry loop, which a redrive still heals.
 - **An ENA study whose sample repeats an attribute tag no longer fails at resolve (#650).**
   `read_ena_attributes` can return a tag more than once (for example `BioSampleModel` or

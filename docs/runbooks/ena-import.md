@@ -301,13 +301,14 @@ see miint's [`insdc_ena` docs](https://the-miint.github.io/duckdb-miint/insdc_en
 and a mismatch fails the step. miint cannot tell a transfer truncated on a gzip member
 boundary from bytes that really disagree with the digest, so the step is retried up to
 the ticket's retry limit; when the retries run out the ticket ends FAILED with
-failure_type `permanent` and both digests in the reason. A run miint skipped (a failed open or a mid-download failure, including a
-corrupt body that surfaces mid-stream) is retried the same way, so a permanent open
-failure such as a 404 costs the full retry limit before it fails.
+failure_type `permanent` and both digests in the reason. A run miint skipped (a failed
+open or a mid-download failure, including a corrupt body that surfaces mid-stream) is
+retried the same way, so a permanent open failure such as a 404 costs the full retry
+limit before it fails.
 
 Where verification does not apply (an SFF run, a file that is not gzip-compressed, no
-`fastq_md5` from ENA) the run still registers. A run that comes back empty with no warning fails
-permanently.
+`fastq_md5` from ENA) the run still registers. A run that comes back empty with no
+warning fails permanently.
 
 When the retries run out the ticket is FAILED `permanent` and emailed with its reason.
 Read the reason first. A dropped transfer or an ENA outage: redrive the ticket
@@ -316,8 +317,9 @@ a redrive resets `retry_count`, so it buys the full budget again. A bad digest o
 compare against the ENA Portal before redriving, since the same bytes fail the same way;
 if the run is gone or its digest is wrong at ENA, re-import once ENA is corrected. Each
 retry resubmits the whole `ingest_ena_reads` step (resources: `baseline_resources` in
-`workflows/download-ena-study/1.0.0.yaml`), the requeue follows the failure with no delay or backoff, and `max_retries` is the
-ticket's one budget, shared with the OOM and timeout retries of that step.
+`workflows/download-ena-study/1.0.0.yaml`), the requeue follows the failure with no
+delay or backoff, and `max_retries` is the ticket's one budget, shared with the OOM and
+timeout retries of that step.
 
 **Network access.** The control-plane host resolves metadata from `www.ebi.ac.uk`, and
 the SLURM compute nodes running `ingest_ena_reads` reach both `www.ebi.ac.uk` and
