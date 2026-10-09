@@ -121,7 +121,7 @@ Only rules whose trigger appears in the diff can fire.
 | Two structurally similar code paths; an endpoint reading from two or more sources; a multi-statement mutation | R9 |
 | `baseline_resources` / `action_ceiling`; a memory cap for an embedded sub-process; a `SET threads` / `memory_limit` / `preserve_insertion_order` after a connect helper | R9 |
 | A CLI command's error handling or exit path | R9 |
-| A new or changed test teardown or `conftest.py` fixture; a `DELETE FROM qiita.` in `tests/**` | R9 |
+| A `DELETE FROM` or a `delete_idxs` on a table the sweep owns — `SWEEP_TIERS` plus `study` / `biosample` / `prep_sample` — under `tests/**` or `src/**/testing/**` | R9 |
 | Any new or changed doc, runbook, docstring or comment | R2 |
 | A user-facing string: a runbook, a workflow `description:`, argparse `help=`, an HTTPException `detail`, a failure reason, or a test assertion on one; a `generated_by` value | R11, R2 |
 | A new file, moved code, a helper in a feature-specific module, feature- or platform-specific naming, a one-shot script | R10 |
@@ -253,7 +253,7 @@ Safety must not rest on convention or a comment; and a guard must be real, so do
 When two similar code paths solve the same problem differently, factor out the shared part or say why they differ.
 
 - **A copy-pasted parallel handler** is parameterized, not maintained twice. Same for near-duplicate blocks in one file and for a local re-implementation of a helper another module owns.
-- **Test teardown goes through the entity sweep.** A fixture that deletes the study / biosample / prep_sample graph by tracked row idx, or with its own `DELETE FROM`, re-implements `teardown_entity_graph`: it tracks the three entity idxs and calls the sweep instead. Clearing a parent above that graph, or a table named in `UNSWEPT_ENTITY_TABLES`, is the caller's job and is not a finding. `docs/testing.md` has the contract.
+- **Tearing down any of the swept tables goes through the entity sweep.** Flag a delete in a teardown — after a fixture's `yield`, in a `finally:`, in a cleanup helper — by any route, `delete_idxs` included, of a table the sweep owns: `SWEEP_TIERS` plus `study` / `biosample` / `prep_sample`. A delete that arranges a test's state, or that is itself the assertion, is not a teardown and not this rule. `docs/testing.md` states the obligation, and why it holds even when the entity is expected to have nothing hanging off it. Not a finding: a fixture in the sweep's own test module (it cannot use the function under test), a genome no prep_sample produced, or a divergence the teardown explains.
 - **Per-invocation setup that belongs once**: an install or version check on every call moves to deploy time; per-connection settings repeated at call sites belong in the shared connect helper [soft].
 - **New native jobs converge with their siblings**: failure-path cleanup of temp files and of declared outputs (a partial output must not be promoted), path validation through the shared validator, intermediate tables that are temporary.
 - **New sequence-bearing storage follows the reference-data pattern**: chunked, hashed, deduplicated, keyed on a minted idx.
