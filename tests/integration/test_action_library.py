@@ -11,39 +11,8 @@ import uuid
 import asyncpg
 import duckdb
 import pytest
-from qiita_control_plane.testing.db_seeds import (
-    seed_biosample_with_sequenced_prep_sample,
-)
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 _TEST_SALT = uuid.uuid4().hex
-
-
-@pytest.fixture
-async def library_prep_sample(postgres_pool, human_admin_session):
-    """Seeds prep_samples to mint genomes against; sweeps them afterwards.
-
-    Yields a seeder returning one prep_sample_idx per call. A qiita-origin
-    genome records the prep_sample it came from, so the sweep reaches both the
-    genome and the feature_genome rows under it.
-    """
-    seeded: list[tuple[int, int]] = []
-
-    async def seed() -> int:
-        biosample_idx, prep_idx = await seed_biosample_with_sequenced_prep_sample(
-            postgres_pool, owner_idx=human_admin_session["principal_idx"]
-        )
-        seeded.append((biosample_idx, prep_idx))
-        return prep_idx
-
-    yield seed
-
-    await teardown_entity_graph(
-        postgres_pool,
-        study_idxs=[],
-        biosample_idxs=[biosample_idx for biosample_idx, _ in seeded],
-        prep_sample_idxs=[prep_idx for _, prep_idx in seeded],
-    )
 
 
 def _md5_uuid(seq: str) -> uuid.UUID:
@@ -534,14 +503,19 @@ async def test_library_mint_features_rejects_unknown_genome_source(
 
 
 async def test_library_mint_features_qiita_source_records_prep_sample(
-    postgres_pool, tmp_path, library_prep_sample
+    postgres_pool, tmp_path, human_admin_session
 ):
     """A qiita-derived genome (source='qiita') records the exact originating
     prep_sample_idx on qiita.genome."""
     from qiita_common.api_paths import LibraryPrimitive
     from qiita_control_plane.actions import LIBRARY
+    from qiita_control_plane.testing.db_seeds import (
+        seed_biosample_with_sequenced_prep_sample,
+    )
 
-    prep_sample_idx = await library_prep_sample()
+    _, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
+        postgres_pool, owner_idx=human_admin_session["principal_idx"]
+    )
 
     h = _md5_uuid("QIITA_SRC")
     manifest = tmp_path / "manifest.parquet"
@@ -556,7 +530,8 @@ async def test_library_mint_features_qiita_source_records_prep_sample(
     )
 
     recorded = await postgres_pool.fetchval(
-        "SELECT prep_sample_idx FROM qiita.genome WHERE source = 'qiita' AND source_id = $1",
+        "SELECT prep_sample_idx FROM qiita.genome"
+        " WHERE source = 'qiita' AND source_id = $1",
         sid,
     )
     assert recorded == prep_sample_idx
@@ -590,14 +565,19 @@ async def test_library_mint_features_qiita_source_without_prep_sample_fails(
 
 
 async def test_library_mint_features_non_qiita_with_prep_sample_fails(
-    postgres_pool, tmp_path, library_prep_sample
+    postgres_pool, tmp_path, human_admin_session
 ):
     """A non-qiita source (genbank) that cites a prep_sample_idx violates the
     qiita-origin rule — external genomes have no originating qiita sample."""
     from qiita_common.api_paths import LibraryPrimitive
     from qiita_control_plane.actions import LIBRARY
+    from qiita_control_plane.testing.db_seeds import (
+        seed_biosample_with_sequenced_prep_sample,
+    )
 
-    prep_sample_idx = await library_prep_sample()
+    _, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
+        postgres_pool, owner_idx=human_admin_session["principal_idx"]
+    )
 
     h = _md5_uuid("GENBANK_PREP")
     manifest = tmp_path / "manifest.parquet"
@@ -652,15 +632,23 @@ async def test_library_mint_features_shared_genome_across_features(
 
 
 async def test_library_mint_features_qiita_reingest_updates_prep_sample(
-    postgres_pool, tmp_path, library_prep_sample
+    postgres_pool, tmp_path, human_admin_session
 ):
     """Re-ingesting a qiita genome with a changed prep_sample_idx rewrites the
     stored origin (the upsert's `DO UPDATE ... prep_sample_idx = EXCLUDED...`)."""
     from qiita_common.api_paths import LibraryPrimitive
     from qiita_control_plane.actions import LIBRARY
+    from qiita_control_plane.testing.db_seeds import (
+        seed_biosample_with_sequenced_prep_sample,
+    )
 
-    prep1 = await library_prep_sample()
-    prep2 = await library_prep_sample()
+    owner = human_admin_session["principal_idx"]
+    _, prep1 = await seed_biosample_with_sequenced_prep_sample(
+        postgres_pool, owner_idx=owner
+    )
+    _, prep2 = await seed_biosample_with_sequenced_prep_sample(
+        postgres_pool, owner_idx=owner
+    )
 
     h = _md5_uuid("QIITA_REINGEST")
     manifest = tmp_path / "manifest.parquet"
@@ -669,7 +657,8 @@ async def test_library_mint_features_qiita_reingest_updates_prep_sample(
 
     async def _current_prep():
         return await postgres_pool.fetchval(
-            "SELECT prep_sample_idx FROM qiita.genome WHERE source = 'qiita' AND source_id = $1",
+            "SELECT prep_sample_idx FROM qiita.genome"
+            " WHERE source = 'qiita' AND source_id = $1",
             sid,
         )
 

@@ -23,7 +23,6 @@ from qiita_control_plane.testing.db_seeds import (
     seed_sequenced_prep_sample,
     seed_sequenced_sample_subtype,
 )
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
 
 pytestmark = pytest.mark.db
 
@@ -62,8 +61,8 @@ async def seeded(ctx):
         link — so it appears in both the study-wide and pool-filtered exports.
       - bs_b: no accession, no prep_sample — study-wide export only.
 
-    The owning principal is the admin session principal (user-kind, cleaned by
-    its own fixture).
+    FK-reverse cleanup at teardown; the owning principal is the admin session
+    principal (user-kind, cleaned by its own fixture).
     """
     pool = ctx["pool"]
     owner = ctx["admin_session"]["principal_idx"]
@@ -138,11 +137,19 @@ async def seeded(ctx):
         "run_acc": run_acc,
     }
 
-    await teardown_entity_graph(
-        pool, study_idxs=[study_idx], biosample_idxs=[bs_a, bs_b], prep_sample_idxs=[ps_a]
-    )
+    await pool.execute("DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss_idx)
     await pool.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
     await pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
+    await pool.execute("DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1", ps_a)
+    await pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", ps_a)
+    await pool.execute(
+        "DELETE FROM qiita.biosample_metadata WHERE biosample_idx = ANY($1::bigint[])",
+        [bs_a, bs_b],
+    )
+    await pool.execute("DELETE FROM qiita.biosample_study_field WHERE idx = $1", field_idx)
+    await pool.execute("DELETE FROM qiita.biosample_to_study WHERE study_idx = $1", study_idx)
+    await pool.execute("DELETE FROM qiita.biosample WHERE idx = ANY($1::bigint[])", [bs_a, bs_b])
+    await pool.execute("DELETE FROM qiita.study WHERE idx = $1", study_idx)
 
 
 async def test_study_scope_export(ctx, seeded):
@@ -205,11 +212,11 @@ async def test_pool_filtered_export_excludes_flagged(ctx, seeded):
         seeded["study_idx"],
         owner,
     )
-    await pool.execute(
+    ss_d = await pool.fetchval(
         "INSERT INTO qiita.sequenced_sample"
         "  (prep_sample_idx, sequenced_pool_idx, sequenced_pool_item_id, created_by_idx,"
         "   ena_status, ena_availability_checked_at)"
-        " VALUES ($1, $2, $3, $4, 'suppressed', now())",
+        " VALUES ($1, $2, $3, $4, 'suppressed', now()) RETURNING idx",
         ps_d,
         seeded["pool_idx"],
         f"item-d-{token}",
@@ -224,10 +231,13 @@ async def test_pool_filtered_export_excludes_flagged(ctx, seeded):
         assert body["row_count"] == 1
         assert body["rows"][0]["biosample_idx"] == seeded["bs_a"]
     finally:
-        # Not the study or the pool: those belong to the `seeded` fixture.
-        await teardown_entity_graph(
-            pool, study_idxs=[], biosample_idxs=[bs_d], prep_sample_idxs=[ps_d]
+        await pool.execute("DELETE FROM qiita.sequenced_sample WHERE idx = $1", ss_d)
+        await pool.execute(
+            "DELETE FROM qiita.prep_sample_to_study WHERE prep_sample_idx = $1", ps_d
         )
+        await pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", ps_d)
+        await pool.execute("DELETE FROM qiita.biosample_to_study WHERE biosample_idx = $1", bs_d)
+        await pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", bs_d)
 
 
 async def test_regular_user_403(ctx, seeded):

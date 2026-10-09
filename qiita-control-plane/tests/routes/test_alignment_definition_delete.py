@@ -16,8 +16,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from qiita_common.api_paths import URL_ALIGNMENT_DEFINITION_BY_IDX
 
-from qiita_control_plane.testing.db_teardown import teardown_entity_graph
-
 pytestmark = pytest.mark.db
 
 
@@ -138,9 +136,8 @@ async def test_delete_alignment_cascades_gate(
             == 0
         )
     finally:
-        await teardown_entity_graph(
-            postgres_pool, study_idxs=[], biosample_idxs=[_bs], prep_sample_idxs=[prep]
-        )
+        await postgres_pool.execute("DELETE FROM qiita.prep_sample WHERE idx = $1", prep)
+        await postgres_pool.execute("DELETE FROM qiita.biosample WHERE idx = $1", _bs)
 
 
 async def test_delete_alignment_detaches_work_ticket(client, postgres_pool):
