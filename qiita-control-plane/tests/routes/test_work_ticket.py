@@ -259,9 +259,10 @@ async def prep_sample_with_pool_item(postgres_pool, prep_sample_idx, admin_token
     The bare `prep_sample_idx` fixture deliberately omits the subtype
     row; this fixture adds the run -> pool -> sequenced_sample chain so
     the work_ticket fastq-filename-prefix gate has a pool item id to
-    resolve. Teardown drops the subtype chain in reverse-FK order — it
-    runs before `prep_sample_idx`'s own teardown removes the supertype,
-    so the prep_sample DELETE there does not trip the subtype FK."""
+    resolve. Teardown drops the subtype chain in reverse-FK order: the
+    pool is this fixture's own to delete and the sequenced_sample
+    references it under RESTRICT, so that row goes here rather than
+    waiting for the sweep `prep_sample_idx` runs afterwards."""
     from qiita_control_plane.testing.db_seeds import seed_sequenced_sample_subtype
 
     _, admin_idx = admin_token
