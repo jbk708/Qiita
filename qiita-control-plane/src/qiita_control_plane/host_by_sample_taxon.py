@@ -20,6 +20,8 @@ from qiita_common.models import (
 #
 # Not exhaustive over NCBI: a taxon absent here is unresolved, not assumed hostless, and
 # the submit path aborts on it. Add a row only when the environment implies the host.
+# A new row is a code change plus a deploy; if rows start landing often, move the table to
+# a seeded lookup table rather than growing this dict.
 HOST_BY_SAMPLE_TAXON: dict[str, str | None] = {
     # A human gut metagenome is, by construction, drawn from a human gut.
     "408170": NCBI_TAXONOMY_HUMAN_TERM_ID,

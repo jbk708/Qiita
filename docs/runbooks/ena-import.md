@@ -284,8 +284,22 @@ filled from the run's taxon ids (falling back to the table, `not applicable`, or
 `not provided`).
 
 A warning appears only on the run that created the biosample, so after a re-import or for
-a later run on the same sample, check the creating batch. The stored `not provided` still
-stops host filtering at submit.
+a later run on the same sample, check the creating batch.
+
+A stored `not provided` stops host filtering at submit, and nothing rewrites it:
+`qiita-admin backfill host-taxon-id` skips a biosample that already has a `host taxon id`
+row, and a re-import does not revisit it (#669). To correct one, write the field on that
+biosample with `PATCH /study/{S}/biosample/{B}/metadata` and body
+`{"host taxon id": "<NCBI taxon id>"}`, or from the CLI:
+
+```
+qiita biosample patch-metadata-by-unique-field --study-idx S \
+  --unique-field-display-name "ena sample id" --unique-field-value <sample alias> \
+  --metadata "host taxon id=<NCBI taxon id>"
+```
+
+The value is a loaded NCBI Taxonomy id or a missing-value reason such as `not applicable`.
+Either path takes one biosample per call and needs ADMIN on the study or `wet_lab_admin`.
 
 ## Scope and limits
 

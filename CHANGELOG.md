@@ -4103,7 +4103,9 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   skin metagenomes and nine natural hostless environments such as soil and marine
   sediment (`not applicable`). `qiita-admin backfill host-taxon-id` shares the table, so
   biosamples with those taxa are now written instead of reported unresolved. Biosamples
-  imported earlier are unchanged.
+  imported earlier are unchanged. The `qiita submit-host-filter-pool` refusal for an
+  unresolved host also names `qiita biosample patch-metadata-by-unique-field`, which
+  replaces a stored `not provided`; the backfill skips it.
 - **Declaring a sample field unique within its study no longer lets a concurrent write
   slip past the new policy (#628).** The propagation that mirrors the policy onto the
   field's stored values read only what was committed, so a metadata write already in
