@@ -206,12 +206,13 @@ BIOSAMPLE_DISPLAY_TAXON_ID = "taxon id"
 # — i.e. the two that say something definite about whether a host exists.
 #
 # Deliberately not an exhaustive enum of the INSDC vocabulary. The other reasons
-# ('not collected', 'not provided', 'restricted access', …) exist in the DB and
+# ('not collected', 'restricted access', …) exist in the DB and
 # have no constant here ON PURPOSE: recognising a reason is an explicit act that
 # promotes it from "abort" to "proceed", and an enum listing every reason would
 # invite exactly the mechanical widening the fail-closed rule is there to stop.
 MISSING_REASON_NOT_APPLICABLE = "not applicable"
 MISSING_REASON_CONTROL_SAMPLE = "missing: control sample"
+
 # Written by the ENA import for a taxon it cannot fill; the resolver does not recognise it.
 MISSING_REASON_NOT_PROVIDED = "not provided"
 
