@@ -28,8 +28,9 @@ access to).
 | FAILED        | Reset → PENDING and dispatch (manual restart)     |
 | CANCELLED     | Reset → PENDING and dispatch (redrive after fix)  |
 
-A download-ena-study redrive re-runs every step against the live roster, and is
-refused (409) unless it is the pool's latest download ticket.
+A download-ena-study redrive re-runs every step against the live roster. It is
+refused (409) when a newer download ticket exists for the pool, and when a FAILED
+ticket still has a live job holding the old roster.
 
 The atomic state transition guard inside `runner._atomic_transition`
 prevents double-dispatch even if `/run` races with the implicit dispatch
@@ -1678,8 +1679,7 @@ async def _refuse_unsafe_download_redrive(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"work_ticket {work_ticket_idx} is superseded by download ticket "
-                f"{latest['work_ticket_idx']} ({latest['work_ticket_state']}) on the same "
-                "pool; redrive that one instead"
+                f"{latest['work_ticket_idx']} ({latest['work_ticket_state']}) on the same pool"
             ),
         )
     if current_state == WorkTicketState.FAILED.value and await conn.fetchval(
@@ -1693,7 +1693,8 @@ async def _refuse_unsafe_download_redrive(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"work_ticket {work_ticket_idx} still has a live download job that may hold "
-                "an outdated run roster; cancel the ticket to reap it, then re-import the study"
+                "an outdated run roster; cancel it by idx (work_ticket_idxs) to reap the job, "
+                "then re-import the study; the ticket stays FAILED"
             ),
         )
 
@@ -1798,8 +1799,9 @@ async def run_work_ticket(
                     detail="work_ticket state changed under /run; retry",
                 )
 
-            # Which prior progress rows survive the redrive. `completed` always
-            # survives, so the runner still fast-forwards finished entries.
+            # Which prior progress rows survive the redrive. `completed` survives,
+            # so the runner still fast-forwards finished entries (a download
+            # ticket drops them in the second DELETE below).
             #
             # Of the rest, the question is whether the row still names a job
             # worth adopting — `_adopt_or_submit` re-attaches by the persisted

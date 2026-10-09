@@ -72,9 +72,10 @@ it starts, so new runs never join a pool whose download is in flight or finished
 go into a new pool with its own ticket, and the accession reports `done` only once every
 pool's download has. A re-import is also how to retry a failed or cancelled download,
 as is `POST /work-ticket/{idx}/run` on the pool's latest such ticket, which picks up runs
-added since. `/run` is refused with a 409 on an older ticket (name the newer one), and on
-a failed ticket that still has a live download job from before the failure, which holds
-the old roster: cancel the ticket to reap the job, then re-import the study.
+added since. `/run` is refused with a 409 on an older ticket (the error names the newer one and its
+state), and on a failed ticket that still has a live download job from before the failure,
+which holds the old roster: cancel it by idx (`work_ticket_idxs`) to reap the job, then
+re-import the study. The ticket stays FAILED and keeps refusing `/run`.
 Nothing schedules this — it is an operator gesture. A native `POST .../sequenced-sample`
 add to a pool whose download has already read (or is reading) its roster is refused the
 same way, 409: create a new `sequenced_pool` on the run and submit its own

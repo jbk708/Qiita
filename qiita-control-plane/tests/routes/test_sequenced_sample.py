@@ -15,11 +15,12 @@ sequenced_pool_item_id 409, and full transaction rollback on
 trigger-raised failures. Also covers the import route's sequencing_run
 advisory-lock critical section: the staged-roster 409, the lock-timeout
 503, lock serialization against a held key, and a native insert landing
-in the roster a concurrent staging read produces.
+in the roster a concurrent staging read produces. The `/run` redrive of a
+download-ena-study ticket is covered here too, as it reuses the roster and
+download-ticket seed helpers.
 """
 
 import asyncio
-import contextlib
 import json
 import secrets
 from pathlib import Path
@@ -89,6 +90,12 @@ from qiita_control_plane.testing.db_seeds import (
     seed_user_principal,
 )
 from qiita_control_plane.testing.unique_names import unique_accession
+from qiita_control_plane.workspace import (
+    STEP_MANIFEST_FILENAME,
+    step_attempt_dir,
+    step_output_dir,
+    ticket_workspace,
+)
 
 from .conftest import (
     OWNER_INELIGIBILITY_KINDS,
@@ -5194,6 +5201,7 @@ class _RosterRecordingBackend:
 
     def __init__(self) -> None:
         self.submitted: list[str] = []
+        self.attempts: list[int] = []
         self.roster_at_submit: list[str] = []
         self.result_calls = 0
 
@@ -5201,6 +5209,7 @@ class _RosterRecordingBackend:
         import pyarrow.parquet as pq
 
         self.submitted.append(step_name)
+        self.attempts.append(attempt)
         self.roster_at_submit = (
             pq.read_table(inputs["ena_run_map"]).column("ena_run_accession").to_pylist()
         )
@@ -5232,7 +5241,8 @@ async def test_redrive_of_failed_download_ticket_downloads_a_natively_added_run(
 ):
     """A redrive re-runs a completed ingest: a run added while the ticket was
     failed is in the roster the job is given, instead of the step being
-    fast-forwarded over it."""
+    fast-forwarded over it. The finished attempt's read-only dir is left behind,
+    so the job lands in a fresh attempt dir."""
     ctx = redrive_ctx
     pool = ctx["pool"]
     run_idx, pool_idx, study_idx, bs_idx, protocol_idx = await _seed_roster_case(ctx, "redrive")
@@ -5256,6 +5266,14 @@ async def test_redrive_of_failed_download_ticket_downloads_a_natively_added_run(
     await _seed_slurm_step(
         pool, ticket_idx, step_index=0, name="ingest_ena_reads", state=StepProgressState.COMPLETED
     )
+    stale = step_attempt_dir(ticket_workspace(tmp_path / "ws", ticket_idx), "ingest_ena_reads", 0)
+    stale_output = step_output_dir(stale)
+    stale_output.mkdir(parents=True)
+    (stale_output / STEP_MANIFEST_FILENAME).write_text("{}")
+    (stale_output / "reads.fastq").write_text("")
+    for f in stale_output.iterdir():
+        f.chmod(0o440)
+    stale_output.chmod(0o550)
     await step_progress.record_submitting(
         pool,
         work_ticket_idx=ticket_idx,
@@ -5293,7 +5311,7 @@ async def test_redrive_of_failed_download_ticket_downloads_a_natively_added_run(
     assert await _step_rows(pool, ticket_idx) == []
 
     backend = _RosterRecordingBackend()
-    with contextlib.suppress(Exception):  # register-files has no data plane to reach
+    with pytest.raises(RuntimeError, match="register-files: .* contains no Parquet"):
         await run_workflow(
             ticket_idx,
             pool,
@@ -5306,6 +5324,10 @@ async def test_redrive_of_failed_download_ticket_downloads_a_natively_added_run(
         )
     assert backend.submitted == ["ingest_ena_reads"]
     assert sorted(backend.roster_at_submit) == sorted(accessions)
+    assert backend.attempts == [1]
+    assert await pool.fetchval(
+        "SELECT failure_step_name FROM qiita.work_ticket WHERE work_ticket_idx = $1", ticket_idx
+    ) == ("register-files")
 
 
 async def test_run_on_failed_download_ticket_with_live_job_returns_409(redrive_ctx):
@@ -5345,7 +5367,7 @@ async def test_run_on_superseded_download_ticket_returns_409(redrive_ctx, state)
     resp = await _run_ticket(ctx["wet"], older)
 
     assert resp.status_code == 409, resp.text
-    assert str(newer) in resp.text
+    assert f"{newer} (completed)" in resp.text
     assert await pool.fetchval(
         "SELECT state::text FROM qiita.work_ticket WHERE work_ticket_idx = $1", older
     ) == (state)
