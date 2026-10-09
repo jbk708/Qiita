@@ -995,8 +995,7 @@ async def test_retry_exhausted_marks_failed_with_permanent_type(
     assert row["failure_type"] == "permanent"
     assert row["failure_stage"] == "step_run"
     assert row["failure_step_name"] == "hash"
-    assert "retries exhausted" in row["failure_reason"]
-    assert "node_fail" in row["failure_reason"]
+    assert row["failure_reason"].startswith("retries_exhausted (3/3); last failure [node_fail]")
     # 4 total attempts: 1 initial + 3 retries.
     assert backend.attempts["hash"] == 4
 
@@ -4909,6 +4908,42 @@ async def test_resume_skips_terminal_attempt_and_adopts_the_live_one(
     assert [h.slurm_job_id for h in backend.status_handles] == [904]
     # The workspace verified is attempt-1's; verifying attempt-0's is the bug.
     assert backend.result_handles[0].output_path.endswith("attempt-1/output")
+
+
+async def test_resume_with_terminal_attempt_and_spent_budget_fails_retries_exhausted(
+    postgres_pool, slurm_ticket, tmp_path
+):
+    """A restart that finds only a dead attempt and no retry budget left must not
+    buy a fresh submit; it fails permanent with the RETRIES_EXHAUSTED prefix."""
+    await _mark_processing(postgres_pool, slurm_ticket)
+    await _seed_submitted_step(postgres_pool, slurm_ticket, step_name="compute", slurm_job_id=905)
+    await step_progress.record_failed(
+        postgres_pool,
+        work_ticket_idx=slurm_ticket,
+        step_index=0,
+        attempt=0,
+        failure_kind=FailureKind.NODE_FAIL.value,
+        failure_reason="NODE_FAIL (simulated)",
+    )
+    await postgres_pool.execute(
+        "UPDATE qiita.work_ticket SET retry_count = max_retries WHERE work_ticket_idx = $1",
+        slurm_ticket,
+    )
+
+    backend = FakeSlurmBackendClient(status_script=[], result_script=[])
+    with pytest.raises(BackendFailure) as exc:
+        await _run(slurm_ticket, postgres_pool, backend, tmp_path / "ws", resume=True)
+
+    assert exc.value.kind is FailureKind.RETRIES_EXHAUSTED
+    assert backend.submit_calls == 0
+    row = await postgres_pool.fetchrow(
+        "SELECT state, failure_type, failure_reason FROM qiita.work_ticket"
+        " WHERE work_ticket_idx = $1",
+        slurm_ticket,
+    )
+    assert row["state"] == "failed"
+    assert row["failure_type"] == "permanent"
+    assert row["failure_reason"].startswith("retries_exhausted (3/3)")
 
 
 async def test_resume_never_started_runs_from_scratch(postgres_pool, slurm_ticket, tmp_path):

@@ -39,7 +39,7 @@ _None yet._
 
 ### Notes (no host action)
 
-_None yet._
+- Behavior change (#661): a ticket that exhausts `max_retries` on a retriable failure now ends `failure_type=permanent` in `GET /work-ticket` (reason prefixed `retries_exhausted`) and is emailed in the notify digest instead of being held. Tickets already held as `retriable` are unchanged.
 
 ## Deployed history
 

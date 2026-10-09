@@ -74,6 +74,7 @@ from ._dispatch import (
     _escalated_walltime_after_timeout,
     _fetch_plan_hint,
     _patch_resource_status,
+    _retries_exhausted_failure,
     _shard_fanout_owns_finalize,
     _terminal_attempts_exhausted_failure,
 )
@@ -904,10 +905,10 @@ async def run_workflow(
         await _transition_to_no_data(pool, work_ticket_idx)
         return
     except BackendFailure as exc:
-        # Retry-loop already exhausted retries (transient) or this was a
-        # permanent failure. The retry loop has not yet transitioned the
-        # ticket — we own that transition here so failure_status PATCH
-        # and the FAILED row insert happen together.
+        # Permanent (including RETRIES_EXHAUSTED); a transient failure reaches
+        # here only from the pre-loop resolvers. The retry loop has not
+        # transitioned the ticket — we own that transition here so
+        # failure_status PATCH and the FAILED row insert happen together.
         _log.warning("workflow %d failed: %s", work_ticket_idx, exc)
         if action is not None and action.failure_status:
             try:
@@ -1032,9 +1033,10 @@ async def _run_entry_with_retry(
         — a re-run would fail identically — so the OOM/TIMEOUT is reclassified
         as a permanent `RESOURCE_CEILING_EXHAUSTED` and fails the ticket
         immediately instead of consuming the remaining retry budget.
-      * On permanent failure or retry_count >= max_retries: re-raise so
-        the outer handler in `run_workflow` writes the failure_* columns
-        and transitions to FAILED.
+      * On permanent failure: re-raise so the outer handler in `run_workflow`
+        writes the failure_* columns and transitions to FAILED.
+      * On a transient failure with retry_count >= max_retries: raise a
+        `RETRIES_EXHAUSTED` failure wrapping the last one, handled the same way.
 
     The state churn (PROCESSING → QUEUED → PROCESSING) is observable to
     monitoring queries: a ticket bouncing through QUEUED indicates a
@@ -1199,14 +1201,8 @@ async def _run_entry_with_retry(
                     current_retry,
                     max_retries,
                 )
-                raise BackendFailure(
-                    kind=FailureKind.RETRIES_EXHAUSTED,
-                    stage=exc.stage,
-                    step_name=exc.step_name,
-                    reason=(
-                        f"retries exhausted ({current_retry}/{max_retries}); "
-                        f"last failure [{exc.kind.value}]: {exc.reason}"
-                    ),
+                raise _retries_exhausted_failure(
+                    exc, retry_count=current_retry, max_retries=max_retries
                 ) from exc
             # An OOM-killed step would OOM again at the same size, so grow its
             # memory floor (clamped to the action ceiling) before re-queuing.

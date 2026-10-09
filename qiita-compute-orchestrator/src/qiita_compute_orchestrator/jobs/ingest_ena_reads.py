@@ -60,6 +60,10 @@ _CONCURRENCY = 4
 _DUCKDB_MEMORY_GB = 7
 _DUCKDB_THREADS = 2
 
+# Cap on the combined failure reason, which lands in a DB column and an email.
+_REASON_FULL_RUNS = 3
+_REASON_LISTED_ACCESSIONS = 20
+
 # Substring marking a `miint_warnings()` message where THIS run's data is
 # missing/partial: both the end-of-scan skip summary and the mid-stream
 # truncation warning contain "skip". A self-healed "...retrying..." message
@@ -68,6 +72,11 @@ _SKIP_WARNING_MARKER = "skip"
 # Also contains "skip", but reports a complete run whose md5 could not be
 # checked (SFF, a non-gzip file), not missing data.
 _MD5_SKIPPED_WARNING_MARKER = "md5 verification skipped"
+# miint's mid-stream failure warning; a re-run recovers it.
+_MID_STREAM_WARNING_MARKER = "mid-stream"
+
+# Prefix of the transient-fetch reason; the live e2e test keys its skip on it.
+TRANSIENT_FETCH_ERROR_TEXT = "transient fetch error"
 
 # Substrings marking a raised duckdb.Error as transport/network-shaped (vs.
 # format/parse) — see `_classify_ena_fetch_error`. A non-match is permanent
@@ -155,10 +164,8 @@ def _classify_ena_fetch_error(
 ) -> BackendFailure:
     """Classify a raised `duckdb.Error` from `_stage_run_reads` as retriable
     (transport/network-shaped or md5 mismatch) or permanent (format/parse, or
-    anything not confidently network-shaped). A raised exception means miint's
-    internal open-retry-then-skip did NOT run, so there is no `miint_warnings()`
-    entry — the exception text is all the caller has. Both retriable branches
-    share a kind; the marker check only picks the reason text."""
+    anything not confidently network-shaped). The exception text is all the
+    caller has: a raise means miint's open-retry-then-skip did not run."""
     text = str(exc).lower()
     if any(marker in text for marker in _TRANSIENT_ERROR_MARKERS):
         return BackendFailure(
@@ -166,7 +173,8 @@ def _classify_ena_fetch_error(
             stage=WorkTicketFailureStage.STEP_RUN,
             step_name=step_name,
             reason=(
-                f"ENA run {run_accession}: transient fetch error ({type(exc).__name__}): {exc}"
+                f"ENA run {run_accession}: {TRANSIENT_FETCH_ERROR_TEXT} "
+                f"({type(exc).__name__}): {exc}"
             ),
         )
     # miint raises the same error for a truncated transfer and for bytes that
@@ -193,18 +201,23 @@ def _classify_ena_fetch_error(
     )
 
 
-def _combine_failures(failures: list[BackendFailure]) -> BackendFailure:
-    """One failure for the step: a permanent outcome wins over a transient one so
-    it is not retried, and the reason names every failed run."""
+def _combine_failures(failed: list[tuple[str, BackendFailure]]) -> BackendFailure:
+    """One failure for the step from `(run_accession, failure)` pairs: a permanent
+    outcome wins over a transient one so it is not retried. The reason gives the
+    first few runs in full and only lists the rest."""
+    failures = [f for _, f in failed]
     lead = next((f for f in failures if not f.transient), failures[0])
-    if len(failures) == 1:
+    if len(failed) == 1:
         return lead
-    return BackendFailure(
-        kind=lead.kind,
-        stage=lead.stage,
-        step_name=lead.step_name,
-        reason=f"{len(failures)} runs failed: " + " | ".join(f.reason for f in failures),
+    reason = f"{len(failed)} runs failed: " + " | ".join(
+        f.reason for f in failures[:_REASON_FULL_RUNS]
     )
+    rest = [acc for acc, _ in failed[_REASON_FULL_RUNS:]]
+    if rest:
+        listed = ", ".join(rest[:_REASON_LISTED_ACCESSIONS])
+        ellipsis = "…" if len(rest) > _REASON_LISTED_ACCESSIONS else ""
+        reason += f" | and {len(rest)} more failed runs: {listed}{ellipsis}"
+    return BackendFailure(kind=lead.kind, stage=lead.stage, step_name=lead.step_name, reason=reason)
 
 
 async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
@@ -261,7 +274,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
 
                 skip_msgs = _skip_warnings(warnings)
                 if skip_msgs:
-                    mid_stream = any("mid-stream" in m.lower() for m in skip_msgs)
+                    mid_stream = any(_MID_STREAM_WARNING_MARKER in m.lower() for m in skip_msgs)
                     raise BackendFailure(
                         kind=FailureKind.EXTERNAL_FETCH_TRANSIENT,
                         stage=WorkTicketFailureStage.STEP_RUN,
@@ -328,9 +341,12 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     for outcome in outcomes:
         if isinstance(outcome, BaseException) and not isinstance(outcome, BackendFailure):
             raise outcome
-    failures = [o for o in outcomes if isinstance(o, BackendFailure)]
-    if failures:
-        raise _combine_failures(failures)
+    # Unlike `ingest_reads` (which only raises BAD_INPUT, so the first failure
+    # decides nothing), a retriable and a permanent run can mix here: collect all
+    # so a permanent one is not retried behind a transient one.
+    failed = [(acc, o) for (_, acc), o in zip(roster, outcomes) if isinstance(o, BackendFailure)]
+    if failed:
+        raise _combine_failures(failed)
 
     # register-files loads the workspace's `read/` parts into the `read` table.
     return {"read_staging_dir": workspace}

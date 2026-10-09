@@ -12,9 +12,10 @@ decide:
 
   - retriable + retry_count < max_retries → bump retry_count, transition
     PROCESSING → QUEUED, retry the failing step.
-  - retriable + retry_count >= max_retries → transition to FAILED,
-    persist failure_type='retriable' (so post-mortems can tell
-    "exhausted retries" from "permanent on first attempt").
+  - retriable + retry_count >= max_retries → the runner raises a permanent
+    RETRIES_EXHAUSTED failure wrapping the last one, so the ticket ends
+    FAILED with failure_type='permanent' and a reason starting
+    "retries_exhausted".
   - permanent → skip the retry loop, transition straight to FAILED with
     failure_type='permanent'.
 

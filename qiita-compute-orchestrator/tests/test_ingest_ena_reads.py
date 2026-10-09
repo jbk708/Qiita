@@ -295,8 +295,8 @@ def test_open_failure_skip_warning_is_retriable(fake_mint, monkeypatch, tmp_path
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
         return 0, [
-            "read_ena_sequences: WARNING: run 'ERR001' failed on retry (HTTP 404), skipping",
-            "read_ena_sequences: WARNING: 1 run(s) skipped",
+            "read_ena_sequences: warning: run 'ERR001' failed on retry (HTTP 404), skipping",
+            "read_ena_sequences: WARNING: 1 run(s) skipped due to download errors: ERR001",
         ]
 
     monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
@@ -492,6 +492,27 @@ def test_transient_failures_name_every_failed_run(fake_mint, monkeypatch, tmp_pa
     assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
     assert "ERR001" in exc.value.reason
     assert "ERR002" in exc.value.reason
+
+
+def test_many_failed_runs_cap_the_combined_reason(fake_mint, monkeypatch, tmp_path):
+    """Dozens of failed runs must not produce a reason with one entry per run."""
+
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    accessions = [f"ERR{i:03d}" for i in range(1, 41)]
+    inputs = _inputs(tmp_path, [(i, acc) for i, acc in enumerate(accessions, start=10)])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    reason = exc.value.reason
+    assert reason.startswith("40 runs failed: ")
+    assert "ERR001" in reason and "ERR003" in reason
+    assert "and 37 more failed runs: " in reason
+    assert "ERR004" in reason and "ERR023" in reason
+    assert "ERR024" not in reason and "ERR040" not in reason
+    assert reason.endswith("…")
 
 
 # ---------------------------------------------------------------------------
