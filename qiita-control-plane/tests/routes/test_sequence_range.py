@@ -106,7 +106,7 @@ async def ctx(
     bs_idx, ps_idx = await seed_biosample_with_sequenced_prep_sample(
         postgres_pool, owner_idx=principal_idx
     )
-    created: dict[str, list] = {
+    created: dict[str, list[int]] = {
         "biosample": [bs_idx],
         "prep_sample": [ps_idx],
         "principal": [principal_idx],
