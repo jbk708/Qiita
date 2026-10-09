@@ -2114,7 +2114,7 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 ### Fixed
 
 - **A `/run` redrive of a failed or cancelled `download-ena-study` ticket now fetches runs
-  added since (#PR).** The redrive kept the finished ingest step and fast-forwarded over the
+  added since (#671).** The redrive kept the finished ingest step and fast-forwarded over the
   re-read roster, so a run added after the failure was staged but never downloaded. The
   redrive now re-runs every step; runs already stored are not fetched again. `/run` is
   refused with a 409 on a ticket superseded by a newer download ticket for the pool, and on
