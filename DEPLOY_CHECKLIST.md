@@ -39,6 +39,12 @@ _None yet._
 
 ### Notes (no host action)
 
+- **`GET /api/v1/sequence-range/{prep_sample_idx}` now answers `403` to a human caller
+  without `viewer` on every study the prep_sample is linked to
+  (#668).** It answered `200` or `404` to any `prep_sample:read`
+  holder before. `wet_lab_admin` and above are unaffected, and so is the compute service
+  account, which still reads any range with `sequence_range:mint`; the response body is
+  unchanged.
 - (#653) Run entries of `GET /ena-import-batch/{idx}` gain `metadata_warnings` (a list, empty when there is nothing to report); clients validating that shape strictly must accept it.
 - (#653) `qiita-admin backfill host-taxon-id` now also resolves more taxa: human, human skin, mouse gut and mouse skin metagenomes get that host, and soil, marine, sediment, salt marsh, sand, microbial mat, stromatolite and coal metagenomes get `not applicable`. A re-run writes those biosamples instead of reporting them unresolved, so read the default dry-run plan before passing `--execute`.
 
