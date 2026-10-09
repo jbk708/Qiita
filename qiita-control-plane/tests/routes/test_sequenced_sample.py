@@ -15,11 +15,15 @@ sequenced_pool_item_id 409, and full transaction rollback on
 trigger-raised failures. Also covers the import route's sequencing_run
 advisory-lock critical section: the staged-roster 409, the lock-timeout
 503, lock serialization against a held key, and a native insert landing
-in the roster a concurrent staging read produces.
+in the roster a concurrent staging read produces. The `/run` redrive of a
+download-ena-study ticket is covered here too, as it reuses the roster and
+download-ticket seed helpers.
 """
 
 import asyncio
+import json
 import secrets
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -35,17 +39,24 @@ from qiita_common.api_paths import (
     URL_SEQUENCED_SAMPLE_LIST_BY_RUN_FULL,
     URL_SEQUENCED_SAMPLE_LIST_BY_STUDY,
     URL_SEQUENCED_SAMPLE_METADATA_BY_STUDY,
+    URL_WORK_TICKET_RUN,
 )
 from qiita_common.auth_constants import SYSTEM_PRINCIPAL_IDX, Scope, SystemRole
 from qiita_common.models import (
+    ComputeTarget,
     FailureType,
     FieldDataType,
     Platform,
     ScopeTargetKind,
+    StepHandleWire,
+    StepProgressState,
+    StepStatus,
+    StepStatusWire,
     WorkTicketFailureStage,
     WorkTicketState,
 )
 
+from qiita_control_plane import step_progress
 from qiita_control_plane.cli._common import CLI_HTTP_TIMEOUT_SECONDS
 from qiita_control_plane.ena_import.submit import (
     DOWNLOAD_ENA_STUDY_ACTION_ID,
@@ -60,7 +71,7 @@ from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADA
 from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_METADATA_SPEC
 from qiita_control_plane.repositories.sequencing_run import POOL_RESOLVE_LOCK_CLASS
 from qiita_control_plane.routes import sequenced_sample as sequenced_sample_routes
-from qiita_control_plane.runner import ENA_RUN_MAP_BINDING, _stage_ena_run_roster
+from qiita_control_plane.runner import ENA_RUN_MAP_BINDING, _stage_ena_run_roster, run_workflow
 from qiita_control_plane.testing.db_seeds import (
     NCBI_TAXONOMY_HUMAN_TERM_ID,
     delete_action_if_created,
@@ -84,6 +95,12 @@ from qiita_control_plane.testing.db_teardown import (
     teardown_entity_graph,
 )
 from qiita_control_plane.testing.unique_names import unique_accession
+from qiita_control_plane.workspace import (
+    STEP_MANIFEST_FILENAME,
+    step_attempt_dir,
+    step_output_dir,
+    ticket_workspace,
+)
 
 from .conftest import (
     OWNER_INELIGIBILITY_KINDS,
@@ -4997,3 +5014,258 @@ async def test_list_sequenced_pools_in_study_truncates_over_cap(ctx, monkeypatch
     body = resp.json()
     assert body["count"] == 1
     assert body["truncated"] is True
+
+
+# ===========================================================================
+# /run redrive of a download-ena-study ticket
+# ===========================================================================
+
+_DOWNLOAD_STEPS = [
+    {
+        "kind": "step",
+        "name": "ingest_ena_reads",
+        "step_type": "singleton",
+        "module": "qiita_compute_orchestrator.jobs.ingest_ena_reads",
+        "inputs": ["ena_run_map", "reads_staging_root"],
+        "outputs": ["read_staging_dir"],
+        "baseline_resources": {"cpu": 1, "mem_gb": 1, "walltime": "PT1M"},
+    },
+    {"kind": "action", "name": "register-files", "inputs": ["read_staging_dir"], "outputs": []},
+]
+
+
+@pytest_asyncio.fixture
+async def redrive_ctx(ctx, monkeypatch):
+    """`ctx` with the download action carrying its real steps and audience, the
+    compute client set, and dispatch stubbed; the shared action row is restored."""
+    pool = ctx["pool"]
+    where = (DOWNLOAD_ENA_STUDY_ACTION_ID, DOWNLOAD_ENA_STUDY_ACTION_VERSION)
+    saved = await pool.fetchrow(
+        "SELECT steps::text AS steps, audience::text AS audience FROM qiita.action"
+        " WHERE action_id = $1 AND version = $2",
+        *where,
+    )
+    await pool.execute(
+        "UPDATE qiita.action SET steps = $3::jsonb, audience = $4::jsonb"
+        " WHERE action_id = $1 AND version = $2",
+        *where,
+        json.dumps(_DOWNLOAD_STEPS),
+        json.dumps({"service": False, "human_roles": ["wet_lab_admin", "system_admin"]}),
+    )
+    saved_client = getattr(app.state, "compute_backend_client", None)
+    app.state.compute_backend_client = object()
+    monkeypatch.setattr("qiita_control_plane.routes.work_ticket.schedule_dispatch", lambda *_: None)
+    try:
+        yield ctx
+    finally:
+        app.state.compute_backend_client = saved_client
+        await pool.execute(
+            "UPDATE qiita.action SET steps = $3::jsonb, audience = $4::jsonb"
+            " WHERE action_id = $1 AND version = $2",
+            *where,
+            saved["steps"],
+            saved["audience"],
+        )
+
+
+async def _seed_slurm_step(pool, ticket_idx, *, step_index, name, state) -> None:
+    kw = {"work_ticket_idx": ticket_idx, "step_index": step_index, "attempt": 0}
+    await step_progress.record_submitting(
+        pool,
+        **kw,
+        step_name=name,
+        compute_target=ComputeTarget.SLURM,
+        job_name=f"qiita-wt{ticket_idx}-{name}-a0",
+    )
+    await step_progress.record_submitted(pool, **kw, slurm_job_id=4242)
+    if state is StepProgressState.RUNNING:
+        await step_progress.record_running(pool, **kw)
+    elif state is StepProgressState.COMPLETED:
+        await step_progress.record_completed(pool, **kw)
+
+
+async def _step_rows(pool, ticket_idx) -> list[tuple[int, str]]:
+    rows = await pool.fetch(
+        "SELECT step_index, state FROM qiita.work_ticket_step"
+        " WHERE work_ticket_idx = $1 ORDER BY step_index, attempt",
+        ticket_idx,
+    )
+    return [(r["step_index"], r["state"]) for r in rows]
+
+
+class _RosterRecordingBackend:
+    """SLURM-shaped fake: records each submit and the roster file it was given."""
+
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+        self.attempts: list[int] = []
+        self.roster_at_submit: list[str] = []
+        self.result_calls = 0
+
+    async def submit_step(self, *, step_name, inputs, workspace, work_ticket_idx, attempt=0, **_):
+        import pyarrow.parquet as pq
+
+        self.submitted.append(step_name)
+        self.attempts.append(attempt)
+        self.roster_at_submit = (
+            pq.read_table(inputs["ena_run_map"]).column("ena_run_accession").to_pylist()
+        )
+        return StepHandleWire(
+            compute_target=ComputeTarget.SLURM,
+            step_name=step_name,
+            slurm_job_id=4243,
+            job_name=f"qiita-wt{work_ticket_idx}-{step_name}-a{attempt}",
+            output_path=str(workspace / "output"),
+            logs_path=str(workspace / "logs"),
+        )
+
+    async def status_step(self, handle):
+        return StepStatusWire(status=StepStatus.COMPLETED, raw_state="COMPLETED")
+
+    async def result_step(self, handle, status):
+        self.result_calls += 1
+        out = Path(handle.output_path) / "read_staging_dir"
+        out.mkdir(parents=True, exist_ok=True)
+        return {"read_staging_dir": out}
+
+
+async def _run_ticket(client, ticket_idx):
+    return await client.post(URL_WORK_TICKET_RUN.format(work_ticket_idx=ticket_idx))
+
+
+async def test_redrive_of_failed_download_ticket_downloads_a_natively_added_run(
+    redrive_ctx, tmp_path
+):
+    """A redrive re-runs a completed ingest: a run added while the ticket was
+    failed is in the roster the job is given, instead of the step being
+    fast-forwarded over it. The finished attempt's read-only dir is left behind,
+    so the job lands in a fresh attempt dir."""
+    ctx = redrive_ctx
+    pool = ctx["pool"]
+    run_idx, pool_idx, study_idx, bs_idx, protocol_idx = await _seed_roster_case(ctx, "redrive")
+    accessions = [unique_accession("ERR"), unique_accession("ERR")]
+    resp = await _post_sequenced_sample(
+        ctx["wet"],
+        ctx,
+        run_idx,
+        pool_idx,
+        **_roster_case_body(
+            ctx,
+            study_idx=study_idx,
+            bs_idx=bs_idx,
+            protocol_idx=protocol_idx,
+            suffix="REDRIVE-A",
+            accession=accessions[0],
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    ticket_idx = await _seed_download_ticket(ctx, pool_idx=pool_idx, state="failed")
+    await _seed_slurm_step(
+        pool, ticket_idx, step_index=0, name="ingest_ena_reads", state=StepProgressState.COMPLETED
+    )
+    stale = step_attempt_dir(ticket_workspace(tmp_path / "ws", ticket_idx), "ingest_ena_reads", 0)
+    stale_output = step_output_dir(stale)
+    stale_output.mkdir(parents=True)
+    (stale_output / STEP_MANIFEST_FILENAME).write_text("{}")
+    (stale_output / "reads.fastq").write_text("")
+    for f in stale_output.iterdir():
+        f.chmod(0o440)
+    stale_output.chmod(0o550)
+    await step_progress.record_submitting(
+        pool,
+        work_ticket_idx=ticket_idx,
+        step_index=1,
+        attempt=0,
+        step_name="register-files",
+        compute_target=ComputeTarget.CONTROL_PLANE,
+    )
+    await step_progress.record_failed(
+        pool,
+        work_ticket_idx=ticket_idx,
+        step_index=1,
+        attempt=0,
+        failure_kind="unknown_permanent",
+        failure_reason="seeded",
+    )
+    resp = await _post_sequenced_sample(
+        ctx["wet"],
+        ctx,
+        run_idx,
+        pool_idx,
+        **_roster_case_body(
+            ctx,
+            study_idx=study_idx,
+            bs_idx=bs_idx,
+            protocol_idx=protocol_idx,
+            suffix="REDRIVE-B",
+            accession=accessions[1],
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await _run_ticket(ctx["wet"], ticket_idx)
+    assert resp.status_code == 202, resp.text
+    assert await _step_rows(pool, ticket_idx) == []
+
+    backend = _RosterRecordingBackend()
+    with pytest.raises(RuntimeError, match="register-files: .* contains no Parquet"):
+        await run_workflow(
+            ticket_idx,
+            pool,
+            backend,  # type: ignore[arg-type]
+            signing_key=b"\x00" * 32,
+            data_plane_url="grpc://unused:0",
+            work_ticket_workspace_root=tmp_path / "ws",
+            upload_staging_root=tmp_path / "uploads",
+            poll_interval_seconds=0,
+        )
+    assert backend.submitted == ["ingest_ena_reads"]
+    assert sorted(backend.roster_at_submit) == sorted(accessions)
+    assert backend.attempts == [1]
+    assert await pool.fetchval(
+        "SELECT failure_step_name FROM qiita.work_ticket WHERE work_ticket_idx = $1", ticket_idx
+    ) == ("register-files")
+
+
+async def test_run_on_failed_download_ticket_with_live_job_returns_409(redrive_ctx):
+    """A failed ticket can keep a live in-flight attempt (the redrive adopts
+    it); it holds the roster read before the failure, so /run refuses."""
+    ctx = redrive_ctx
+    pool = ctx["pool"]
+    _, pool_idx = await _seed_run_and_pool(ctx, "redrive-live")
+    ticket_idx = await _seed_download_ticket(ctx, pool_idx=pool_idx, state="failed")
+    await _seed_slurm_step(
+        pool, ticket_idx, step_index=0, name="ingest_ena_reads", state=StepProgressState.RUNNING
+    )
+
+    resp = await _run_ticket(ctx["wet"], ticket_idx)
+
+    assert resp.status_code == 409, resp.text
+    assert "cancel" in resp.text and "re-import" in resp.text
+    assert await pool.fetchval(
+        "SELECT state::text FROM qiita.work_ticket WHERE work_ticket_idx = $1", ticket_idx
+    ) == (WorkTicketState.FAILED.value)
+    assert await _step_rows(pool, ticket_idx) == [(0, StepProgressState.RUNNING.value)]
+
+
+@pytest.mark.parametrize("state", [WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value])
+async def test_run_on_superseded_download_ticket_returns_409(redrive_ctx, state):
+    """Only the pool's latest download ticket may be redriven: an older one
+    would register runs a newer ticket already owns."""
+    ctx = redrive_ctx
+    pool = ctx["pool"]
+    _, pool_idx = await _seed_run_and_pool(ctx, "redrive-old")
+    older = await _seed_download_ticket(ctx, pool_idx=pool_idx, state=state)
+    newer = await _seed_download_ticket(ctx, pool_idx=pool_idx, state="completed")
+    await _seed_slurm_step(
+        pool, older, step_index=0, name="ingest_ena_reads", state=StepProgressState.COMPLETED
+    )
+
+    resp = await _run_ticket(ctx["wet"], older)
+
+    assert resp.status_code == 409, resp.text
+    assert f"{newer} (completed)" in resp.text
+    assert await pool.fetchval(
+        "SELECT state::text FROM qiita.work_ticket WHERE work_ticket_idx = $1", older
+    ) == (state)
+    assert await _step_rows(pool, older) == [(0, StepProgressState.COMPLETED.value)]

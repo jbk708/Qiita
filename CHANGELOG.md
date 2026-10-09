@@ -2113,6 +2113,12 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Fixed
 
+- **A `/run` redrive of a failed or cancelled `download-ena-study` ticket now fetches runs
+  added since (#671).** The redrive kept the finished ingest step and fast-forwarded over the
+  re-read roster, so a run added after the failure was staged but never downloaded. The
+  redrive now re-runs every step; runs already stored are not fetched again. `/run` is
+  refused with a 409 on a ticket superseded by a newer download ticket for the pool, and on
+  a failed ticket that still has a live download job (cancel it, then re-import the study).
 - **An ENA study whose sample repeats an attribute tag no longer fails at resolve (#650).**
   `read_ena_attributes` can return a tag more than once (for example `BioSampleModel` or
   `ENA-FIRST-PUBLIC`), which made the per-sample map fail with `Map keys must be unique`
