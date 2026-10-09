@@ -97,9 +97,9 @@ async def blk(postgres_pool):
         "created_blocks": created_blocks,
     }
 
-    # Work tickets reference both the tracked blocks and the prep_samples under
-    # RESTRICT, so they go first; the sweep then clears the gate rows and the
-    # sample chain, leaving the block and the mask definition to follow.
+    # Work tickets hold the tracked blocks under RESTRICT, so they go first; the
+    # sweep then clears the gate rows and the sample chain, leaving the block and
+    # the mask definition to follow.
     if created_blocks:
         await postgres_pool.execute(
             "DELETE FROM qiita.work_ticket WHERE block_idx = ANY($1::bigint[])", created_blocks

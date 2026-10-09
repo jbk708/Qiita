@@ -114,11 +114,7 @@ def _unique_item_id(prefix: str = "ITEM") -> str:
 
 async def _cleanup_tracked(pool, created: dict) -> None:
     """Drop the work tickets, then the sample entity graph, then everything the
-    sweep does not own.
-
-    A standing work ticket references its study and prep_sample under RESTRICT,
-    so it has to go before the sweep rather than after it.
-    """
+    sweep does not own."""
     # work_ticket's PK is work_ticket_idx (not idx), so delete_idxs does not apply.
     await pool.execute(
         "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",
