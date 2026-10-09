@@ -2129,6 +2129,14 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   and was withheld. The digest's held line now reads "held after an infrastructure
   failure": it counts only retriable tickets outside the step retry loop, which a redrive
   still heals.
+- **A DoGet whose query fails partway through now ends in an error, not a clean end of
+  stream (#651).** The data plane read its streaming result with the `duckdb` crate's
+  Arrow iterator, which could not report a failed chunk fetch, so a client received a
+  truncated table that looked complete. It now fetches with the crate's fallible `step`
+  (public as of `duckdb` 1.10505.0), and the failure reaches the client as the stream's
+  final item; a panic in the producer now does the same. The zero-row schema probe each
+  DoGet ran first is gone too: the streaming result now reports its own schema before the
+  first fetch.
 - **A `/run` redrive of a failed or cancelled `download-ena-study` ticket now fetches runs
   added since (#671).** The redrive kept the finished ingest step and fast-forwarded over the
   re-read roster, so a run added after the failure was staged but never downloaded. The
@@ -4055,6 +4063,19 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
 
 ### Changed
 
+- **DuckDB 1.5.4 → 1.5.5 across every component, and every DuckDB pin is now exact
+  (#651).** The team miint mirror now builds against DuckDB 1.5.5 (its 1.5.4 builds stopped
+  updating on Sep 11), so the data-plane crate (`=1.10505.0`), the four Python components
+  (`duckdb==1.5.5`) and their locks, the CI libduckdb default, the CLI the lake scripts
+  require, and the long-read-assembly `assemble`/`checkm` images move together. The Python
+  pins were floors and the crate a caret range, so a fresh resolve could land on DuckDB
+  1.5.6, for which the mirror has no miint build. `test_duckdb_version_sync` now also holds
+  the deploy CLI version, and every tracked `pyproject.toml` (any dependency table) and
+  `uv.lock`, to the crate. The lake scripts now refuse a DuckDB CLI of any other version.
+  The long-read-assembly `checkm` image, which this bump rebuilds, now pins CheckM, pplacer,
+  hmmer and prodigal, so the rebuild cannot re-resolve them. The DuckLake extension
+  DuckDB 1.5.5 installs moves `d318a545` → `d8a1881e`: bug fixes, and a catalog created
+  under 1.5.4 keeps its schema and version.
 - **`GET /sequence-range/{prep_sample_idx}` checks per-study access for a human caller
   (#668).** A `prep_sample:read` caller now needs `viewer` or higher on every study the
   prep_sample is linked to (`wet_lab_admin` and above bypass). A caller without it gets
@@ -4106,6 +4127,22 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   value could move between samples. A body clearing the policy on a field that carries
   it answers 422; declaring it, and re-sending the policy a field already has, are
   unchanged.
+- **An ENA import now writes `host taxon id` and `taxon id` from ENA instead of
+  `not provided` for every biosample (#653).** Each run's `host_tax_id` and `tax_id` are read with
+  the run list; a taxon id is written only if it is a loaded NCBI Taxonomy term, and
+  otherwise the field is `not provided` and the gap is reported in `metadata_warnings` on
+  the run entry of `GET /ena-import-batch/{idx}`. A `host_tax_id` equal to the
+  biosample's own `tax_id`, to a taxon in the curated table of biosample taxa with an
+  implied host (or none), or to the bare `metagenome` taxon is ignored with a warning, and
+  so is a biosample attribute tagged `taxon id` or `host taxon id`. With no `host_tax_id`,
+  any free-text `host` that is not a missing-value term gives `not provided`; otherwise
+  the host comes from the table, which gains the human, human skin, mouse gut and mouse
+  skin metagenomes and nine natural hostless environments such as soil and marine
+  sediment (`not applicable`). `qiita-admin backfill host-taxon-id` shares the table, so
+  biosamples with those taxa are now written instead of reported unresolved. Biosamples
+  imported earlier are unchanged. The `qiita submit-host-filter-pool` refusal for an
+  unresolved host also names `qiita biosample patch-metadata-by-unique-field`, which
+  replaces a stored `not provided`; the backfill skips it.
 - **Declaring a sample field unique within its study no longer lets a concurrent write
   slip past the new policy (#628).** The propagation that mirrors the policy onto the
   field's stored values read only what was committed, so a metadata write already in

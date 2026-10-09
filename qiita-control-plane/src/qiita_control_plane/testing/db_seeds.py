@@ -27,6 +27,7 @@ from qiita_common.hashing import canonical_params_hash
 # not reach into `testing/` for them — but the suite imports them alongside these
 # seed helpers, so they stay reachable from here.
 from qiita_common.models import NCBI_TAXONOMY_HUMAN_TERM_ID as NCBI_TAXONOMY_HUMAN_TERM_ID
+from qiita_common.models import NCBI_TAXONOMY_METAGENOME_TERM_ID as NCBI_TAXONOMY_METAGENOME_TERM_ID
 from qiita_common.models import NCBI_TAXONOMY_NAME as NCBI_TAXONOMY_NAME
 from qiita_common.models import FieldDataType, GenomeSource, ReferenceStatus, TerminologyStatus
 
@@ -39,10 +40,6 @@ from ..repositories._sample_helpers import (
     _get_or_create_local_study_field,
     write_local_metadata_or_diagnose,
 )
-
-# Seeded NCBI Taxonomy fixture data — must match the seed migration at
-# qiita-control-plane/db/migrations/20260525000000_seed_ncbi_taxonomy.sql.
-NCBI_TAXONOMY_METAGENOME_TERM_ID = "256318"
 
 # Pinned loaded_at for seeded terminology rows, so a seeded row is fully
 # determined rather than stamped at insert time. UTC-aware and
