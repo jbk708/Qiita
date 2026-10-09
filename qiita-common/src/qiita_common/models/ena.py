@@ -129,7 +129,7 @@ class EnaRunRecord(BaseModel):
     @field_validator("tax_id", "host_tax_id", mode="before")
     @classmethod
     def _taxon_id_to_str(cls, v: object) -> object:
-        # read_ena returns tax_id as BIGINT and host_tax_id as VARCHAR.
+        # https://the-miint.github.io/duckdb-miint/insdc_ena/
         return str(v) if isinstance(v, int) else v
 
     @field_validator(

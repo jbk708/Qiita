@@ -1,10 +1,10 @@
 """Backfill `host_taxon_id` onto biosamples that predate the field.
 
 `host_taxon_id` (the host organism a sample was taken FROM) was added as a
-biosample global field after every sample we hold had already been ingested, so
-no biosample carries it. Until it is populated, `host_filter_resolver` correctly
-reports every sample as UNRESOLVED and the submit path has nothing to resolve
-against. This module fills it in.
+biosample global field after the biosamples we hold had been ingested, so those
+carry no value (ENA-imported biosamples now do). Until it is populated,
+`host_filter_resolver` reports such a sample as UNRESOLVED and the submit path
+has nothing to resolve against. This module fills it in.
 
 The organism is not derivable from the taxonomy tree. `qiita.terminology_term`
 stores only `(term_id, label)` — no parent, no lineage — and NCBI's metagenome
@@ -31,10 +31,8 @@ submit — which aborts rather than silently passing an un-depleted sample
 through. The residue is the curation worklist, not a rounding error.
 
 Idempotent: a biosample that already carries `host_taxon_id` is skipped, so the
-backfill can be re-run as curation lands. Adding a taxon to the curated table is
-a code change plus a deploy — deliberate, given the table is expected to grow by
-one or two entries, not to become a data feed. If it starts changing often, move
-it to a seeded lookup table rather than growing this dict.
+backfill can be re-run as curation lands. Adding a taxon to the curated table
+(`host_by_sample_taxon`) is a code change plus a deploy.
 """
 
 from __future__ import annotations

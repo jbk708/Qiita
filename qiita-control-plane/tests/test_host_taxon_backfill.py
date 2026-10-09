@@ -20,7 +20,7 @@ import secrets
 
 import pytest
 import pytest_asyncio
-from qiita_common.models import NCBI_TAXONOMY_NAME
+from qiita_common.models import NCBI_TAXONOMY_MOUSE_TERM_ID, NCBI_TAXONOMY_NAME
 
 from qiita_control_plane.backfill.host_taxon import (
     HostTaxonSource,
@@ -37,6 +37,7 @@ from qiita_control_plane.repositories.biosample import insert_biosample
 from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
 from qiita_control_plane.testing.db_seeds import (
     NCBI_TAXONOMY_HUMAN_TERM_ID,
+    NCBI_TAXONOMY_METAGENOME_TERM_ID,
     fetch_ncbi_taxonomy_term,
     seed_user_principal,
 )
@@ -44,11 +45,11 @@ from qiita_control_plane.testing.db_seeds import (
 # NCBI taxa the live data actually carries, as the sample's OWN taxon_id.
 _HUMAN_GUT_METAGENOME = "408170"
 _SEAWATER_METAGENOME = "1561972"
-_GENERIC_METAGENOME = "256318"  # the bare root — names no environment
+_GENERIC_METAGENOME = NCBI_TAXONOMY_METAGENOME_TERM_ID  # the bare root — names no environment
 _HUMAN_METAGENOME = "646099"
 _MOUSE_GUT_METAGENOME = "410661"
 _SOIL_METAGENOME = "410658"
-_MOUSE = "10090"
+_MOUSE = NCBI_TAXONOMY_MOUSE_TERM_ID
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +121,7 @@ def test_hostless_environment_implies_no_host(sample_taxon):
 
 @pytest.mark.parametrize("sample_taxon", ["942017", "1076179", "1768876"])
 def test_engineered_environment_stays_unresolved(sample_taxon):
-    """ENA records a host on many of these samples, so the environment alone settles nothing."""
+    """An engineered environment can have a host, so the environment alone settles nothing."""
     assert _classify(sample_taxon_term_id=sample_taxon).source is HostTaxonSource.UNRESOLVED
 
 

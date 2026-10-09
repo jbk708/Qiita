@@ -1,8 +1,10 @@
-"""ENA sample attributes -> the biosample import's metadata dict.
+"""ENA sample attributes and the run's taxon ids -> the biosample import's metadata dict.
 
 `attribute_mapping.map_ena_attributes` splits one BioSample's attributes into a
 curated set landing on a `biosample_global_field` (cross-study comparable) and
-everything else, retained as study-local rather than dropped. The halves go to
+everything else, retained as study-local rather than dropped. The run's `tax_id` and
+`host_tax_id`, checked against the curated table in `host_by_sample_taxon`, fill the
+taxon fields. The halves go to
 `repositories.biosample.resolve_or_import_biosample_by_ena_accession` as two
 separate dicts; this module holds no SQL.
 """
@@ -24,7 +26,7 @@ from qiita_control_plane.host_by_sample_taxon import NON_HOST_TAXA
 
 from .attribute_mapping import map_ena_attributes
 
-NOT_PROVIDED = "not provided"
+_MISSING_REASON_NOT_PROVIDED = "not provided"
 _TAXON_DISPLAY_NAMES = frozenset({BIOSAMPLE_DISPLAY_HOST_TAXON_ID, BIOSAMPLE_DISPLAY_TAXON_ID})
 
 
@@ -43,8 +45,16 @@ class HarmonizationResult:
     warnings: list[str] = field(default_factory=list)
 
 
+# The full vocabulary is `qiita.missing_value_reason`; this is the subset ENA host text uses.
 _MISSING_HOST_TEXT = frozenset(
-    {"missing", "not applicable", "not collected", "not provided", "restricted access", "unknown"}
+    {
+        "missing",
+        MISSING_REASON_NOT_APPLICABLE,
+        "not collected",
+        _MISSING_REASON_NOT_PROVIDED,
+        "restricted access",
+        "unknown",
+    }
 )
 _HOST_TEXT_MAX = 80
 
@@ -70,7 +80,12 @@ def _host_taxon_id(
     implied_host = implied_hosts.get(run.tax_id)
 
     host_tax_id = run.host_tax_id
-    if host_tax_id is not None and (host_tax_id == run.tax_id or host_tax_id in NON_HOST_TAXA):
+    if host_tax_id is not None and host_tax_id == run.tax_id:
+        warnings.append(
+            f"{who}: host_tax_id {host_tax_id} is the biosample's own taxon, not a host"
+        )
+        host_tax_id = None
+    elif host_tax_id is not None and host_tax_id in NON_HOST_TAXA:
         warnings.append(f"{who}: host_tax_id {host_tax_id} names an environment, not a host")
         host_tax_id = None
 
@@ -83,13 +98,13 @@ def _host_taxon_id(
         if host_tax_id in loaded_term_ids:
             return host_tax_id, warnings
         warnings.append(f"{who}: host_tax_id {host_tax_id} is not a loaded NCBI Taxonomy term")
-        return NOT_PROVIDED, warnings
+        return _MISSING_REASON_NOT_PROVIDED, warnings
 
     text = _host_text(run)
     if text is not None:
         shown = text if len(text) <= _HOST_TEXT_MAX else text[:_HOST_TEXT_MAX] + "..."
         warnings.append(f"{who}: ENA gives host text {shown!r} but no usable host_tax_id")
-        return NOT_PROVIDED, warnings
+        return _MISSING_REASON_NOT_PROVIDED, warnings
 
     if implied and implied_host is None:
         return MISSING_REASON_NOT_APPLICABLE, warnings
@@ -100,18 +115,23 @@ def _host_taxon_id(
             f"{who}: host {implied_host} implied by tax_id {run.tax_id} is not a loaded"
             " NCBI Taxonomy term"
         )
-        return NOT_PROVIDED, warnings
+        return _MISSING_REASON_NOT_PROVIDED, warnings
 
-    warnings.append(f"{who}: ENA gives no host_tax_id and tax_id implies no host")
-    return NOT_PROVIDED, warnings
+    reason = (
+        "ENA gives no tax_id"
+        if run.tax_id is None
+        else f"the table has no row for tax_id {run.tax_id}"
+    )
+    warnings.append(f"{who}: ENA gives no host_tax_id and {reason}")
+    return _MISSING_REASON_NOT_PROVIDED, warnings
 
 
 def _taxon_id(run: EnaRunRecord, loaded_term_ids: Collection[str]) -> tuple[str, list[str]]:
     if run.tax_id is None:
-        return NOT_PROVIDED, [f"{run.sample_accession}: ENA gives no tax_id"]
+        return _MISSING_REASON_NOT_PROVIDED, [f"{run.sample_accession}: ENA gives no tax_id"]
     if run.tax_id in loaded_term_ids:
         return run.tax_id, []
-    return NOT_PROVIDED, [
+    return _MISSING_REASON_NOT_PROVIDED, [
         f"{run.sample_accession}: tax_id {run.tax_id} is not a loaded NCBI Taxonomy term"
     ]
 
@@ -148,7 +168,7 @@ def build_biosample_metadata(
     for tag in skipped:
         del unmapped[tag]
     attribute_warnings = [
-        f"{ena_run.sample_accession}: attribute {tag!r} skipped, ENA's taxon ids fill that field"
+        f"{ena_run.sample_accession}: attribute {tag!r} skipped, taxon ids come from the run"
         for tag in skipped
     ]
     host, host_warnings = _host_taxon_id(ena_run, implied_hosts, loaded_term_ids)

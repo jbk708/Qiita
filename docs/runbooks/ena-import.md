@@ -262,17 +262,21 @@ their GSC-MIxS display-name twins) stay unmapped in either vocabulary — see
 Taxonomy term (`qiita-admin terminology prepare-taxdump` loads more, but biosamples
 already imported are not revisited); anything else is written as `not provided` and
 listed in the run's `metadata_warnings`. A `host_tax_id` that is loaded is written even
-when it disagrees with the host the sample's `tax_id` implies, with a warning. A
-`host_tax_id` naming the sample's own taxon or another metagenome taxon is not a host and
-is ignored, with a warning.
+when it disagrees with the host the biosample's `tax_id` implies, with a warning. A
+`host_tax_id` equal to the biosample's own `tax_id`, or to a taxon in the table (the
+curated list of biosample taxa with an implied host, or none) or to the bare `metagenome`
+taxon, is not a host and is ignored, with a warning.
 
 With no usable `host_tax_id`, a free-text `host` that is not a missing-value term such as
 `missing` gives `not provided` and a warning quoting the text. Otherwise the host comes
-from the sample taxon: human or mouse metagenomes give that host, and a hostless
-environment such as seawater or soil gives `not applicable`, meaning the sample is
-submitted with no host depletion. A taxon the table does not cover gives `not provided`.
-`qiita-admin backfill host-taxon-id` reads the same table. An attribute tag named `taxon
-id` or `host taxon id` is dropped with a warning, since ENA's ids fill those fields.
+from the table: the listed human and mouse metagenomes give that host, and the listed
+hostless environments such as seawater or soil give `not applicable`, meaning the
+sequenced sample is submitted with no host depletion. A taxon the table does not cover
+gives `not provided`, and host-filter resolution then returns unresolved and submit
+refuses. `qiita-admin backfill host-taxon-id` reads the same table. An attribute tag
+named `taxon id` or `host taxon id` is dropped with a warning, since those fields are
+filled from the run's taxon ids (falling back to the table, `not applicable`, or
+`not provided`).
 
 A warning appears only on the run that created the biosample, so after a re-import or for
 a later run on the same sample, check the creating batch. The stored `not provided` still

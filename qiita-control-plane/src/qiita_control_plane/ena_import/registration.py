@@ -55,7 +55,6 @@ from qiita_control_plane.host_by_sample_taxon import implied_hosts
 from qiita_control_plane.repositories import require_transaction
 from qiita_control_plane.repositories._sample_helpers import (
     fetch_metadata_checklist_idx_by_name,
-    fetch_terminology_term_idxs_by_term_ids,
     insert_entity_to_study,
     resolve_local_study_field,
     write_local_metadata_on_resolved_field,
@@ -79,7 +78,6 @@ from qiita_control_plane.repositories.sequencing_run import (
     insert_sequencing_run,
     lock_sequencing_run,
 )
-from qiita_control_plane.repositories.terminology import fetch_terminology_idx_by_name
 
 from .harmonization import HarmonizationResult, build_biosample_metadata
 from .platform_mapping import UnmappableEnaPlatformError, map_ena_platform
@@ -258,8 +256,7 @@ async def register_ena_study(
     before platform mapping even runs.
     It does raise -- before any run is written -- when a study-local field at
     one of the four `library_*` display names cannot hold these values (see
-    `_ensure_library_fields`), or when the NCBI Taxonomy terminology is not
-    loaded, so the whole accession fails loudly rather than run by run.
+    `_ensure_library_fields`), so the whole accession fails loudly rather than run by run.
     """
     # A run whose sample has no entry here harmonizes against an empty map
     # rather than failing.
@@ -432,9 +429,6 @@ async def _taxon_lookups(
     conn: asyncpg.Connection, ena_runs: list[EnaRunRecord]
 ) -> tuple[dict[str, str | None], frozenset[str]]:
     """The curated implied hosts for these runs' taxa, and which candidate taxon ids are loaded."""
-    terminology_idx = await fetch_terminology_idx_by_name(conn, NCBI_TAXONOMY_NAME)
-    if terminology_idx is None:
-        raise RuntimeError(f"terminology {NCBI_TAXONOMY_NAME!r} is not loaded")
     sample_taxa = {r.tax_id for r in ena_runs if r.tax_id}
     implied = implied_hosts(sample_taxa)
     candidates = (
@@ -442,10 +436,15 @@ async def _taxon_lookups(
         | {r.host_tax_id for r in ena_runs if r.host_tax_id}
         | {h for h in implied.values() if h}
     )
-    loaded = await fetch_terminology_term_idxs_by_term_ids(
-        conn, terminology_idx=terminology_idx, term_ids=candidates
+    rows = await conn.fetch(
+        "SELECT tt.term_id"
+        "  FROM qiita.terminology_term tt"
+        "  JOIN qiita.terminology t ON t.idx = tt.terminology_idx AND t.name = $1"
+        " WHERE tt.term_id = ANY($2::text[])",
+        NCBI_TAXONOMY_NAME,
+        sorted(candidates),
     )
-    return implied, frozenset(loaded)
+    return implied, frozenset(row["term_id"] for row in rows)
 
 
 def _library_metadata(ena_run: EnaRunRecord) -> dict[str, str]:

@@ -122,7 +122,7 @@ def test_host_tax_id_equal_to_the_sample_taxon_is_not_a_host_even_off_the_table(
     host, _, warnings = _fields(run)
 
     assert host == "not provided"
-    assert any("749906" in w and "not a host" in w for w in warnings)
+    assert any("749906" in w and "own taxon" in w for w in warnings)
 
 
 def test_environment_host_tax_id_still_falls_back_to_the_table_host():

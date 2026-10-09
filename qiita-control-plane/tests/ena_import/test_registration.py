@@ -22,7 +22,6 @@ from qiita_common.models.ena import (
     EnaStudyHeader,
 )
 
-from qiita_control_plane.ena_import import registration
 from qiita_control_plane.ena_import.registration import (
     ENA_LIBRARY_LAYOUT_FIELD_NAME,
     ENA_LIBRARY_SELECTION_FIELD_NAME,
@@ -810,25 +809,6 @@ async def test_every_fixture_study_registers_with_only_seeded_terms_or_missing_r
         stored = await _taxon_fields(reg["pool"], run.sample_accession)
         assert set(stored) == {"host taxon id", "taxon id"}
         assert all(v.isdigit() or v in {"not provided", "not applicable"} for v in stored.values())
-
-
-async def test_registration_fails_before_any_run_when_ncbi_taxonomy_is_not_loaded(reg, monkeypatch):
-    async def _absent(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(registration, "fetch_terminology_idx_by_name", _absent)
-    study_accession = unique_ena_accession("PRJNA")
-    run = _fixture_run("ena_runs_human_gut.json", study_accession=study_accession)
-
-    with pytest.raises(RuntimeError, match="NCBI Taxonomy"):
-        await _register(
-            reg, study_header=_study_header(study_accession=study_accession), ena_runs=[run]
-        )
-
-    assert not await reg["pool"].fetchval(
-        "SELECT count(*) FROM qiita.sequenced_sample WHERE ena_run_accession = $1",
-        run.run_accession,
-    )
 
 
 @pytest.mark.parametrize("tag", ["taxon id", "host taxon id"])

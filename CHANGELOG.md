@@ -4034,18 +4034,19 @@ live in [`docs/changelog-archive/`](docs/changelog-archive/).
   it answers 422; declaring it, and re-sending the policy a field already has, are
   unchanged.
 - **An ENA import now writes `host taxon id` and `taxon id` from ENA instead of
-  `not provided` for every sample (#653).** Each run's `host_tax_id` and `tax_id` are read with
+  `not provided` for every biosample (#653).** Each run's `host_tax_id` and `tax_id` are read with
   the run list; a taxon id is written only if it is a loaded NCBI Taxonomy term, and
   otherwise the field is `not provided` and the gap is reported in `metadata_warnings` on
-  the run entry of `GET /ena-import-batch/{idx}`. A `host_tax_id` naming an environment
-  rather than a host is ignored with a warning, and so is a sample attribute tagged
-  `taxon id` or `host taxon id`. With no `host_tax_id`, free-text `host` that names an
-  organism gives `not provided`; otherwise the host comes from the curated sample-taxon
-  table, which gains the human, human skin, mouse gut and mouse skin metagenomes and nine
-  natural hostless environments such as soil and marine sediment (`not applicable`).
-  `qiita-admin backfill host-taxon-id` shares the table, so biosamples with those taxa are
-  now written instead of reported unresolved. Biosamples imported earlier are unchanged.
-
+  the run entry of `GET /ena-import-batch/{idx}`. A `host_tax_id` equal to the
+  biosample's own `tax_id`, to a taxon in the curated table of biosample taxa with an
+  implied host (or none), or to the bare `metagenome` taxon is ignored with a warning, and
+  so is a biosample attribute tagged `taxon id` or `host taxon id`. With no `host_tax_id`,
+  any free-text `host` that is not a missing-value term gives `not provided`; otherwise
+  the host comes from the table, which gains the human, human skin, mouse gut and mouse
+  skin metagenomes and nine natural hostless environments such as soil and marine
+  sediment (`not applicable`). `qiita-admin backfill host-taxon-id` shares the table, so
+  biosamples with those taxa are now written instead of reported unresolved. Biosamples
+  imported earlier are unchanged.
 - **Declaring a sample field unique within its study no longer lets a concurrent write
   slip past the new policy (#628).** The propagation that mirrors the policy onto the
   field's stored values read only what was committed, so a metadata write already in
