@@ -907,9 +907,9 @@ async def run_workflow(
     except BackendFailure as exc:
         # Permanent (including RETRIES_EXHAUSTED); a transient failure reaches
         # here only from outside the retry loop (pre-loop resolvers, fast-forward
-        # result re-reads). The retry loop has not
-        # transitioned the ticket — we own that transition here so
-        # failure_status PATCH and the FAILED row insert happen together.
+        # result re-reads). The retry loop has not transitioned the ticket — we
+        # own that transition here so failure_status PATCH and the FAILED row
+        # insert happen together.
         _log.warning("workflow %d failed: %s", work_ticket_idx, exc)
         if action is not None and action.failure_status:
             try:
