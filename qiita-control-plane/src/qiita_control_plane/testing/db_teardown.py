@@ -34,11 +34,12 @@ GENOME_OF_PREP_SAMPLE = "genome_of_prep_sample"
 # tier is free.
 #
 # Hard-coded rather than derived from the catalog so a reader can see exactly
-# what a teardown touches. A parity test compares this list against the live
-# schema, so a table carrying one of the key columns below and forgotten here
-# fails on the schema alone rather than waiting for something to seed a row into
-# it. A table that reaches an entity through some other column name is outside
-# what that test sees.
+# what a teardown touches. A migration adding a table that carries one of the key
+# columns below registers it here in the same PR, or names it in
+# UNSWEPT_ENTITY_TABLES with the reason: a parity test compares this list against
+# the live schema, so one forgotten fails on the schema alone rather than waiting
+# for something to seed a row into it. A table that reaches an entity through some
+# other column name is outside what that test sees.
 SWEEP_TIERS = (
     (
         ("alignment_sample", (("prep_sample_idx", PREP_SAMPLE),)),
@@ -131,7 +132,18 @@ def _reject_non_identifiers(caller: str, *names: str) -> None:
             raise ValueError(f"{caller} rejects a non-identifier name: {name!r}")
 
 
-async def delete_idxs(pool: asyncpg.Pool, table: str, idxs) -> None:
+def _as_idx_list(idxs: int | Iterable[int]) -> list[int]:
+    """Normalise a scalar idx, or an iterable of them, into a list.
+
+    Materialising here is what lets an empty run be told from a non-empty one:
+    an unconsumed iterator reads as truthy whatever it holds.
+    """
+    if isinstance(idxs, int):
+        return [idxs]
+    return list(idxs)
+
+
+async def delete_idxs(pool: asyncpg.Pool, table: str, idxs: int | Iterable[int]) -> None:
     """Delete rows by idx from qiita.<table>.
 
     `idxs` may be a scalar int or an iterable of ints; an empty iterable is a
@@ -140,14 +152,12 @@ async def delete_idxs(pool: asyncpg.Pool, table: str, idxs) -> None:
     the statement, so it must be a literal the caller wrote, never input.
     """
     _reject_non_identifiers("delete_idxs", table)
-    # Normalize a bare int into a one-element list so callers can pass either.
-    if isinstance(idxs, int):
-        idxs = [idxs]
-    if not idxs:
+    named = _as_idx_list(idxs)
+    if not named:
         return
     await pool.execute(
         f"DELETE FROM qiita.{table} WHERE idx = ANY($1::bigint[])",
-        idxs,
+        named,
     )
 
 
@@ -301,13 +311,13 @@ async def teardown_entity_graph(
         await delete_idxs(pool, table, idxs[table])
 
 
-async def delete_principal(pool: asyncpg.Pool, principal_idxs) -> None:
+async def delete_principal(pool: asyncpg.Pool, principal_idxs: int | Iterable[int]) -> None:
     """Delete these principals and their user rows.
 
     Runs last in a teardown: every table the caller created referencing a
     principal must already be gone, since those references are RESTRICT.
     """
-    named = [principal_idxs] if isinstance(principal_idxs, int) else list(principal_idxs)
+    named = _as_idx_list(principal_idxs)
     if not named:
         return
     await pool.execute("DELETE FROM qiita.user WHERE principal_idx = ANY($1::bigint[])", named)
@@ -380,9 +390,10 @@ async def teardown_ena_study_graph(
             [_ENA_RUN_ID_LIKE.format(accession=accession) for accession in run_accessions],
         )
         run_idxs = [row["idx"] for row in run_rows]
-    # A work ticket is never swept. It references the pool under RESTRICT, and
-    # may reference a study and a prep_sample too, so it goes ahead of both the
-    # sweep and the pool delete below.
+    # A work ticket is never swept. This clears the pool-scoped ones, which
+    # reference the pool under RESTRICT, ahead of the pool delete below. A ticket
+    # carries exactly one scope target, so a study- or prep_sample-scoped one is
+    # not matched here; teardown_entity_graph's docstring names whose job it is.
     await pool.execute(
         "DELETE FROM qiita.work_ticket WHERE sequenced_pool_idx IN"
         " (SELECT idx FROM qiita.sequenced_pool WHERE sequencing_run_idx = ANY($1::bigint[]))",

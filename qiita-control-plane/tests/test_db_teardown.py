@@ -415,6 +415,12 @@ async def test_teardown_entity_graph_leaves_a_reference_exclusion(postgres_pool,
         )
 
 
+async def test_delete_idxs_empty_iterator():
+    """Tests the case where the idxs arrive as an exhausted iterator rather than
+    an empty list: the call is a no-op, so the pool is never reached."""
+    await delete_idxs(None, STUDY, iter([]))
+
+
 async def test_delete_idxs_rejects_a_non_identifier_table():
     """Tests the case where the interpolated table name is not a bare identifier."""
     with pytest.raises(ValueError, match="non-identifier name"):
