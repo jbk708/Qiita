@@ -81,9 +81,10 @@ add to a pool whose download has already read (or is reading) its roster is refu
 same way, 409: create a new `sequenced_pool` on the run and submit its own
 `download-ena-study` ticket instead.
 A `PATCH /sequenced-sample/{idx}` that changes `ena_run_accession` is refused (409) in
-those states, when a failed ticket still has a live download job, and once the sample's
-reads are stored (the download reuses them rather than fetching the new run); retire the
-sample and add the corrected run to a new `sequenced_pool` the same way.
+those states, when a failed ticket still has a live download job, and once the
+sequenced_sample's reads have a `sequence_range` (the download reuses them rather than
+fetching the new run); retire its prep_sample and add the corrected run to a new
+`sequenced_pool` the same way.
 
 An import will only add to a study **an import created**. A study Qiita created
 natively and later deposited to ENA carries a `bioproject_accession` too, so

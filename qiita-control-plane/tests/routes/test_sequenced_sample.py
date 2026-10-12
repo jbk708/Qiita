@@ -5273,7 +5273,7 @@ async def test_run_on_superseded_download_ticket_returns_409(redrive_ctx, state)
 
 
 # ===========================================================================
-# PATCH ena_run_accession vs. the pool's staged download roster (#626)
+# PATCH ena_run_accession vs. the pool's staged download roster
 # ===========================================================================
 
 
@@ -5360,7 +5360,7 @@ async def test_patch_run_accession_rejects_when_roster_staged(ctx, state):
         f"ticket {ticket_idx}",
         f"'{state}'",
         sample["accession"],
-        "Retire this sample",
+        f"Retire prep_sample {sample['prep_sample_idx']}",
         "new sequenced_pool",
     ):
         assert named in detail
@@ -5368,7 +5368,15 @@ async def test_patch_run_accession_rejects_when_roster_staged(ctx, state):
     assert await _get_etag(ctx["wet"], sample["sequenced_sample_idx"]) == etag
 
 
-@pytest.mark.parametrize("state", ["pending", "cancelled", "failed", None])
+@pytest.mark.parametrize(
+    "state",
+    [
+        WorkTicketState.PENDING.value,
+        WorkTicketState.CANCELLED.value,
+        WorkTicketState.FAILED.value,
+        None,
+    ],
+)
 async def test_patch_run_accession_allowed_states(ctx, state):
     """Before the roster read, or when the next dispatch re-reads it live (a
     failed ticket with no live job), the PATCH lands: this is the repair for a
@@ -5393,7 +5401,9 @@ async def test_patch_run_accession_failed_ticket_live_job(ctx, step, expected):
     already holds the old run, exactly what `/run` refuses to adopt; a finished
     step or one with no job yet holds nothing."""
     sample = await _seed_accessioned_sample(ctx, "pra-live")
-    ticket_idx = await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state="failed")
+    ticket_idx = await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.FAILED.value
+    )
     if step == "submitting":
         await step_progress.record_submitting(
             ctx["pool"],
@@ -5426,7 +5436,10 @@ async def test_patch_run_accession_failed_ticket_live_job(ctx, step, expected):
         assert "live download job" in resp.json()["detail"]
 
 
-@pytest.mark.parametrize("state", ["pending", "failed", "cancelled"])
+@pytest.mark.parametrize(
+    "state",
+    [WorkTicketState.PENDING.value, WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value],
+)
 async def test_patch_run_accession_rejects_stored_reads_on_reread_ticket(ctx, state):
     """`ingest_ena_reads` reuses a sample's stored reads by prep_sample_idx
     whatever its accession says, so a redrive or re-import would keep the old
@@ -5447,8 +5460,8 @@ async def test_patch_run_accession_rejects_stored_reads_on_reread_ticket(ctx, st
         f"ticket {ticket_idx}",
         f"'{state}'",
         sample["accession"],
-        "already stored",
-        "Retire this sample",
+        "already have a sequence_range",
+        f"Retire prep_sample {sample['prep_sample_idx']}",
     ):
         assert named in detail
     assert await _stored_accession(ctx, sample) == sample["accession"]
@@ -5472,7 +5485,9 @@ async def test_patch_unchanged_run_accession_on_staged_pool_ok(ctx):
     it is a 200 on a staged pool. The compare runs under the run lock on
     purpose: an unlocked compare would be a check-then-act race."""
     sample = await _seed_accessioned_sample(ctx, "pra-same")
-    await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state="completed")
+    await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.COMPLETED.value
+    )
 
     resp = await _patch_sample(ctx, sample, {"ena_run_accession": sample["accession"]})
 
@@ -5484,7 +5499,9 @@ async def test_patch_non_accession_fields_on_staged_pool_ok(ctx):
     """A body without ena_run_accession neither takes the run lock nor is
     refused: submission write-backs never wait on an import."""
     sample = await _seed_accessioned_sample(ctx, "pra-other")
-    await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state="completed")
+    await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.COMPLETED.value
+    )
     conn = await ctx["pool"].acquire()
     try:
         async with conn.transaction():
@@ -5508,7 +5525,9 @@ async def test_patch_run_accession_staged_check_reads_under_the_run_lock(ctx):
     """The ticket is read after the run lock is granted: one flipped to
     `processing` while the PATCH waits is still caught, 409."""
     sample = await _seed_accessioned_sample(ctx, "pra-under")
-    ticket_idx = await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state="pending")
+    ticket_idx = await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.PENDING.value
+    )
     etag = await _get_etag(ctx["wet"], sample["sequenced_sample_idx"])
     conn = await ctx["pool"].acquire()
     patch_task = None
@@ -5528,7 +5547,8 @@ async def test_patch_run_accession_staged_check_reads_under_the_run_lock(ctx):
                 _observed_waiter_on_run_lock(ctx["pool"], sample["run_idx"]), timeout=10
             )
             await conn.execute(
-                "UPDATE qiita.work_ticket SET state = 'processing' WHERE work_ticket_idx = $1",
+                "UPDATE qiita.work_ticket SET state = $1 WHERE work_ticket_idx = $2",
+                WorkTicketState.PROCESSING.value,
                 ticket_idx,
             )
     finally:

@@ -189,38 +189,57 @@ _ROSTER_LOCK_WAIT_TIMEOUT_S = 5.0
 _ROSTER_LOCK_RETRY_AFTER_S = str(int(_ROSTER_LOCK_WAIT_TIMEOUT_S))
 
 
+async def _lock_run_or_503(conn: asyncpg.Connection, sequencing_run_idx: int) -> None:
+    """`lock_sequencing_run` with the route wait; a timeout is a 503 with Retry-After."""
+    try:
+        await lock_sequencing_run(
+            conn, sequencing_run_idx=sequencing_run_idx, timeout=_ROSTER_LOCK_WAIT_TIMEOUT_S
+        )
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"sequencing_run {sequencing_run_idx} is busy with an ENA import"
+                " or roster read; retry shortly"
+            ),
+            headers={"Retry-After": _ROSTER_LOCK_RETRY_AFTER_S},
+        ) from exc
+
+
 async def _refuse_run_accession_change_once_staged(
     conn: asyncpg.Connection, *, row: asyncpg.Record, sequencing_run_idx: int
 ) -> None:
     """409 when changing this sample's run accession could not reach the download:
     the roster was read, a live job holds it, or the stored reads would be reused."""
-    sample_idx = row["idx"]
     pool_idx = row["sequenced_pool_idx"]
     ticket = await fetch_pool_download_ticket(conn, sequenced_pool_idx=pool_idx)
     if ticket is None:
         return
     state = ticket["work_ticket_state"]
     ticket_idx = ticket["work_ticket_idx"]
+    old_run = row["ena_run_accession"] or "(none)"
+    pool_ticket = f"sequenced_pool {pool_idx}'s latest download ticket {ticket_idx} is '{state}'"
     if download_ticket_read_roster(state):
-        why = f"so the download would keep run {row['ena_run_accession']}"
+        why = f"{pool_ticket}, so the download would keep run {old_run}"
     elif state == WorkTicketState.FAILED.value and await download_ticket_has_live_job(
         conn, work_ticket_idx=ticket_idx
     ):
-        why = f"and its live download job holds run {row['ena_run_accession']}"
+        why = f"{pool_ticket} and its live download job holds run {old_run}"
     elif await fetch_sequence_range_by_prep_sample_idx(conn, row["prep_sample_idx"]) is not None:
         why = (
-            f"and its reads from run {row['ena_run_accession']} are already stored, which"
-            " the download reuses rather than fetching the new run"
+            f"its reads from run {old_run} already have a sequence_range, and a download"
+            f" on sequenced_pool {pool_idx} (latest ticket {ticket_idx}, '{state}') reuses"
+            " them rather than fetching the new run"
         )
     else:
         return
     raise HTTPException(
         status_code=409,
         detail=(
-            f"sequenced_sample {sample_idx} cannot change ena_run_accession: sequenced_pool"
-            f" {pool_idx}'s latest download ticket {ticket_idx} is '{state}', {why}."
-            " Retire this sample and add the corrected run to a new sequenced_pool on"
-            f" sequencing_run {sequencing_run_idx} with its own download-ena-study ticket."
+            f"sequenced_sample {row['idx']} cannot change ena_run_accession: {why}. Retire"
+            f" prep_sample {row['prep_sample_idx']} and add the corrected run to a new"
+            f" sequenced_pool on sequencing_run {sequencing_run_idx} with its own"
+            " download-ena-study ticket."
         ),
     )
 
@@ -283,19 +302,7 @@ async def import_sequenced_sample_from_run(
             conn, body.metadata_checklist_name
         )
 
-        try:
-            await lock_sequencing_run(
-                conn, sequencing_run_idx=sequencing_run_idx, timeout=_ROSTER_LOCK_WAIT_TIMEOUT_S
-            )
-        except TimeoutError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"sequencing_run {sequencing_run_idx} is busy with an ENA import"
-                    " or roster read; retry shortly"
-                ),
-                headers={"Retry-After": _ROSTER_LOCK_RETRY_AFTER_S},
-            ) from exc
+        await _lock_run_or_503(conn, sequencing_run_idx)
         pool_ticket = await fetch_pool_download_ticket(conn, sequenced_pool_idx=sequenced_pool_idx)
         roster_state = pool_ticket["work_ticket_state"] if pool_ticket is not None else None
         staged_ticket = pool_ticket if download_ticket_read_roster(roster_state) else None
@@ -991,7 +998,7 @@ async def patch_sequenced_sample(
 
     A body that includes `ena_run_accession` first takes the run lock (503 on
     timeout, as the native insert) and then refuses a change the download
-    could not pick up; see `download_ticket_read_roster`.
+    could not pick up; see `_refuse_run_accession_change_once_staged`.
     """
     assert isinstance(caller, HumanUser), (
         "caller must be HumanUser pre-commit; shaper reads .system_role and "
@@ -1017,19 +1024,7 @@ async def patch_sequenced_sample(
                     detail=f"sequenced_sample {sequenced_sample_idx} not found",
                 )
             sequencing_run_idx = ids["sequencing_run_idx"]
-            try:
-                await lock_sequencing_run(
-                    conn, sequencing_run_idx=sequencing_run_idx, timeout=_ROSTER_LOCK_WAIT_TIMEOUT_S
-                )
-            except TimeoutError as exc:
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"sequencing_run {sequencing_run_idx} is busy with an ENA import"
-                        " or roster read; retry shortly"
-                    ),
-                    headers={"Retry-After": _ROSTER_LOCK_RETRY_AFTER_S},
-                ) from exc
+            await _lock_run_or_503(conn, sequencing_run_idx)
         try:
             # Preflight: existence -> 404, retirement -> 409, ETag -> 412.
             # for_update=True acquires row-level locks on both joined
