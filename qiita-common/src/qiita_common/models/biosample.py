@@ -284,9 +284,7 @@ TERMINOLOGY_TERM_VALUE_COLUMN = "value_terminology_term_idx"
 #   HOST_TAXON_ID — the organism the sample was taken FROM. Absent for an
 #                   environmental sample; a missing-reason for a control.
 #
-# Conflating them is the bug this arc exists to prevent, so they are named side
-# by side. Shared because the resolver reads host_taxon_id and the backfill reads
-# taxon_id to derive it — two consumers, one spelling.
+# Shared so that every reader of either field spells it the same way.
 BIOSAMPLE_FIELD_TAXON_ID = "taxon_id"
 BIOSAMPLE_FIELD_HOST_TAXON_ID = "host_taxon_id"
 
