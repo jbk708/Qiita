@@ -58,6 +58,7 @@ from qiita_common.models import (
     StudySequencedPoolListResponse,
     StudySequencedPoolSummary,
     Tier,
+    WorkTicketState,
 )
 
 from ..auth.guards import (
@@ -75,7 +76,11 @@ from ..auth.guards import (
 )
 from ..auth.principal import HumanUser, Principal
 from ..deps import TxConnFactory, get_db_pool, get_snapshot_conn_factory, get_tx_conn_factory
-from ..ena_import.registration import download_ticket_read_roster, fetch_pool_download_ticket
+from ..ena_import.registration import (
+    download_ticket_has_live_job,
+    download_ticket_read_roster,
+    fetch_pool_download_ticket,
+)
 from ..host_filter_resolver import resolve_host_filter_many
 from ..preflight import (
     PacbioProtocol,
@@ -84,11 +89,13 @@ from ..preflight import (
 )
 from ..repositories._sample_helpers import fetch_global_metadata
 from ..repositories.prep_sample_metadata import PREP_SAMPLE_METADATA_SPEC
+from ..repositories.sequence_range import fetch_sequence_range_by_prep_sample_idx
 from ..repositories.sequenced_sample import (
     fetch_sequenced_pool_samples,
     fetch_sequenced_pools_for_study,
     fetch_sequenced_sample_idxs_for_run,
     fetch_sequenced_sample_idxs_for_study,
+    fetch_sequenced_sample_pool_and_run,
     fetch_sequenced_sample_with_prep_sample,
     fetch_sequenced_samples_for_run,
     import_sequenced_prep_sample,
@@ -180,6 +187,42 @@ _SEQUENCED_SAMPLE_GENERIC_UNIQUE_VIOLATION = "conflicts with an existing sequenc
 # route loses still answers before the client's own socket read times out.
 _ROSTER_LOCK_WAIT_TIMEOUT_S = 5.0
 _ROSTER_LOCK_RETRY_AFTER_S = str(int(_ROSTER_LOCK_WAIT_TIMEOUT_S))
+
+
+async def _refuse_run_accession_change_once_staged(
+    conn: asyncpg.Connection, *, row: asyncpg.Record, sequencing_run_idx: int
+) -> None:
+    """409 when changing this sample's run accession could not reach the download:
+    the roster was read, a live job holds it, or the stored reads would be reused."""
+    sample_idx = row["idx"]
+    pool_idx = row["sequenced_pool_idx"]
+    ticket = await fetch_pool_download_ticket(conn, sequenced_pool_idx=pool_idx)
+    if ticket is None:
+        return
+    state = ticket["work_ticket_state"]
+    ticket_idx = ticket["work_ticket_idx"]
+    if download_ticket_read_roster(state):
+        why = f"so the download would keep run {row['ena_run_accession']}"
+    elif state == WorkTicketState.FAILED.value and await download_ticket_has_live_job(
+        conn, work_ticket_idx=ticket_idx
+    ):
+        why = f"and its live download job holds run {row['ena_run_accession']}"
+    elif await fetch_sequence_range_by_prep_sample_idx(conn, row["prep_sample_idx"]) is not None:
+        why = (
+            f"and its reads from run {row['ena_run_accession']} are already stored, which"
+            " the download reuses rather than fetching the new run"
+        )
+    else:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"sequenced_sample {sample_idx} cannot change ena_run_accession: sequenced_pool"
+            f" {pool_idx}'s latest download ticket {ticket_idx} is '{state}', {why}."
+            " Retire this sample and add the corrected run to a new sequenced_pool on"
+            f" sequencing_run {sequencing_run_idx} with its own download-ena-study ticket."
+        ),
+    )
 
 
 @router.post(
@@ -945,6 +988,10 @@ async def patch_sequenced_sample(
     submission_error when last_submission_at changes unless the same
     UPDATE explicitly sets submission_error; callers recording a failed
     attempt should patch both fields in one request.
+
+    A body that includes `ena_run_accession` first takes the run lock (503 on
+    timeout, as the native insert) and then refuses a change the download
+    could not pick up; see `download_ticket_read_roster`.
     """
     assert isinstance(caller, HumanUser), (
         "caller must be HumanUser pre-commit; shaper reads .system_role and "
@@ -961,6 +1008,28 @@ async def patch_sequenced_sample(
     fields = {name: getattr(body, name) for name in body.model_fields_set}
 
     async with tx() as conn:
+        sequencing_run_idx = None
+        if "ena_run_accession" in fields:
+            ids = await fetch_sequenced_sample_pool_and_run(conn, sequenced_sample_idx)
+            if ids is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"sequenced_sample {sequenced_sample_idx} not found",
+                )
+            sequencing_run_idx = ids["sequencing_run_idx"]
+            try:
+                await lock_sequencing_run(
+                    conn, sequencing_run_idx=sequencing_run_idx, timeout=_ROSTER_LOCK_WAIT_TIMEOUT_S
+                )
+            except TimeoutError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"sequencing_run {sequencing_run_idx} is busy with an ENA import"
+                        " or roster read; retry shortly"
+                    ),
+                    headers={"Retry-After": _ROSTER_LOCK_RETRY_AFTER_S},
+                ) from exc
         try:
             # Preflight: existence -> 404, retirement -> 409, ETag -> 412.
             # for_update=True acquires row-level locks on both joined
@@ -983,6 +1052,13 @@ async def patch_sequenced_sample(
                 )
             if if_match != etag_for_updated_at(row["effective_updated_at"]):
                 raise HTTPException(status_code=412, detail="If-Match did not match")
+            if (
+                sequencing_run_idx is not None
+                and fields["ena_run_accession"] != row["ena_run_accession"]
+            ):
+                await _refuse_run_accession_change_once_staged(
+                    conn, row=row, sequencing_run_idx=sequencing_run_idx
+                )
 
             # Apply the UPDATE; re-fetch the joined row under the same
             # lock to pick up the bumped effective_updated_at and any

@@ -109,7 +109,7 @@ from ..auth.principal import Anonymous, HumanUser, Principal, ServiceAccount, ge
 from ..config import Settings
 from ..deps import get_db_pool
 from ..dispatch import schedule_dispatch
-from ..ena_import.registration import fetch_pool_download_ticket
+from ..ena_import.registration import download_ticket_has_live_job, fetch_pool_download_ticket
 from ..ena_import.submit import DOWNLOAD_ENA_STUDY_ACTION_ID
 from ..fanout_dispatch import (
     COHORT_BUILDERS,
@@ -1682,12 +1682,8 @@ async def _refuse_unsafe_download_redrive(
                 f"{latest['work_ticket_idx']} ({latest['work_ticket_state']}) on the same pool"
             ),
         )
-    if current_state == WorkTicketState.FAILED.value and await conn.fetchval(
-        "SELECT EXISTS (SELECT 1 FROM qiita.work_ticket_step"
-        " WHERE work_ticket_idx = $1 AND state IN ($2, $3) AND slurm_job_id IS NOT NULL)",
-        work_ticket_idx,
-        StepProgressState.SUBMITTED.value,
-        StepProgressState.RUNNING.value,
+    if current_state == WorkTicketState.FAILED.value and await download_ticket_has_live_job(
+        conn, work_ticket_idx=work_ticket_idx
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
