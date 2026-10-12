@@ -38,6 +38,7 @@ _None yet._
 ### 3. Migrations
 
 - `[operator]` `make migrate` applies `20261006000000_exported_entity.sql` (new table `qiita.exported_entity`, mint-on-insert triggers on `qiita.study` and `qiita.biosample`, and a backfill of one row per existing study and biosample, all in one transaction; it aborts and rolls back if any study or biosample is left without a row). (#682)
+- `[operator]` `make migrate` applies `20261012000000_seed_control_type_fields.sql` (new terminology `MIxS NegContTypeEnum` and global fields `neg_cont_type` and `pos_cont_type`; additive, no backfill). (#342)
 
 ### 4. Deploy
 
