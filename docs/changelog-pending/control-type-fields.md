@@ -1,13 +1,13 @@
 ### Added
 
-- **`negative control type` and `positive control type` biosample fields (#342).**
+- **`negative control type` and `positive control type` biosample fields (#690).**
   `negative control type` takes the MIxS negative-control values plus `extraction blank`
   and `no-template control`; `positive control type` is free text.
 
 ### Changed
 
 - **A biosample is now recognised as a control from its own metadata, ahead of its
-  `host taxon id` (#342).** A real value on either new field, or a control
+  `host taxon id` (#690).** A real value on either new field, or a control
   `qiita sample type` term (`control_blank`, `control_sterile_water`,
   `control_sea_water`, `control_spike_in`), makes the biosample a control for host
   filtering whatever its `host taxon id`; a missing-value reason does not count. A
