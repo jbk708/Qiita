@@ -43,7 +43,13 @@ from enum import StrEnum
 from operator import itemgetter
 
 import asyncpg
-from qiita_common.models import NCBI_TAXONOMY_NAME, FieldDataType, Platform, WorkTicketState
+from qiita_common.models import (
+    NCBI_TAXONOMY_NAME,
+    FieldDataType,
+    Platform,
+    StepProgressState,
+    WorkTicketState,
+)
 from qiita_common.models.ena import (
     EnaRunRecord,
     EnaSampleAttributes,
@@ -200,6 +206,18 @@ def download_ticket_read_roster(work_ticket_state: str | None) -> bool:
     the next dispatch re-reads the roster live, and a `/run` redrive re-runs the
     download against it."""
     return work_ticket_state in _ROSTER_READ_DOWNLOAD_TICKET_STATES
+
+
+async def download_ticket_has_live_job(conn: asyncpg.Connection, *, work_ticket_idx: int) -> bool:
+    """Whether the ticket has a SUBMITTED/RUNNING step with a slurm job, which
+    holds the run roster it was given."""
+    return await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM qiita.work_ticket_step"
+        " WHERE work_ticket_idx = $1 AND state IN ($2, $3) AND slurm_job_id IS NOT NULL)",
+        work_ticket_idx,
+        StepProgressState.SUBMITTED.value,
+        StepProgressState.RUNNING.value,
+    )
 
 
 async def fetch_pool_download_ticket(

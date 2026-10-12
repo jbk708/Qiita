@@ -69,6 +69,7 @@ from qiita_control_plane.repositories._sample_helpers import (
 )
 from qiita_control_plane.repositories.biosample_metadata import BIOSAMPLE_METADATA_SPEC
 from qiita_control_plane.repositories.prep_sample_metadata import PREP_SAMPLE_METADATA_SPEC
+from qiita_control_plane.repositories.sequence_range import mint_sequence_range
 from qiita_control_plane.repositories.sequencing_run import POOL_RESOLVE_LOCK_CLASS
 from qiita_control_plane.routes import sequenced_sample as sequenced_sample_routes
 from qiita_control_plane.runner import ENA_RUN_MAP_BINDING, _stage_ena_run_roster, run_workflow
@@ -5269,3 +5270,373 @@ async def test_run_on_superseded_download_ticket_returns_409(redrive_ctx, state)
         "SELECT state::text FROM qiita.work_ticket WHERE work_ticket_idx = $1", older
     ) == (state)
     assert await _step_rows(pool, older) == [(0, StepProgressState.COMPLETED.value)]
+
+
+# ===========================================================================
+# PATCH ena_run_accession vs. the pool's staged download roster
+# ===========================================================================
+
+
+async def _seed_accessioned_sample(ctx, suffix: str) -> dict:
+    """One ENA-style sequenced_sample (with a run accession) in a fresh pool."""
+    run_idx, pool_idx, study_idx, bs_idx, protocol_idx = await _seed_roster_case(ctx, suffix)
+    accession = unique_accession("ERR")
+    resp = await _post_sequenced_sample(
+        ctx["wet"],
+        ctx,
+        run_idx,
+        pool_idx,
+        **_roster_case_body(
+            ctx,
+            study_idx=study_idx,
+            bs_idx=bs_idx,
+            protocol_idx=protocol_idx,
+            suffix=suffix.upper(),
+            accession=accession,
+        ),
+    )
+    assert resp.status_code == 201, resp.text
+    return {
+        "run_idx": run_idx,
+        "pool_idx": pool_idx,
+        "accession": accession,
+        "prep_sample_idx": resp.json()["prep_sample_idx"],
+        "sequenced_sample_idx": resp.json()["sequenced_sample_idx"],
+    }
+
+
+async def _patch_sample(ctx, sample: dict, body: dict, *, etag: str | None = None):
+    etag = etag or await _get_etag(ctx["wet"], sample["sequenced_sample_idx"])
+    return await ctx["wet"].patch(
+        URL_SEQUENCED_SAMPLE_BY_IDX.format(sequenced_sample_idx=sample["sequenced_sample_idx"]),
+        json=body,
+        headers={"If-Match": etag},
+    )
+
+
+async def _stored_accession(ctx, sample: dict) -> str | None:
+    return await ctx["pool"].fetchval(
+        "SELECT ena_run_accession FROM qiita.sequenced_sample WHERE idx = $1",
+        sample["sequenced_sample_idx"],
+    )
+
+
+async def _seed_stored_reads(ctx, sample: dict, ticket_idx: int | None) -> None:
+    """Mint the sequence_range `ingest_ena_reads` writes before it stores a
+    sequenced_sample's reads; the control plane cannot see the read file itself."""
+    async with ctx["pool"].acquire() as conn:
+        await mint_sequence_range(
+            conn,
+            prep_sample_idx=sample["prep_sample_idx"],
+            count=10,
+            principal_idx=ctx["wet_session"]["principal_idx"],
+            work_ticket_idx=ticket_idx,
+        )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        WorkTicketState.PROCESSING.value,
+        WorkTicketState.COMPLETED.value,
+        WorkTicketState.NO_DATA.value,
+        WorkTicketState.QUEUED.value,
+    ],
+)
+async def test_patch_run_accession_rejects_when_roster_staged(ctx, state):
+    """A run-accession change after the pool's download read its roster would
+    leave the download on the old run: 409 naming the remedy, nothing written."""
+    sample = await _seed_accessioned_sample(ctx, "pra-staged")
+    ticket_idx = await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state=state)
+    etag = await _get_etag(ctx["wet"], sample["sequenced_sample_idx"])
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": unique_accession("ERR")})
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    for named in (
+        f"sequenced_sample {sample['sequenced_sample_idx']}",
+        f"sequenced_pool {sample['pool_idx']}",
+        f"ticket {ticket_idx}",
+        f"'{state}'",
+        sample["accession"],
+        f"Retire prep_sample {sample['prep_sample_idx']}",
+        "new sequenced_pool",
+    ):
+        assert named in detail
+    assert await _stored_accession(ctx, sample) == sample["accession"]
+    assert await _get_etag(ctx["wet"], sample["sequenced_sample_idx"]) == etag
+
+
+async def test_patch_null_run_accession_rejects_when_roster_staged(ctx):
+    """Setting a NULL accession is a change too: refused once staged, and the
+    detail names the old run as "(none)"."""
+    sample = await _seed_accessioned_sample(ctx, "pra-null")
+    await ctx["pool"].execute(
+        "UPDATE qiita.sequenced_sample SET ena_run_accession = NULL WHERE idx = $1",
+        sample["sequenced_sample_idx"],
+    )
+    await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.COMPLETED.value
+    )
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": unique_accession("ERR")})
+
+    assert resp.status_code == 409, resp.text
+    assert "keep run (none)" in resp.json()["detail"]
+    assert await _stored_accession(ctx, sample) is None
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        WorkTicketState.PENDING.value,
+        WorkTicketState.CANCELLED.value,
+        WorkTicketState.FAILED.value,
+        None,
+    ],
+)
+async def test_patch_run_accession_allowed_states(ctx, state):
+    """Before the roster read, or when the next dispatch re-reads it live (a
+    failed ticket with no live job), the PATCH lands: this is the repair for a
+    NULL or wrong accession on a failed pool."""
+    sample = await _seed_accessioned_sample(ctx, "pra-allowed")
+    if state is not None:
+        await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state=state)
+    new = unique_accession("ERR")
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": new})
+
+    assert resp.status_code == 200, resp.text
+    assert await _stored_accession(ctx, sample) == new
+
+
+@pytest.mark.parametrize(
+    ("step", "expected"),
+    [("running", 409), ("submitted", 409), ("completed", 200), ("submitting", 200)],
+)
+async def test_patch_run_accession_failed_ticket_live_job(ctx, step, expected):
+    """A failed ticket's live job (a SUBMITTED/RUNNING step with a slurm job)
+    already holds the old run, exactly what `/run` refuses to adopt; a finished
+    step or one with no job yet holds nothing."""
+    sample = await _seed_accessioned_sample(ctx, "pra-live")
+    ticket_idx = await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.FAILED.value
+    )
+    if step == "submitting":
+        await step_progress.record_submitting(
+            ctx["pool"],
+            work_ticket_idx=ticket_idx,
+            step_index=0,
+            attempt=0,
+            step_name="ingest_ena_reads",
+            compute_target=ComputeTarget.SLURM,
+            job_name=f"qiita-wt{ticket_idx}-ingest_ena_reads-a0",
+        )
+    else:
+        await _seed_slurm_step(
+            ctx["pool"],
+            ticket_idx,
+            step_index=0,
+            name="ingest_ena_reads",
+            state={
+                "running": StepProgressState.RUNNING,
+                "submitted": StepProgressState.SUBMITTED,
+                "completed": StepProgressState.COMPLETED,
+            }[step],
+        )
+    new = unique_accession("ERR")
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": new})
+
+    assert resp.status_code == expected, resp.text
+    assert await _stored_accession(ctx, sample) == (new if expected == 200 else sample["accession"])
+    if expected == 409:
+        assert "live download job" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [WorkTicketState.PENDING.value, WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value],
+)
+async def test_patch_run_accession_rejects_stored_reads_on_reread_ticket(ctx, state):
+    """`ingest_ena_reads` reuses a sequenced_sample's stored reads by prep_sample_idx
+    whatever its accession says, so a redrive or re-import would keep the old
+    run: refused even on a ticket that will re-read the roster. The check keys
+    on the sample's sequence_range, minted just before the read file is
+    written, as the control plane's view of that file."""
+    sample = await _seed_accessioned_sample(ctx, "pra-stored")
+    ticket_idx = await _seed_download_ticket(ctx, pool_idx=sample["pool_idx"], state=state)
+    await _seed_stored_reads(ctx, sample, ticket_idx)
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": unique_accession("ERR")})
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    for named in (
+        f"sequenced_sample {sample['sequenced_sample_idx']}",
+        f"sequenced_pool {sample['pool_idx']}",
+        f"ticket {ticket_idx}",
+        f"'{state}'",
+        sample["accession"],
+        "already have a sequence_range",
+        f"Retire prep_sample {sample['prep_sample_idx']}",
+    ):
+        assert named in detail
+    assert await _stored_accession(ctx, sample) == sample["accession"]
+
+
+async def test_patch_run_accession_stored_reads_without_download_ticket_allowed(ctx):
+    """A native pool (no download ticket) keeps accepting an accession
+    write-back for ENA submission even though its reads are stored."""
+    sample = await _seed_accessioned_sample(ctx, "pra-native")
+    await _seed_stored_reads(ctx, sample, None)
+    new = unique_accession("ERR")
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": new})
+
+    assert resp.status_code == 200, resp.text
+    assert await _stored_accession(ctx, sample) == new
+
+
+async def test_patch_unchanged_run_accession_on_staged_pool_ok(ctx):
+    """Re-sending the current accession changes nothing the download holds, so
+    it is a 200 on a staged pool. The compare runs under the run lock on
+    purpose: an unlocked compare would be a check-then-act race."""
+    sample = await _seed_accessioned_sample(ctx, "pra-same")
+    await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.COMPLETED.value
+    )
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": sample["accession"]})
+
+    assert resp.status_code == 200, resp.text
+    assert await _stored_accession(ctx, sample) == sample["accession"]
+
+
+async def test_patch_non_accession_fields_on_staged_pool_ok(ctx):
+    """A body without ena_run_accession neither takes the run lock nor is
+    refused: submission write-backs never wait on an import."""
+    sample = await _seed_accessioned_sample(ctx, "pra-other")
+    await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.COMPLETED.value
+    )
+    conn = await ctx["pool"].acquire()
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                POOL_RESOLVE_LOCK_CLASS,
+                sample["run_idx"] & INT4_MASK,
+            )
+            for body in (
+                {"submission_error": "transient ENA outage"},
+                {"ena_experiment_accession": unique_accession("ERX")},
+                {"last_submission_at": "2026-01-15T12:00:00+00:00"},
+            ):
+                resp = await asyncio.wait_for(_patch_sample(ctx, sample, body), timeout=5)
+                assert resp.status_code == 200, resp.text
+    finally:
+        await ctx["pool"].release(conn)
+
+
+async def test_patch_run_accession_staged_check_reads_under_the_run_lock(ctx):
+    """The ticket is read after the run lock is granted: one flipped to
+    `processing` while the PATCH waits is still caught, 409."""
+    sample = await _seed_accessioned_sample(ctx, "pra-under")
+    ticket_idx = await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.PENDING.value
+    )
+    etag = await _get_etag(ctx["wet"], sample["sequenced_sample_idx"])
+    conn = await ctx["pool"].acquire()
+    patch_task = None
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                POOL_RESOLVE_LOCK_CLASS,
+                sample["run_idx"] & INT4_MASK,
+            )
+            patch_task = asyncio.create_task(
+                _patch_sample(
+                    ctx, sample, {"ena_run_accession": unique_accession("ERR")}, etag=etag
+                )
+            )
+            await asyncio.wait_for(
+                _observed_waiter_on_run_lock(ctx["pool"], sample["run_idx"]), timeout=10
+            )
+            await conn.execute(
+                "UPDATE qiita.work_ticket SET state = $1 WHERE work_ticket_idx = $2",
+                WorkTicketState.PROCESSING.value,
+                ticket_idx,
+            )
+    finally:
+        await ctx["pool"].release(conn)
+        if patch_task is not None:
+            resp = await asyncio.wait_for(patch_task, timeout=30)
+    assert resp.status_code == 409, resp.text
+    assert await _stored_accession(ctx, sample) == sample["accession"]
+
+
+async def test_patch_run_accession_takes_run_lock_before_row_lock(ctx):
+    """Registration takes the run lock and then writes rows, so the PATCH must
+    wait on the run lock before locking the sample row; the reverse order can
+    deadlock against a registration inserting the same accession."""
+    sample = await _seed_accessioned_sample(ctx, "pra-order")
+    etag = await _get_etag(ctx["wet"], sample["sequenced_sample_idx"])
+    conn = await ctx["pool"].acquire()
+    patch_task = None
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                POOL_RESOLVE_LOCK_CLASS,
+                sample["run_idx"] & INT4_MASK,
+            )
+            patch_task = asyncio.create_task(
+                _patch_sample(
+                    ctx, sample, {"ena_run_accession": unique_accession("ERR")}, etag=etag
+                )
+            )
+            await asyncio.wait_for(
+                _observed_waiter_on_run_lock(ctx["pool"], sample["run_idx"]), timeout=10
+            )
+            await conn.execute(
+                "SELECT 1 FROM qiita.sequenced_sample ss"
+                " JOIN qiita.prep_sample ps ON ps.idx = ss.prep_sample_idx"
+                " WHERE ss.idx = $1 FOR UPDATE OF ss, ps NOWAIT",
+                sample["sequenced_sample_idx"],
+            )
+    finally:
+        await ctx["pool"].release(conn)
+        if patch_task is not None:
+            resp = await asyncio.wait_for(patch_task, timeout=30)
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.parametrize("same_value", [False, True])
+async def test_patch_run_accession_lock_timeout_maps_to_503(ctx, monkeypatch, same_value):
+    """A run lock held past the route's (shrunk) wait answers 503 with
+    Retry-After instead of a 500, and writes nothing; the same-value PATCH
+    waits too, since its compare happens under the lock."""
+    monkeypatch.setattr(sequenced_sample_routes, "_ROSTER_LOCK_WAIT_TIMEOUT_S", 0.3)
+    sample = await _seed_accessioned_sample(ctx, "pra-busy")
+    new = sample["accession"] if same_value else unique_accession("ERR")
+    etag = await _get_etag(ctx["wet"], sample["sequenced_sample_idx"])
+    conn = await ctx["pool"].acquire()
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1, $2)",
+                POOL_RESOLVE_LOCK_CLASS,
+                sample["run_idx"] & INT4_MASK,
+            )
+            resp = await asyncio.wait_for(
+                _patch_sample(ctx, sample, {"ena_run_accession": new}, etag=etag), timeout=10
+            )
+    finally:
+        await ctx["pool"].release(conn)
+
+    assert resp.status_code == 503, resp.text
+    assert resp.headers.get("retry-after") == sequenced_sample_routes._ROSTER_LOCK_RETRY_AFTER_S
+    assert await _stored_accession(ctx, sample) == sample["accession"]
