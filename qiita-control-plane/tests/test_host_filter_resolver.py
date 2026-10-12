@@ -440,8 +440,8 @@ async def test_negative_control_with_a_host_taxon_resolves_control(ctx):
 
 
 async def test_negative_control_with_no_host_taxon_row_resolves_control(ctx):
-    """Seeded by SQL on purpose: host_taxon_id is still required at import, but
-    once that gate goes (#344) a control with no row must stay CONTROL."""
+    """Seeded by SQL, since import requires host_taxon_id: the control check must
+    not depend on the host row existing."""
     bs_idx = await _make_biosample(ctx)
     await _set_control_term(ctx, bs_idx, BIOSAMPLE_FIELD_NEG_CONT_TYPE, "extraction blank")
 
@@ -496,6 +496,20 @@ async def test_control_qiita_sample_type_with_a_host_taxon_resolves_control(ctx,
     await _set_control_term(ctx, bs_idx, BIOSAMPLE_FIELD_QIITA_SAMPLE_TYPE, term_id)
 
     assert (await _resolve(ctx, bs_idx)).outcome is HostFilterOutcome.CONTROL
+
+
+async def test_control_reason_names_neg_cont_type_over_qiita_sample_type(ctx):
+    bs_idx = await _make_biosample(ctx)
+    await _set_control_term(ctx, bs_idx, BIOSAMPLE_FIELD_QIITA_SAMPLE_TYPE, "control_blank")
+    await _set_control_term(ctx, bs_idx, BIOSAMPLE_FIELD_NEG_CONT_TYPE, "sterile swab")
+
+    single = await _resolve(ctx, bs_idx)
+    batch = await resolve_host_filter_many(
+        ctx["pool"], biosample_idxs=[bs_idx], platform=Platform.ILLUMINA
+    )
+
+    assert single.reason.startswith(BIOSAMPLE_FIELD_NEG_CONT_TYPE)
+    assert batch[bs_idx] == single
 
 
 async def test_non_control_qiita_sample_type_is_not_a_control(ctx):

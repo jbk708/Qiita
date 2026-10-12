@@ -15,8 +15,7 @@ to the callers. Two seams it deliberately does not cross:
     rode in (the union of its neighbours' hosts). This module reports "this is a
     control" and stops; the pool-level union lives with the pool-level caller.
     A control is a real value on `neg_cont_type` / `pos_cont_type`, a control
-    `qiita_sample_type` term (negative: control_blank, control_sterile_water,
-    control_sea_water; positive: control_spike_in), or the legacy
+    `qiita_sample_type` term (the `_*_SAMPLE_TYPE_TERM_IDS` below), or the legacy
     `host_taxon_id` marker, and it wins over every `host_taxon_id` state.
 
   * It resolves reference IDENTITY, not on-disk READINESS. The returned idxs name
@@ -52,9 +51,6 @@ from .repositories.host_filter_profile import (
     list_host_filter_profiles,
 )
 
-# The columns every metadata read selects, shared by the single-sample and batch
-# paths so the two cannot drift into classifying different shapes.
-#
 # host_taxon_id is terminology-typed, so a value is only ever a term or a
 # missing-reason, which is why there is no free-text branch for it below.
 _METADATA_COLUMNS = (
@@ -101,13 +97,12 @@ class _Signals:
 async def _read_signals(
     conn: asyncpg.Pool | asyncpg.Connection, biosample_idxs: Sequence[int]
 ) -> _Signals:
-    """One query over the host and control fields, read via the trigger-maintained
-    global_field_idx so it is a cross-study read. The partial unique index
-    biosample_metadata_one_value_per_global_field means at most one host row per
-    biosample.
-    """
+    """One cross-study query (via the trigger-maintained global_field_idx) over the
+    host and control fields; ordered so the control field named is deterministic."""
     rows = await conn.fetch(
-        f"SELECT {_METADATA_COLUMNS}{_METADATA_FROM} WHERE bm.biosample_idx = ANY($2::bigint[])",
+        f"SELECT {_METADATA_COLUMNS}{_METADATA_FROM}"
+        " WHERE bm.biosample_idx = ANY($2::bigint[])"
+        " ORDER BY array_position($1::text[], bgf.internal_name)",
         _METADATA_FIELDS,
         list(biosample_idxs),
     )
@@ -258,8 +253,8 @@ async def resolve_host_filter_many(
     how many distinct hosts the pool spans.
 
     Every requested idx appears in the result. A biosample with no host_taxon_id
-    row is not silently dropped — it comes back UNRESOLVED, which is the whole
-    point of the fail-closed contract.
+    row is not silently dropped — unless metadata marks it a control, it comes back
+    UNRESOLVED, which is the whole point of the fail-closed contract.
     """
     # Coerce before anything else — see resolve_host_filter. It matters more here:
     # `profile_by_term` below is keyed on host_term_idx ALONE, which is only
@@ -293,16 +288,16 @@ def _classify(
     row: asyncpg.Record | None,
     profile: HostFilterProfile | None,
     platform: Platform,
-    control_field: str | None = None,
+    control_field: str | None,
 ) -> HostFilterResolution:
     """The whole decision, as a pure function of the facts it needs: the sample's
     host_taxon_id row (or its absence), the profile for whatever host that row
     names (or its absence), and the control field that marked it, if any.
 
-    Both the single-sample and batch entry points fetch those two facts their own
-    way — one round trip each vs. two queries for a whole pool — and then land
-    here. Keeping the branching in one place is what guarantees a pool roster and
-    a per-sample submit cannot disagree about the same sample.
+    Both the single-sample and batch entry points read those facts through
+    `_read_signals` and land here. Keeping the branching in one place is what
+    guarantees a pool roster and a per-sample submit cannot disagree about the same
+    sample.
     """
     if control_field is not None:
         return _without_references(

@@ -6,12 +6,12 @@
 
 ### Changed
 
-- **A control is now identified from sample metadata, ahead of `host taxon id` (#342).**
-  A real value on either new field, or a control `qiita sample type` term
-  (`control_blank`, `control_sterile_water`, `control_sea_water`, `control_spike_in`),
-  resolves CONTROL whatever the sample's host. A missing-value reason does not count.
-  `is_control_sample` (expected-empty wells) now also counts `negative control type`
-  and the three negative sample-type terms; positive controls resolve CONTROL for host
-  filtering but still read as failures on zero reads. `qiita-admin backfill host-taxon-id`
-  writes `missing: control sample` for negative controls found in metadata too; #344
-  sweeps those markers.
+- **A biosample is now recognised as a control from its own metadata, ahead of its
+  `host taxon id` (#342).** A real value on either new field, or a control
+  `qiita sample type` term (`control_blank`, `control_sterile_water`,
+  `control_sea_water`, `control_spike_in`), makes the biosample a control for host
+  filtering whatever its `host taxon id`; a missing-value reason does not count. A
+  negative control (`negative control type`, or one of the first three sample types)
+  that yields zero reads is a benign empty blank; a positive control that yields zero
+  reads still fails. `qiita-admin backfill host-taxon-id` writes
+  `missing: control sample` for negative controls found in metadata too.
