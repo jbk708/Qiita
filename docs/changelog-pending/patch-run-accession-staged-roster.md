@@ -1,6 +1,6 @@
 ### Fixed
 
-- **`PATCH /sequenced-sample/{idx}` refuses a changed `ena_run_accession` once the download could not pick it up (#626).**
+- **`PATCH /sequenced-sample/{idx}` refuses a changed `ena_run_accession` once the download could not pick it up (#689).**
   The change is refused with a 409 when the pool's latest `download-ena-study` ticket has read its run
   roster, when a failed ticket still has a live download job, or when the sequenced_sample's reads
   already have a `sequence_range` (the download reuses them rather than fetching the new run). The 409
