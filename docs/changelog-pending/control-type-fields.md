@@ -12,6 +12,7 @@
   `control_sea_water`, `control_spike_in`), makes the biosample a control for host
   filtering whatever its `host taxon id`; a missing-value reason does not count. A
   negative control (`negative control type`, or one of the first three sample types)
-  that yields zero reads is a benign empty blank; a positive control that yields zero
-  reads still fails. `qiita-admin backfill host-taxon-id` writes
-  `missing: control sample` for negative controls found in metadata too.
+  that yields zero reads is treated as an expected empty blank rather than a failure; a
+  positive control that yields zero reads still fails.
+  `qiita-admin backfill host-taxon-id` writes `missing: control sample` for negative
+  controls found in metadata too.

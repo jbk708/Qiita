@@ -97,8 +97,8 @@ class _Signals:
 async def _read_signals(
     conn: asyncpg.Pool | asyncpg.Connection, biosample_idxs: Sequence[int]
 ) -> _Signals:
-    """One cross-study query (via the trigger-maintained global_field_idx) over the
-    host and control fields; ordered so the control field named is deterministic."""
+    """One cross-study query (via the trigger-maintained global_field_idx) over the host
+    and control fields; `_METADATA_FIELDS` order sets which control field is named."""
     rows = await conn.fetch(
         f"SELECT {_METADATA_COLUMNS}{_METADATA_FROM}"
         " WHERE bm.biosample_idx = ANY($2::bigint[])"
@@ -294,7 +294,7 @@ def _classify(
     host_taxon_id row (or its absence), the profile for whatever host that row
     names (or its absence), and the control field that marked it, if any.
 
-    Both the single-sample and batch entry points read those facts through
+    Both the single-sample and batch entry points read the metadata through
     `_read_signals` and land here. Keeping the branching in one place is what
     guarantees a pool roster and a per-sample submit cannot disagree about the same
     sample.
