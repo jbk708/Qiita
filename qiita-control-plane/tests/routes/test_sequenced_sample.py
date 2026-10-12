@@ -5323,7 +5323,7 @@ async def _stored_accession(ctx, sample: dict) -> str | None:
 
 async def _seed_stored_reads(ctx, sample: dict, ticket_idx: int | None) -> None:
     """Mint the sequence_range `ingest_ena_reads` writes before it stores a
-    sample's reads; the control plane cannot see the read file itself."""
+    sequenced_sample's reads; the control plane cannot see the read file itself."""
     async with ctx["pool"].acquire() as conn:
         await mint_sequence_range(
             conn,
@@ -5366,6 +5366,25 @@ async def test_patch_run_accession_rejects_when_roster_staged(ctx, state):
         assert named in detail
     assert await _stored_accession(ctx, sample) == sample["accession"]
     assert await _get_etag(ctx["wet"], sample["sequenced_sample_idx"]) == etag
+
+
+async def test_patch_null_run_accession_rejects_when_roster_staged(ctx):
+    """Setting a NULL accession is a change too: refused once staged, and the
+    detail names the old run as "(none)"."""
+    sample = await _seed_accessioned_sample(ctx, "pra-null")
+    await ctx["pool"].execute(
+        "UPDATE qiita.sequenced_sample SET ena_run_accession = NULL WHERE idx = $1",
+        sample["sequenced_sample_idx"],
+    )
+    await _seed_download_ticket(
+        ctx, pool_idx=sample["pool_idx"], state=WorkTicketState.COMPLETED.value
+    )
+
+    resp = await _patch_sample(ctx, sample, {"ena_run_accession": unique_accession("ERR")})
+
+    assert resp.status_code == 409, resp.text
+    assert "keep run (none)" in resp.json()["detail"]
+    assert await _stored_accession(ctx, sample) is None
 
 
 @pytest.mark.parametrize(
@@ -5441,7 +5460,7 @@ async def test_patch_run_accession_failed_ticket_live_job(ctx, step, expected):
     [WorkTicketState.PENDING.value, WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value],
 )
 async def test_patch_run_accession_rejects_stored_reads_on_reread_ticket(ctx, state):
-    """`ingest_ena_reads` reuses a sample's stored reads by prep_sample_idx
+    """`ingest_ena_reads` reuses a sequenced_sample's stored reads by prep_sample_idx
     whatever its accession says, so a redrive or re-import would keep the old
     run: refused even on a ticket that will re-read the roster. The check keys
     on the sample's sequence_range, minted just before the read file is

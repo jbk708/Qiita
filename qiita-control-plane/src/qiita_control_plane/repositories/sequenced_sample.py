@@ -158,7 +158,7 @@ async def update_sequenced_sample(
     boundary rather than reaching SQL.
 
     An `ena_run_accession` write requires the caller to hold `lock_sequencing_run`
-    and to have refused a staged roster.
+    and to have refused a change the download could not pick up.
 
     Returns None on success and raises RuntimeError when the UPDATE
     matches zero rows. The route's FOR UPDATE preflight on the same

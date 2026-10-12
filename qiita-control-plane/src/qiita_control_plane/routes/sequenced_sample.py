@@ -209,7 +209,7 @@ async def _lock_run_or_503(conn: asyncpg.Connection, sequencing_run_idx: int) ->
 async def _refuse_run_accession_change_once_staged(
     conn: asyncpg.Connection, *, row: asyncpg.Record, sequencing_run_idx: int
 ) -> None:
-    """409 when changing this sample's run accession could not reach the download:
+    """409 when changing this sequenced_sample's run accession could not reach the download:
     the roster was read, a live job holds it, or the stored reads would be reused."""
     pool_idx = row["sequenced_pool_idx"]
     ticket = await fetch_pool_download_ticket(conn, sequenced_pool_idx=pool_idx)
