@@ -517,7 +517,7 @@ async def _stage_ena_run_roster(
     for an in-flight registration or native insert that already picked this
     pool to commit first (see the helper for the race that closes). This
     resolver also re-runs on a resume or a `/run` redrive, not only at first
-    dispatch, and a re-read can only add runs."""
+    dispatch, and a re-read may add runs or pick up a PATCHed run accession."""
     async with pool.acquire() as conn, conn.transaction():
         await lock_sequencing_run(conn, sequencing_run_idx=sequencing_run_idx)
         rows = await fetch_sequenced_pool_ena_run_roster(

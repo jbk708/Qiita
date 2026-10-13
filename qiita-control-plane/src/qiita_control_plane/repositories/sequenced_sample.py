@@ -116,6 +116,19 @@ async def fetch_sequenced_sample_with_prep_sample(
     return await pool_or_conn.fetchrow(sql, sequenced_sample_idx)
 
 
+async def fetch_sequenced_sample_pool_and_run(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, sequenced_sample_idx: int
+) -> asyncpg.Record | None:
+    """`sequenced_pool_idx` and `sequencing_run_idx` of a sequenced_sample; None on miss."""
+    return await pool_or_conn.fetchrow(
+        "SELECT ss.sequenced_pool_idx, sp.sequencing_run_idx"
+        " FROM qiita.sequenced_sample ss"
+        " JOIN qiita.sequenced_pool sp ON sp.idx = ss.sequenced_pool_idx"
+        " WHERE ss.idx = $1",
+        sequenced_sample_idx,
+    )
+
+
 # Columns the PATCH composer is allowed to write on the sequenced_sample
 # subtype row. Subtype-only per the v1 design decision: supertype
 # prep_sample fields will land via a future PATCH /prep-sample/{idx}
@@ -143,6 +156,9 @@ async def update_sequenced_sample(
     written, and explicit None sets the column to NULL. Unknown keys
     and an empty dict raise ValueError so misuse fails at the repo
     boundary rather than reaching SQL.
+
+    An `ena_run_accession` write requires the caller to hold `lock_sequencing_run`
+    and to have refused a change the download could not pick up.
 
     Returns None on success and raises RuntimeError when the UPDATE
     matches zero rows. The route's FOR UPDATE preflight on the same

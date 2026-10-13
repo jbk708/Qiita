@@ -8,12 +8,21 @@ import math
 import sqlite3
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 from qiita_common.api_paths import PATH_RUN_FOLDER_INSPECT, PATH_RUN_FOLDER_PREFIX
-from qiita_common.models import Platform, RunFolderInspectRequest, RunFolderInspectResponse
+from qiita_common.models import (
+    Platform,
+    RunFolderInspectRequest,
+    RunFolderInspectResponse,
+    WorkTicketFollowOn,
+)
 
 from .. import _common
+
+if TYPE_CHECKING:
+    from run_preflight.db import PlatformSampleInfo
 
 
 def _inspect_run_folder(
@@ -86,6 +95,39 @@ def _load_preflight_conn(
     return conn
 
 
+def _refuse_malformed_accessions(
+    info: PlatformSampleInfo, parser: argparse.ArgumentParser, preflight_blob: Path, idx_label: str
+) -> None:
+    """Refuse a pre-flight platform-sample row whose accessions are blank or padded.
+
+    The library refuses a NULL accession but not a blank or whitespace-padded one.
+    The accession lookup's request strips each value (`NonBlankText`), so a blank
+    one fails its validation with a traceback, and a padded one comes back keyed
+    on the stripped value and misses. `idx_label` names the sample-idx column in
+    the message.
+    """
+    accessions = {
+        "biosample_accession": [info.biosample_accession],
+        "primary_bioproject_accession": [info.primary_bioproject_accession],
+        "secondary_bioproject_accessions": info.secondary_bioproject_accessions,
+    }
+    bad = [
+        field
+        for field, values in accessions.items()
+        if any(not v.strip() or v != v.strip() for v in values)
+    ]
+    if bad:
+        parser.error(
+            f"--preflight-blob {preflight_blob}: {idx_label} {info.sample_idx} has a"
+            f" blank or padded {', '.join(bad)}; fix the pre-flight before re-submitting"
+        )
+
+
+def _validation_messages(exc: ValidationError) -> str:
+    """A ValidationError's errors flattened to one stderr line."""
+    return "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
+
+
 def _build_body(
     model_cls: type[BaseModel],
     args: argparse.Namespace,
@@ -114,8 +156,29 @@ def _build_body(
     try:
         return model_cls(**fields).model_dump(exclude_unset=True, mode="json", by_alias=True)
     except ValidationError as exc:
-        msgs = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
-        parser.error(f"invalid {model_cls.__name__}: {msgs}")
+        parser.error(f"invalid {model_cls.__name__}: {_validation_messages(exc)}")
+
+
+def _follow_on_from_args(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> WorkTicketFollowOn | None:
+    """The follow-on the `--then-*` flags name, or None when none was given.
+
+    Any `--then-*` flag needs both the action id and version; the context is
+    optional. The server checks the follow-on against its action when the
+    parent ticket is submitted."""
+    action_id, action_version = args.then_action_id, args.then_action_version
+    context = _common.parse_json_arg(args.then_context_json, parser, flag="--then-context-json")
+    if action_id is None and action_version is None and context is None:
+        return None
+    if action_id is None or action_version is None:
+        parser.error("a follow-on needs both --then-action-id and --then-action-version")
+    try:
+        return WorkTicketFollowOn(
+            action_id=action_id, action_version=action_version, action_context=context or {}
+        )
+    except ValidationError as exc:
+        parser.error(f"invalid follow-on: {_validation_messages(exc)}")
 
 
 def _fold_flag_values(
