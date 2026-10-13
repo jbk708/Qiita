@@ -23,7 +23,7 @@ _None yet._
 
 ### 3. Migrations
 
-_None yet._
+- `[operator]` (#685) `make migrate` applies `20261009000000_work_ticket_follow_on.sql` (three nullable columns on `qiita.work_ticket`, two CHECKs, one partial index; no backfill).
 
 ### 4. Deploy
 
@@ -39,7 +39,7 @@ _None yet._
 
 ### Notes (no host action)
 
-_None yet._
+- (#685) Work-ticket responses (`GET /work-ticket/{idx}` and the ticket lists) gain `on_success`, `follow_on_work_ticket_idx` and `follow_on_error` (all null for a ticket with no follow-on); clients validating that shape strictly must accept them.
 
 ## Deployed history
 

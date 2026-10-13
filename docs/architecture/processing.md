@@ -124,15 +124,20 @@ Work ticket fields (per `qiita.work_ticket` migration `20260504000001_work_ticke
 - `action_id`, `action_version` — FK into `qiita.action`; pin the exact action definition this ticket was submitted against
 - `originator_principal_idx` — submitter; FK into `qiita.principal`
 - `scope_target_kind` plus one of `(study_idx, prep_idx)` or `reference_idx` — tagged-union scope target, governed by the `work_ticket_scope_target_consistent` CHECK
+- `shard_id` — the sharded-index fan-out discriminant; non-NULL only on a reference-scope ticket, NULL on every other kind (CHECK enforced)
+- `mask_idx` — the read-mask ticket's minted mask (FK to `qiita.mask_definition`); NULL on a ticket that mints no mask
 - `action_context` — JSONB validated at submission against `action.context_schema`
 - `state` — `pending` / `queued` / `processing` / `completed` / `failed`
 - `retry_count` — number of retry attempts so far (incremented on each PROCESSING → QUEUED retry)
 - `max_retries` — per-ticket retry budget (default 3, max 100)
+- `transient_reason` / `transient_since` — set while the runner is retrying a step in place: the reason, and when the current in-place retry began; both NULL when the ticket is not mid-retry
 - `failure_type` — `retriable` or `permanent`; non-NULL on FAILED, NULL otherwise (CHECK enforced)
 - `failure_stage` — coarse stage enum: `submission` / `step_run` / `finalize`
 - `failure_step_name` — YAML step name when `failure_stage = step_run`; NULL otherwise (CHECK enforced)
 - `failure_reason` — human-readable explanation
 - `created_at`, `updated_at` — timestamps
+- `on_success` — an optional follow-on `{action_id, action_version, action_context}` the control plane submits as the originator, on the same scope target, once the ticket COMPLETES (`qiita_control_plane.follow_on`; human submitters only). A follow-on may nest its own `on_success`: the created ticket arms the next link when it completes, so one submission runs a chain of stages in order (at most `MAX_FOLLOW_ON_CHAIN_DEPTH` deep). Each ticket still has exactly one immediate follow-on, so the outcome columns below are unchanged
+- `follow_on_work_ticket_idx` / `follow_on_error` — the follow-on's outcome, at most one set: the ticket it created (recorded in that ticket's INSERT transaction, so it is created at most once), or why it was refused
 
 The schema does not carry per-step provenance fields (slurm_job_id, log paths, current_step / total_steps, provenance JSONB, completed_at). The runner is synchronous and waits inline for each step; SLURM-side log retrieval is on the orchestrator and not surfaced on the work_ticket row.
 
@@ -162,7 +167,11 @@ completed (rebuilding their `bound` outputs from the shared workspace),
 re-attaches a still-running SLURM job by its persisted `slurm_job_id` (or
 adopts an orphan by its deterministic name via `find-by-name`), finalizes a
 job that succeeded during the outage, and decides a purged job from its
-on-disk output manifest. This is the deliberate consequence of deploys
+on-disk output manifest. The startup hook then calls `reconcile_follow_ons`,
+which submits the follow-on of every completed ticket that records no outcome
+(one that completed while no process ran its completion hook, or whose
+submission failed with anything but a refusal). That is the only retry: such a
+follow-on waits for the next CP start. This is the deliberate consequence of deploys
 stopping/starting CP+CO without draining — a restart with live in-flight
 work is routine, so it must never nuke running jobs (the pre-decoupling
 `recover_orphaned_tickets` blanket-failed them). The reconcile assumes no
