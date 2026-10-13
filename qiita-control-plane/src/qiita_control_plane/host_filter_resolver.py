@@ -29,8 +29,9 @@ UNRESOLVED rather than to "no filtering". Silently passing an un-depleted human
 sample through is the one outcome we cannot take back.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 
 import asyncpg
 from qiita_common.models import (
@@ -84,6 +85,35 @@ _NEGATIVE_SAMPLE_TYPE_TERM_IDS = frozenset(
 _POSITIVE_SAMPLE_TYPE_TERM_IDS = frozenset({"control_spike_in"})
 
 
+class _ControlKind(Enum):
+    NEGATIVE = "negative"
+    POSITIVE = "positive"
+
+
+def _neg_cont_type_kind(row: asyncpg.Record) -> _ControlKind | None:
+    return _ControlKind.NEGATIVE
+
+
+def _pos_cont_type_kind(row: asyncpg.Record) -> _ControlKind | None:
+    return _ControlKind.POSITIVE if (row["value_text"] or "").strip() else None
+
+
+def _qiita_sample_type_kind(row: asyncpg.Record) -> _ControlKind | None:
+    if row["term_id"] in _NEGATIVE_SAMPLE_TYPE_TERM_IDS:
+        return _ControlKind.NEGATIVE
+    if row["term_id"] in _POSITIVE_SAMPLE_TYPE_TERM_IDS:
+        return _ControlKind.POSITIVE
+    return None
+
+
+# Each control field's reading of a value that carries no missing reason.
+_CONTROL_KIND_BY_FIELD: dict[str, Callable[[asyncpg.Record], _ControlKind | None]] = {
+    BIOSAMPLE_FIELD_NEG_CONT_TYPE: _neg_cont_type_kind,
+    BIOSAMPLE_FIELD_POS_CONT_TYPE: _pos_cont_type_kind,
+    BIOSAMPLE_FIELD_QIITA_SAMPLE_TYPE: _qiita_sample_type_kind,
+}
+
+
 @dataclass
 class _Signals:
     """What one metadata read says about a set of biosamples."""
@@ -115,20 +145,11 @@ async def _read_signals(
             continue
         if row["value_missing_reason_idx"] is not None:
             continue
-        if name == BIOSAMPLE_FIELD_NEG_CONT_TYPE:
-            negative = True
-        elif name == BIOSAMPLE_FIELD_POS_CONT_TYPE:
-            if not (row["value_text"] or "").strip():
-                continue
-            negative = False
-        elif row["term_id"] in _NEGATIVE_SAMPLE_TYPE_TERM_IDS:
-            negative = True
-        elif row["term_id"] in _POSITIVE_SAMPLE_TYPE_TERM_IDS:
-            negative = False
-        else:
+        kind = _CONTROL_KIND_BY_FIELD[name](row)
+        if kind is None:
             continue
         signals.control_field.setdefault(idx, name)
-        if negative:
+        if kind is _ControlKind.NEGATIVE:
             signals.negative.add(idx)
     return signals
 
@@ -208,9 +229,10 @@ async def negative_control_biosamples(
     """The subset of `biosample_idxs` that is an expected-empty (negative) control by
     metadata: a real `neg_cont_type`, or a negative `qiita_sample_type` term.
     """
-    if not biosample_idxs:
-        return set()
-    return (await _read_signals(conn, biosample_idxs)).negative
+    negative: set[int] = set()
+    if biosample_idxs:
+        negative = (await _read_signals(conn, biosample_idxs)).negative
+    return negative
 
 
 async def is_control_sample(
@@ -293,11 +315,6 @@ def _classify(
     """The whole decision, as a pure function of the facts it needs: the sample's
     host_taxon_id row (or its absence), the profile for whatever host that row
     names (or its absence), and the control field that marked it, if any.
-
-    Both the single-sample and batch entry points read the metadata through
-    `_read_signals` and land here. Keeping the branching in one place is what
-    guarantees a pool roster and a per-sample submit cannot disagree about the same
-    sample.
     """
     if control_field is not None:
         return _without_references(
