@@ -1492,7 +1492,7 @@ def _days_ago(value: str) -> datetime:
             return datetime.now(UTC) - timedelta(days=days)
     except ValueError, OverflowError:
         pass
-    raise argparse.ArgumentTypeError(f"{value!r} is not a usable positive number of days")
+    raise argparse.ArgumentTypeError(f"{value!r} must be a positive whole number of days")
 
 
 def _gib(n: int) -> str:

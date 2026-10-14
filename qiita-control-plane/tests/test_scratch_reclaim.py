@@ -2,7 +2,6 @@ import os
 
 import pytest
 
-from qiita_control_plane import scratch_reclaim
 from qiita_control_plane.routes.work_ticket import _RUN_APPLICABLE_STATES
 from qiita_control_plane.scratch_reclaim import (
     RECLAIMABLE_STATES,
@@ -54,7 +53,7 @@ def test_a_file_that_cannot_be_unlinked_does_not_stop_the_other_attempts(tmp_pat
             raise PermissionError(13, "denied", path)
         real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(scratch_reclaim.os, "unlink", unlink)
+    monkeypatch.setattr(os, "unlink", unlink)
 
     errors = reclaim_workspace(tmp_path, 7)
 
