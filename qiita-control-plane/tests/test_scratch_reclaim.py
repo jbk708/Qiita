@@ -122,19 +122,86 @@ def test_measure_reports_the_inodes_the_reclaim_leaves_behind(tmp_path):
     assert usage.inodes > usage.kept_inodes
 
 
+def _lock_tree(root):
+    for dirpath, dirnames, _ in os.walk(root, topdown=False):
+        for d in dirnames:
+            os.chmod(os.path.join(dirpath, d), 0o550)
+
+
+def _unlock_tree(root):
+    for dirpath, dirnames, _ in os.walk(root):
+        os.chmod(dirpath, 0o700)
+        for d in dirnames:
+            os.chmod(os.path.join(dirpath, d), 0o700)
+
+
+@pytest.fixture
+def unlock_after(tmp_path):
+    yield
+    _unlock_tree(tmp_path)
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
-def test_a_subtree_that_cannot_be_deleted_is_reported_and_the_rest_still_goes(tmp_path):
+def test_read_only_container_output_dirs_are_reclaimed_and_logs_untouched(tmp_path, unlock_after):
+    ticket = _make_ticket(tmp_path, 7, attempts=1)
+    attempt_dir = ticket / "align" / "attempt-1"
+    nested = attempt_dir / "output" / "ConvertJob" / "Reports"
+    nested.mkdir(parents=True)
+    (nested / "r.txt").write_text("x")
+    _lock_tree(attempt_dir / "output")
+    logs_mode = (attempt_dir / "logs").stat().st_mode
+
+    assert reclaim_workspace(tmp_path, 7) == []
+
+    assert sorted(p.name for p in attempt_dir.iterdir()) == ["logs"]
+    assert (attempt_dir / "logs" / "stdout").exists()
+    assert (attempt_dir / "logs").stat().st_mode == logs_mode
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_dir_that_cannot_be_made_writable_is_reported_and_the_rest_still_goes(
+    unlock_after, tmp_path, monkeypatch
+):
     ticket = _make_ticket(tmp_path, 7, attempts=1)
     attempt_dir = ticket / "align" / "attempt-1"
     locked = attempt_dir / "output" / "locked"
     locked.mkdir()
     (locked / "f").write_text("x")
     locked.chmod(0o500)
-    try:
-        errors = reclaim_workspace(tmp_path, 7)
-    finally:
-        locked.chmod(0o700)
+    real_chmod = os.chmod
+
+    def chmod(path, mode, *args, **kwargs):
+        if os.path.basename(path) == "locked":
+            raise PermissionError(1, "not permitted", path)
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", chmod)
+
+    errors = reclaim_workspace(tmp_path, 7)
 
     assert errors and any("locked" in e for e in errors)
+    assert (locked / "f").exists()
     assert not (attempt_dir / "tmp").exists()
+    assert (attempt_dir / "logs" / "stdout").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_a_read_only_dir_the_user_does_not_own_is_reported_not_chmodded(
+    unlock_after, tmp_path, monkeypatch
+):
+    ticket = _make_ticket(tmp_path, 7, attempts=1)
+    attempt_dir = ticket / "align" / "attempt-1"
+    locked = attempt_dir / "output" / "locked"
+    locked.mkdir()
+    (locked / "f").write_text("x")
+    locked.chmod(0o500)
+    monkeypatch.setattr(os, "geteuid", lambda: os.stat(locked).st_uid + 1)
+    chmods = []
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: chmods.append(a))
+
+    errors = reclaim_workspace(tmp_path, 7)
+
+    assert errors and any("locked" in e for e in errors)
+    assert chmods == []
+    assert (locked / "f").exists()
     assert (attempt_dir / "logs" / "stdout").exists()

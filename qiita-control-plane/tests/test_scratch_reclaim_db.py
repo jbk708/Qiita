@@ -311,7 +311,20 @@ async def test_a_ticket_the_syndna_backfill_would_still_write_is_skipped_and_rep
     assert [t.work_ticket_idx for t in result.reclaimed] == [free]
 
 
-async def test_a_workspace_that_cannot_be_deleted_is_a_failure_and_the_rest_still_goes(world):
+def _deny_chmod_on_locked(m):
+    real_chmod = os.chmod
+
+    def chmod(path, mode, *args, **kwargs):
+        if os.path.basename(path) == "locked":
+            raise PermissionError(1, "not permitted", path)
+        real_chmod(path, mode, *args, **kwargs)
+
+    m.setattr(os, "chmod", chmod)
+
+
+async def test_a_workspace_that_cannot_be_deleted_is_a_failure_and_the_rest_still_goes(
+    world, monkeypatch
+):
     if os.geteuid() == 0:
         pytest.skip("root ignores directory permissions")
     pool = world["pool"]
@@ -322,7 +335,10 @@ async def test_a_workspace_that_cannot_be_deleted_is_a_failure_and_the_rest_stil
     (locked / "f").write_text("x")
     locked.chmod(0o500)
     try:
-        result = await apply_reclaim(pool, await _plan(world))
+        plan = await _plan(world)
+        with monkeypatch.context() as m:
+            _deny_chmod_on_locked(m)
+            result = await apply_reclaim(pool, plan)
     finally:
         locked.chmod(0o700)
 
@@ -385,14 +401,16 @@ async def test_execute_exits_1_when_a_workspace_fails_and_still_reclaims_the_res
     (locked / "f").write_text("x")
     locked.chmod(0o500)
     try:
-        rc = await _cli(
-            monkeypatch,
-            postgres_url,
-            world["root"],
-            "--action-id",
-            world["action_id"],
-            "--execute",
-        )
+        with monkeypatch.context() as m:
+            _deny_chmod_on_locked(m)
+            rc = await _cli(
+                m,
+                postgres_url,
+                world["root"],
+                "--action-id",
+                world["action_id"],
+                "--execute",
+            )
     finally:
         locked.chmod(0o700)
 
