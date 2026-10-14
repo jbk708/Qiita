@@ -573,6 +573,15 @@ async def test_item_run_list_must_be_nonempty(eib):
             )
 
 
+async def test_batch_holds_at_most_one_ungrouped_item(eib):
+    batch_idx, _ = await _new_run_list_item(eib, ["ERR1"])
+    async with eib["pool"].acquire() as conn, conn.transaction():
+        with pytest.raises(asyncpg.UniqueViolationError, match="one_ungrouped_per_batch"):
+            await insert_ena_import_batch_item(
+                conn, batch_idx=batch_idx, requested_run_accessions=["ERR2"]
+            )
+
+
 async def test_split_run_list_item_keeps_the_original_row_as_the_first_group(eib):
     pool = eib["pool"]
     batch_idx, item_idx = await _new_run_list_item(eib, ["ERR1", "ERR2", "ERR3"])

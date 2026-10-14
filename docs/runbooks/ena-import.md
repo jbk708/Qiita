@@ -13,12 +13,13 @@ specific to importing from ENA.
 
 A single admin-facing call kicks off a **batch**: a list of INSDC study accessions
 (`PRJNA…`, `PRJEB…`, `PRJDB…`, `ERP…`, `SRP…`, `DRP…`), or run accessions (see
-[Importing chosen runs](#importing-chosen-runs)). Each accession in the batch is
+[Importing chosen runs](#importing-chosen-runs)). Each study in the batch is
 processed independently, with bounded concurrency, in three phases. That bound is shared
 by every batch running in the control plane at once, first come first served: a later
-batch's accessions are not admitted until every accession of every batch submitted before
+batch's studies are not admitted until every study of every batch submitted before
 it has itself been admitted, so a busy batch can make a newly submitted one wait for it
-to clear the gate first.
+to clear the gate first. Listed runs join that queue only once they are resolved and
+grouped by study, behind anything already waiting.
 
 1. **Resolve** — the study's header, run list, and per-sample attributes are pulled
    from ENA (via the `duckdb-miint` `read_ena` / `read_ena_attributes` table
@@ -75,13 +76,13 @@ whole-study import, so the same import-created-study guard applies.
 - **One unresolved run fails the whole item.** A run ENA does not return, or returns
   non-public, fails the ungrouped item with a reason naming every such run, and nothing is
   registered. Fix the list and resubmit.
-- **Before and after a whole-study import.** A later whole-study import of the same study
-  skips the runs already present and registers the rest. A whole-study accession in the
+- **Alongside a whole-study import.** A whole-study import of the same study, earlier or
+  later, skips the runs already present and registers the rest. A whole-study accession in the
   same batch that exactly matches a run's study absorbs those runs, so no item is
   duplicated; if every run is absorbed the run-list item fails naming the absorbing
   accessions. The match is on the exact string, so an `ERP…` whole-study item alongside
-  runs whose study reads `PRJEB…` becomes two items for one study. That is safe under the
-  sequencing_run lock, the same as two concurrent batches.
+  runs whose study reads `PRJEB…` becomes two items for one study. Each run is still
+  registered once, the same as with two concurrent batches.
 - **Only its own pools are ticketed.** A run-list item submits or reuses a download ticket
   only for pools holding its runs; re-import the whole study to retry other failed pools.
 - **A failed pool's other runs download too.** New runs go into the newest pool without a
@@ -129,9 +130,10 @@ ena_study_accession='ERP1': study 42 has bioproject_accession 'PRJNA2'` — it d
 say the import was refused. Fix the accession passed to the import, or the study's
 recorded value, then re-import.
 
-A failure in any one accession — an unmappable platform, a resolver error, a database
-conflict — is recorded on that accession alone; it never aborts the batch or its
-sibling accessions. Poll with `qiita ena-import-status IDX` to see each accession's
+A failure in any one item — an unmappable platform, a resolver error, a database
+conflict — is recorded on that item alone; it never aborts the batch or its
+sibling items. Listed runs are the exception: one unresolved run fails them all (see
+[Importing chosen runs](#importing-chosen-runs)). Poll with `qiita ena-import-status IDX` to see each accession's
 state and, on failure, the reason.
 
 ### Non-public studies and runs
@@ -222,12 +224,13 @@ did.
 ### REST surface
 
 - `POST /api/v1/ena-import-batch` — body: `{accessions: [...]}`. Returns `202` immediately with a batch
-  handle and every accession at its initial `pending` state; the resolve/register/
+  handle and one `pending` item per study accession, plus one with a null
+  `ena_study_accession` holding every run accession; the resolve/register/
   submit work for the whole batch runs in the background. **Admin-only**
   (wet_lab_admin or system_admin) — this is an operator gesture, not something an
   end user submits, mirroring bcl-convert's own admin-only submission.
-- `GET /api/v1/ena-import-batch/{idx}` — the batch's current, rolled-up per-accession
-  status: `pending` / `resolving` / `registered` / `downloading` / `done` / `failed`,
+- `GET /api/v1/ena-import-batch/{idx}` — the batch's current, rolled-up per-item
+  status (the run item has been split into one item per study once its runs resolve): `pending` / `resolving` / `registered` / `downloading` / `done` / `failed`,
   with `study_idx` and the download ticket idx(s) once resolved, and a
   `failure_reason` on any `failed` item. An item whose download ticket failed or was
   cancelled reports `failed`. Also admin-only.

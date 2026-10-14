@@ -1,18 +1,20 @@
 """Batch multi-study ENA import driver.
 
 `create_ena_import_batch` INSERTs one `qiita.ena_import_batch` row plus one
-`pending` `ena_import_batch_item` per accession and returns immediately (the
-route responds 202). `schedule_ena_import_batch` fires ONE background task on
-this module's own tracked set `app.state.running_ena_import_batches` (mirroring
+`pending` `ena_import_batch_item` per study accession and one for all run
+accessions, and returns immediately (the route responds 202).
+`schedule_ena_import_batch` fires ONE background task on this module's own
+tracked set `app.state.running_ena_import_batches` (mirroring
 `dispatch.py`'s `running_dispatches`; separate because this task drives
 `register_ena_study` + `submit_work_ticket_core` directly, not a
 `ComputeBackendClient` workflow run).
 
 The task (`_run_batch`) processes every item under the process-wide bound
-`_STUDY_CONCURRENCY`. Each item (`_process_one_study`): resolve
+`_STUDY_CONCURRENCY`. The run-list item is first split into one item per study
+(`_expand_run_list_item`). Each study item (`_process_one_study`): resolve
 (blocking calls under `asyncio.to_thread`) -> `_reconcile_held_run_availability`
 -> `register_ena_study` -> one `download-ena-study` ticket per pool holding
-the study's runs, reused when one already covers the pool and otherwise
+the item's runs, reused when one already covers the pool and otherwise
 submitted in-process through `submit_work_ticket_core` with the BATCH's
 submitting principal (so the ticket's audience gate is enforced against a
 real principal). One accession's failure marks only that item `failed`.
@@ -29,7 +31,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -52,7 +53,6 @@ from ..repositories.ena_import_batch import (
     ena_import_created_study,
     fetch_ena_import_batch_items,
     fetch_inflight_ena_import_batch_items,
-    fetch_sequenced_pool_idxs_for_sequenced_samples,
     fetch_sequenced_samples_missed_by_completed_download,
     fetch_work_ticket_states_for_idxs,
     insert_ena_import_batch,
@@ -66,6 +66,7 @@ from ..repositories.ena_import_batch import (
 from ..repositories.sequenced_sample import (
     fetch_held_ena_run_accessions_for_study,
     fetch_non_terminal_work_tickets_for_sequenced_sample,
+    fetch_sequenced_pool_idxs_for_sequenced_samples,
     update_sequenced_sample_ena_status,
 )
 from ..repositories.study import (
@@ -132,9 +133,7 @@ _SUCCESSFUL_RUN_REGISTRATION_STATUSES = frozenset(
 
 @dataclass(frozen=True)
 class BatchImportItemHandle:
-    """One item's identity, threaded from `create_ena_import_batch` into
-    `_process_one_study`. Deliberately thinner than the `BatchImportItem` wire
-    shape."""
+    """One item's identity within its batch; thinner than the `BatchImportItem` wire shape."""
 
     idx: int
     batch_idx: int
@@ -153,8 +152,8 @@ async def create_ena_import_batch(
 
     Validates every accession's shape up front (fail-loud, before any write) so
     a batch with one garbage accession never partially lands. Returns the batch
-    idx and item handles in submitted order; the route fires the background task
-    next.
+    idx and item handles, studies in submitted order then the run-list item; the
+    route fires the background task next.
     """
     # De-duplicate, order-preserving: a repeated accession in one request would
     # otherwise fan out concurrent items registering the same study.
@@ -312,7 +311,7 @@ async def _reconcile_held_run_availability(
     newly flagged or re-confirmed unavailable -- not per run merely checked or
     cleared, so a report distinguishes "still fine" from "flagged".
 
-    `only_runs` limits the check to those held runs, for an import that read just them.
+    `only_runs` limits the check to those held runs.
     """
     held = await fetch_held_ena_run_accessions_for_study(pool, study_idx=study_idx)
     if only_runs is not None:
@@ -400,9 +399,8 @@ async def _fail_after_held_run_check(
     """Fail an item with nothing new to register: the study is absent, not
     public, or has no public runs. The Portal drops non-public runs, so "every
     run suppressed" arrives as one of these; an import-created study's held
-    runs are re-checked first, and the failure names any flagged. A run-list item
-    re-checks nothing: it read only its own runs.
-    """
+    runs are re-checked first, and the failure names any flagged."""
+    # A run-list item read only its own runs, so there is nothing to re-check.
     if item.requested_run_accessions is not None:
         await _set_item_state(pool, item.idx, BatchItemState.FAILED, failure_reason=failure_reason)
         return
@@ -480,6 +478,8 @@ async def _process_one_study(
                     resolver.resolve_ena_runs, item.ena_study_accession
                 )
             else:
+                # Re-resolved rather than handed down from expansion: a restart re-drives
+                # a split item from its row alone.
                 ena_runs = await asyncio.to_thread(resolver.resolve_runs, requested)
             no_runs_reason = None
         except EnaAccessionNotFoundError as exc:
@@ -766,7 +766,7 @@ async def _expand_run_list_item(
             )
             for idx, (study, runs) in zip(idxs, groups, strict=True)
         ]
-    except Exception as exc:  # noqa: BLE001 -- item isolation, as in _process_one_study.
+    except Exception as exc:  # noqa: BLE001 -- item isolation.
         _log.warning("ena_import_batch run-list item %d failed: %s", item.idx, exc)
         await _set_item_state(pool, item.idx, BatchItemState.FAILED, failure_reason=str(exc))
         return []
@@ -788,7 +788,7 @@ async def _run_batch(
     semaphore: asyncio.Semaphore,
 ) -> None:
     """Process every item against the process-wide `semaphore`. Never raises --
-    each item's own try/except in `_process_one_study` absorbs its failure."""
+    each item's own try/except absorbs its failure."""
 
     async def _bounded(item: BatchImportItemHandle) -> None:
         if item.ena_study_accession is None:
@@ -883,7 +883,7 @@ async def reconcile_inflight_batches(app: FastAPI) -> int:
                 idx=r["idx"],
                 batch_idx=batch_idx,
                 ena_study_accession=r["ena_study_accession"],
-                requested_run_accessions=_as_list(r["requested_run_accessions"]),
+                requested_run_accessions=r["requested_run_accessions"],
             )
             for r in batch_rows
         ]
@@ -899,10 +899,6 @@ async def reconcile_inflight_batches(app: FastAPI) -> int:
         )
         total += len(items)
     return total
-
-
-def _as_list(value: Sequence[str] | None) -> list[str] | None:
-    return None if value is None else list(value)
 
 
 async def fetch_batch_status(pool: asyncpg.Pool, *, batch_idx: int) -> BatchImportStatus | None:
@@ -955,7 +951,7 @@ async def fetch_batch_status(pool: asyncpg.Pool, *, batch_idx: int) -> BatchImpo
             BatchImportItem(
                 idx=row["idx"],
                 ena_study_accession=row["ena_study_accession"],
-                requested_run_accessions=_as_list(row["requested_run_accessions"]),
+                requested_run_accessions=row["requested_run_accessions"],
                 state=state,
                 study_idx=row["study_idx"],
                 failure_reason=failure_reason,

@@ -121,7 +121,7 @@ class MiintEnaResolver:
                 f"no public ENA runs found for {run_accessions!r}"
                 " (nonexistent, or not yet/no longer public)"
             )
-        return [EnaRunRecord(**dict(zip(columns, row, strict=True))) for row in rows]
+        return [EnaRunRecord.model_validate(dict(zip(columns, row, strict=True))) for row in rows]
 
     def resolve_sample_attributes_for_samples(
         self, sample_accessions: list[str]

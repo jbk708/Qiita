@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class BatchItemState(StrEnum):
-    """Per-accession lifecycle within one ena_import_batch.
+    """Per-item lifecycle within one ena_import_batch.
 
     pending -> resolving -> registered -> downloading -> done, with `failed`
     reachable from any non-terminal step. `done` is a rolled-up display state
@@ -72,7 +72,7 @@ class EnaRunImportOutcome(BaseModel):
 
 
 class BatchImportItem(BaseModel):
-    """One accession's current state within a batch.
+    """One item's current state within a batch: a whole study, or a list of runs.
 
     `ena_study_accession` is null only on a run-list item not yet grouped by study;
     `requested_run_accessions` is null for a whole-study item.

@@ -439,7 +439,6 @@ def test_resolve_listed_runs_makes_one_seam_call_with_the_list(monkeypatch):
 
 
 def test_resolve_listed_runs_returns_a_partial_result_without_raising(monkeypatch):
-    """The caller diffs against its request; an unresolved run is its call to make."""
     from qiita_control_plane.ena_import.miint_resolver import MiintEnaResolver
 
     columns, rows = _load_fixture("ena_runs.json")
