@@ -64,7 +64,8 @@ async def split_run_list_item(
     (first_accession, first_runs), *rest = groups
     batch_idx = await conn.fetchval(
         "UPDATE qiita.ena_import_batch_item"
-        " SET ena_study_accession = $2, requested_run_accessions = $3"
+        " SET ena_study_accession = $2, requested_run_accessions = $3,"
+        "     state = 'pending', failure_reason = NULL"
         " WHERE idx = $1 AND ena_study_accession IS NULL RETURNING batch_idx",
         item_idx,
         first_accession,
