@@ -1,5 +1,4 @@
-"""DB tests for `qiita-admin scratch reclaim`: which tickets are eligible, the re-check at
-apply time, the lock, and orphan workspaces. Assertions are about this test's own tickets."""
+"""Assertions are about this test's own tickets; the DB is shared with other tests."""
 
 import asyncio
 import os
@@ -29,6 +28,7 @@ from qiita_control_plane.testing.db_seeds import (
     seed_action_if_absent,
     seed_user_principal,
 )
+from qiita_control_plane.testing.db_teardown import delete_principal
 
 pytestmark = pytest.mark.db
 
@@ -137,6 +137,7 @@ async def world(postgres_pool, tmp_path):
         "action_id": action_id,
         "ticket": ticket,
         "new_pool": new_pool,
+        "owner": owner,
     }
 
     await pool.execute(
@@ -147,6 +148,7 @@ async def world(postgres_pool, tmp_path):
         await pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
     for action, version, was_created in created:
         await delete_action_if_created(pool, action_id=action, version=version, created=was_created)
+    await delete_principal(pool, owner)
 
 
 def make_workspace(root, idx):
@@ -155,6 +157,12 @@ def make_workspace(root, idx):
         (attempt / sub).mkdir(parents=True, exist_ok=True)
         (attempt / sub / name).write_bytes(b"x" * 10)
     return attempt
+
+
+def tree(root) -> list[tuple[str, int]]:
+    return sorted(
+        (str(p.relative_to(root)), p.stat().st_size if p.is_file() else -1) for p in root.rglob("*")
+    )
 
 
 def kept(root, idx) -> bool:
@@ -183,6 +191,7 @@ async def test_only_completed_and_no_data_tickets_past_the_cutoff_are_selected(w
     others = [
         await ticket(state) for state in ("pending", "queued", "processing", "failed", "cancelled")
     ]
+    # A new state has to be classified for reclaim before this passes again.
     assert {s.value for s in WorkTicketState} == {
         "pending",
         "queued",
@@ -322,6 +331,23 @@ async def test_a_workspace_that_cannot_be_deleted_is_a_failure_and_the_rest_stil
     assert not kept(world["root"], fine)
 
 
+async def test_a_workspace_that_cannot_be_measured_is_reported_and_the_rest_still_planned(world):
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    stuck = await world["ticket"]("completed")
+    fine = await world["ticket"]("completed")
+    sealed = world["root"] / str(stuck) / "step" / "attempt-1" / "output"
+    sealed.chmod(0o000)
+    try:
+        plan = await _plan(world)
+    finally:
+        sealed.chmod(0o700)
+
+    by_idx = {t.work_ticket_idx: t for t in plan.tickets}
+    assert by_idx[stuck].error and by_idx[fine].error is None
+    assert by_idx[fine].usage.total_bytes == 30
+
+
 async def _cli(monkeypatch, postgres_url, root, *args):
     monkeypatch.setenv("DATABASE_URL", postgres_url)
     monkeypatch.setenv("PATH_SCRATCH", str(root.parent))
@@ -336,9 +362,10 @@ async def test_a_dry_run_changes_nothing_and_execute_deletes(
 ):
     idx = await world["ticket"]("completed", updated_at=_LONG_AGO)
     base = ["--action-id", world["action_id"]]
+    before = tree(world["root"])
 
     assert await _cli(monkeypatch, postgres_url, world["root"], *base) == 0
-    assert kept(world["root"], idx)
+    assert tree(world["root"]) == before
     assert "DRY RUN" in capsys.readouterr().out
 
     assert await _cli(monkeypatch, postgres_url, world["root"], *base, "--execute") == 0
@@ -445,7 +472,6 @@ async def test_an_orphan_whose_row_appears_before_apply_is_not_deleted(world):
     plan = await _plan(world)
     assert [o.work_ticket_idx for o in plan.orphans] == [idx]
 
-    owner = await seed_user_principal(pool, prefix="reclaim", suffix="late")
     pool_idx = await world["new_pool"]()
     await pool.execute(
         "INSERT INTO qiita.work_ticket (work_ticket_idx, action_id, action_version,"
@@ -455,7 +481,7 @@ async def test_an_orphan_whose_row_appears_before_apply_is_not_deleted(world):
         idx,
         world["action_id"],
         _VERSION,
-        owner,
+        world["owner"],
         pool_idx,
     )
     try:

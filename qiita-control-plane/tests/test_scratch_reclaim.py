@@ -1,10 +1,8 @@
-"""Filesystem tests for the scratch workspace reclaim: what is deleted, what is kept, how
-bytes are counted, and that nothing outside the ticket's own directory is touched."""
-
 import os
 
 import pytest
 
+from qiita_control_plane import scratch_reclaim
 from qiita_control_plane.routes.work_ticket import _RUN_APPLICABLE_STATES
 from qiita_control_plane.scratch_reclaim import (
     RECLAIMABLE_STATES,
@@ -15,7 +13,6 @@ from qiita_control_plane.scratch_reclaim import (
 
 def test_no_reclaimable_state_can_be_run_again():
     assert not set(RECLAIMABLE_STATES) & set(_RUN_APPLICABLE_STATES)
-    assert set(RECLAIMABLE_STATES) == {"completed", "no_data"}
 
 
 def _make_ticket(root, idx, *, attempts=2):
@@ -46,6 +43,25 @@ def test_reclaim_keeps_every_attempts_logs_and_removes_the_rest(tmp_path):
         assert sorted(p.name for p in attempt_dir.iterdir()) == ["logs"]
         assert (attempt_dir / "logs" / "stdout").read_bytes() == f"out-{attempt}".encode()
         assert (attempt_dir / "logs" / "stderr").exists()
+
+
+def test_a_file_that_cannot_be_unlinked_does_not_stop_the_other_attempts(tmp_path, monkeypatch):
+    ticket = _make_ticket(tmp_path, 7)
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.path.basename(path) == "runner.json":
+            raise PermissionError(13, "denied", path)
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(scratch_reclaim.os, "unlink", unlink)
+
+    errors = reclaim_workspace(tmp_path, 7)
+
+    assert len(errors) == 2 and all("runner.json" in e for e in errors)
+    for attempt in (1, 2):
+        attempt_dir = ticket / "align" / f"attempt-{attempt}"
+        assert sorted(p.name for p in attempt_dir.iterdir()) == ["logs", "runner.json"]
 
 
 def test_reclaim_unlinks_symlinks_without_following_them(tmp_path):

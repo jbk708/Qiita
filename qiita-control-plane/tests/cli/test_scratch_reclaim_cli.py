@@ -12,7 +12,7 @@ def test_older_than_is_required(capsys):
     assert "--older-than" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("days", ["0", "-3", "soon"])
+@pytest.mark.parametrize("days", ["0", "-3", "soon", "9999999999"])
 def test_older_than_must_be_a_positive_integer(capsys, days):
     with pytest.raises(SystemExit) as exc:
         cli.main(["scratch", "reclaim", "--older-than", days])
