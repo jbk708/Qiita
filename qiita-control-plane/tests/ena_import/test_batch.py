@@ -3028,8 +3028,9 @@ async def test_redriving_a_run_list_batch_adds_no_items(
     if stage == "split":
         await schedule_ena_import_batch(batch_app, items=items, principal=admin_principal)
         await postgres_pool.execute(
-            "UPDATE qiita.ena_import_batch_item SET state = 'pending' WHERE batch_idx = $1",
+            "UPDATE qiita.ena_import_batch_item SET state = $2 WHERE batch_idx = $1",
             batch_idx,
+            BatchItemState.PENDING.value,
         )
     await _run_reconcile(batch_app)
 
@@ -3108,7 +3109,6 @@ async def _ticket_pool(postgres_pool, ticket_idx: int) -> int:
 async def test_run_list_into_a_failed_pool_downloads_its_other_unread_runs_too(
     batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
 ):
-    """Documented behaviour: the pool's re-submitted ticket reads its whole roster."""
     study = unique_ena_accession("PRJEB")
     first, second = _runs(2)
     world = _EnaWorld(monkeypatch, {study: [first]})

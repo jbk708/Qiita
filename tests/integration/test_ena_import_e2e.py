@@ -571,8 +571,7 @@ async def test_run_list_import_ingests_only_the_listed_runs(
     tmp_path,
     monkeypatch,
 ):
-    """A run list of two of a study's three runs: the pool's `ena_run_map` roster is
-    exactly those two, and only their reads land in DuckLake."""
+    """Two of a study's three runs: the pool roster and DuckLake reads hold only those two."""
     accession = unique_ena_accession("PRJNA")
     ena_study_cleanup.append(accession)
     all_runs = [unique_ena_accession("SRR") for _ in range(3)]

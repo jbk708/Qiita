@@ -73,3 +73,9 @@ def test_miint_resolver_resolves_a_run_list_in_one_query():
     attrs = resolver.resolve_sample_attributes_for_samples(samples)
     assert [a.sample_accession for a in attrs] == samples
     assert all(a.attributes for a in attrs)
+
+
+@pytest.mark.system
+def test_miint_resolver_run_list_omits_an_unknown_run_without_raising():
+    runs = MiintEnaResolver().resolve_runs(["SRR096342", "SRR999999999"])
+    assert [run.run_accession for run in runs] == ["SRR096342"]

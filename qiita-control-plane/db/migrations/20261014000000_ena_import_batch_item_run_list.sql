@@ -1,9 +1,6 @@
 -- An import item may name a list of ENA runs instead of a whole study. A run-list
 -- item starts ungrouped (no study accession, the runs it was asked for); the
 -- driver resolves the runs and splits it into one item per study they belong to.
---
--- A batch-level run list was rejected: items would appear only after expansion,
--- so a client watching the batch would see zero items and stop early.
 
 -- migrate:up
 
@@ -24,13 +21,12 @@ COMMENT ON COLUMN qiita.ena_import_batch_item.requested_run_accessions IS
 COMMENT ON TABLE qiita.ena_import_batch_item IS
     'One INSDC study accession, or one run list, within a qiita.ena_import_batch, '
     'tracked independently through resolve -> register -> download-submit so one '
-    'accession''s failure never affects its siblings. state mirrors '
+    'item''s failure never affects its siblings. state mirrors '
     'qiita_common.models.ena_import.BatchItemState.';
 
-COMMENT ON CONSTRAINT ena_import_batch_item_unique_accession_per_batch
-    ON qiita.ena_import_batch_item IS
-    'One item per (batch, study accession). NULL accessions compare distinct, and '
-    'the driver inserts at most one ungrouped run-list item per batch.';
+CREATE UNIQUE INDEX ena_import_batch_item_one_ungrouped_per_batch
+    ON qiita.ena_import_batch_item (batch_idx)
+    WHERE ena_study_accession IS NULL;
 
 
 -- migrate:down
@@ -46,6 +42,8 @@ BEGIN
     END IF;
 END $$;
 
+DROP INDEX qiita.ena_import_batch_item_one_ungrouped_per_batch;
+
 ALTER TABLE qiita.ena_import_batch_item
     DROP CONSTRAINT ena_import_batch_item_runs_nonempty,
     DROP CONSTRAINT ena_import_batch_item_accession_or_runs;
@@ -59,6 +57,3 @@ COMMENT ON TABLE qiita.ena_import_batch_item IS
     'tracked independently through resolve -> register -> download-submit so one '
     'accession''s failure never affects its siblings. state mirrors '
     'qiita_common.models.ena_import.BatchItemState.';
-
-COMMENT ON CONSTRAINT ena_import_batch_item_unique_accession_per_batch
-    ON qiita.ena_import_batch_item IS NULL;

@@ -35,11 +35,7 @@ async def insert_ena_import_batch_item(
     ena_study_accession: str | None = None,
     requested_run_accessions: list[str] | None = None,
 ) -> int:
-    """Insert one 'pending' qiita.ena_import_batch_item row and return its idx.
-
-    A whole-study item names `ena_study_accession`; a run-list item names
-    `requested_run_accessions` and has no accession until it is split.
-    """
+    """Insert one 'pending' qiita.ena_import_batch_item row and return its idx."""
     require_transaction(conn)
     return await conn.fetchval(
         "INSERT INTO qiita.ena_import_batch_item"
@@ -56,20 +52,20 @@ async def split_run_list_item(
 ) -> list[int] | None:
     """Split an ungrouped run-list item into one item per `(study accession, runs)` group.
 
-    The original row becomes the first group, so its idx stays stable; the rest are new
-    pending siblings. Returns the item idxs in group order, or None if the item was already
-    split.
+    The original row becomes the first group; returns the item idxs in group order, or
+    None if the item was already split.
     """
     require_transaction(conn)
     (first_accession, first_runs), *rest = groups
     batch_idx = await conn.fetchval(
         "UPDATE qiita.ena_import_batch_item"
         " SET ena_study_accession = $2, requested_run_accessions = $3,"
-        "     state = 'pending', failure_reason = NULL"
+        "     state = $4, failure_reason = NULL"
         " WHERE idx = $1 AND ena_study_accession IS NULL RETURNING batch_idx",
         item_idx,
         first_accession,
         first_runs,
+        BatchItemState.PENDING.value,
     )
     if batch_idx is None:
         return None
@@ -251,18 +247,6 @@ async def fetch_sequenced_samples_missed_by_completed_download(
         action_version,
     )
     return {r["idx"] for r in rows}
-
-
-async def fetch_sequenced_pool_idxs_for_sequenced_samples(
-    pool_or_conn: asyncpg.Pool | asyncpg.Connection, sequenced_sample_idxs: list[int]
-) -> set[int]:
-    """The sequenced_pool idxs holding any of `sequenced_sample_idxs`."""
-    rows = await pool_or_conn.fetch(
-        "SELECT DISTINCT sequenced_pool_idx FROM qiita.sequenced_sample"
-        " WHERE idx = ANY($1::bigint[])",
-        sequenced_sample_idxs,
-    )
-    return {r["sequenced_pool_idx"] for r in rows}
 
 
 async def fetch_pool_latest_download_ticket(

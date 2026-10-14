@@ -763,8 +763,7 @@ def test_watch_retries_503_forever_until_zero_timeout_fires(
 def test_watch_follows_an_ungrouped_run_list_item_as_it_splits_into_study_items(
     monkeypatch, patch_async_client, capsys
 ):
-    """Items are tracked by idx, so the ungrouped item keeps its row when it takes a study
-    accession and its siblings appear."""
+    """The ungrouped item keeps its idx when it takes a study accession."""
     from qiita_control_plane.cli.user._parser import _build_parser
 
     ungrouped = _item("", "pending", idx=10, ena_study_accession=None)
