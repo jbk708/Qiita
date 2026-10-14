@@ -40,6 +40,7 @@ _None yet._
 ### Notes (no host action)
 
 - (#767) A killed DoPut leaves `staging/uploads/<idx>/upload.parquet.partial`, which nothing reclaims, as nothing reclaims finished uploads. `qiita-admin masked-read-export` gains `--retry-seconds` (default 3900, the data-plane unit's stop timeout).
+- (#610) New `qiita-admin scratch reclaim --older-than DAYS` (dry-run by default; `--execute` deletes). Run it as a user that can write the job output dirs; it needs `DATABASE_URL` and an absolute `PATH_SCRATCH`.
 
 ## Deployed history
 
