@@ -17,7 +17,7 @@ The task (`_run_batch`) processes every item under the process-wide bound
 the item's runs, reused when one already covers the pool and otherwise
 submitted in-process through `submit_work_ticket_core` with the BATCH's
 submitting principal (so the ticket's audience gate is enforced against a
-real principal). One accession's failure marks only that item `failed`.
+real principal). One item's failure marks only that item `failed`.
 
 `reconcile_inflight_batches` (from `main.py` lifespan startup) re-drives every
 item still `pending`/`resolving`/`registered` after a CP restart --
