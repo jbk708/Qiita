@@ -54,10 +54,11 @@ def _describe_refusal(exc: HTTPException) -> str:
 async def submit_follow_on(app: FastAPI, work_ticket_idx: int) -> None:
     """Submit `work_ticket_idx`'s follow-on if it COMPLETED with one that has no
     outcome yet. A failure that is not a refusal propagates, recording nothing."""
-    # Imported here: routes.work_ticket imports dispatch, which imports this module.
-    from .routes.work_ticket import (
+    # Both imports are lazy: routes.work_ticket and work_ticket_submit each import
+    # dispatch, which imports this module, so a top-level import would cycle at load.
+    from .routes.work_ticket import fetch_work_ticket
+    from .work_ticket_submit import (
         FollowOnAlreadyRecordedError,
-        fetch_work_ticket,
         submit_work_ticket_core,
     )
 
