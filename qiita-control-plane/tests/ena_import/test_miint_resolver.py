@@ -425,7 +425,7 @@ def test_resolver_binds_the_staged_helper_not_the_client_installer():
     assert not hasattr(miint_resolver, "connect_with_miint")
 
 
-def test_resolve_runs_makes_one_seam_call_with_the_list(monkeypatch):
+def test_resolve_listed_runs_makes_one_seam_call_with_the_list(monkeypatch):
     from qiita_control_plane.ena_import.miint_resolver import MiintEnaResolver
 
     columns, rows = _load_fixture("ena_runs.json")
@@ -438,7 +438,7 @@ def test_resolve_runs_makes_one_seam_call_with_the_list(monkeypatch):
     assert_prjna48739_runs(runs)
 
 
-def test_resolve_runs_returns_a_partial_result_without_raising(monkeypatch):
+def test_resolve_listed_runs_returns_a_partial_result_without_raising(monkeypatch):
     """The caller diffs against its request; an unresolved run is its call to make."""
     from qiita_control_plane.ena_import.miint_resolver import MiintEnaResolver
 
@@ -450,7 +450,7 @@ def test_resolve_runs_returns_a_partial_result_without_raising(monkeypatch):
     assert [r.run_accession for r in runs] == ["SRR096342"]
 
 
-def test_resolve_runs_zero_rows_is_not_found(monkeypatch):
+def test_resolve_listed_runs_zero_rows_is_not_found(monkeypatch):
     from qiita_control_plane.ena_import.miint_resolver import MiintEnaResolver
 
     monkeypatch.setattr(_QUERY_RUNS, lambda accession: (["run_accession"], []))
@@ -460,7 +460,7 @@ def test_resolve_runs_zero_rows_is_not_found(monkeypatch):
 
 
 @pytest.mark.parametrize("bad", ["PRJNA48739", "SAMN00199006", "nonsense"])
-def test_resolve_runs_rejects_a_non_run_accession(monkeypatch, bad):
+def test_resolve_listed_runs_rejects_a_non_run_accession(monkeypatch, bad):
     from qiita_common.ena_accession import InvalidEnaAccessionError
 
     from qiita_control_plane.ena_import.miint_resolver import MiintEnaResolver
