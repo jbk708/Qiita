@@ -187,7 +187,7 @@ restriction.
 ## ENA Study Import
 
 Admin-facing bulk import of public INSDC studies' metadata and reads, distinct
-from a workflow entry: `POST /api/v1/ena-import-batch` takes a list of study
+from a workflow entry: `POST /api/v1/ena-import-batch` takes a list of study or run
 accessions and returns immediately with a batch handle, while a background task
 (`qiita_control_plane.ena_import.batch`) resolves each accession's metadata (via
 `duckdb-miint`'s `read_ena` / `read_ena_attributes`), registers it into

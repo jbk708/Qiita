@@ -12,7 +12,8 @@ specific to importing from ENA.
 ## What an import does
 
 A single admin-facing call kicks off a **batch**: a list of INSDC study accessions
-(`PRJNA…`, `PRJEB…`, `PRJDB…`, `ERP…`, `SRP…`, `DRP…`). Each accession in the batch is
+(`PRJNA…`, `PRJEB…`, `PRJDB…`, `ERP…`, `SRP…`, `DRP…`), or run accessions (see
+[Importing chosen runs](#importing-chosen-runs)). Each accession in the batch is
 processed independently, with bounded concurrency, in three phases. That bound is shared
 by every batch running in the control plane at once, first come first served: a later
 batch's accessions are not admitted until every accession of every batch submitted before
@@ -62,6 +63,31 @@ read by holding that lock past the pool's default 10 s statement budget. A
 download ticket that still fails there is FAILED/RETRIABLE: let the import
 finish, then redrive it with `POST /work-ticket/{idx}/run` — the redrive re-runs
 the download against the current roster; runs already stored are not fetched again.
+
+### Importing chosen runs
+
+Run accessions (`SRR…`, `ERR…`, `DRR…`) may be mixed with study accessions in one
+submit. The runs become a single ungrouped item that the control plane resolves in the
+background and splits into one item per study they belong to; each item then registers
+and downloads only its own listed runs. The study is created or reused exactly as for a
+whole-study import, so the same import-created-study guard applies.
+
+- **One unresolved run fails the whole item.** A run ENA does not return, or returns
+  non-public, fails the ungrouped item with a reason naming every such run, and nothing is
+  registered. Fix the list and resubmit.
+- **Before and after a whole-study import.** A later whole-study import of the same study
+  skips the runs already present and registers the rest. A whole-study accession in the
+  same batch that exactly matches a run's study absorbs those runs, so no item is
+  duplicated; if every run is absorbed the run-list item fails naming the absorbing
+  accessions. The match is on the exact string, so an `ERP…` whole-study item alongside
+  runs whose study reads `PRJEB…` becomes two items for one study. That is safe under the
+  sequencing_run lock, the same as two concurrent batches.
+- **Only its own pools are ticketed.** A run-list item submits or reuses a download ticket
+  only for pools holding its runs; re-import the whole study to retry other failed pools.
+- **A failed pool's other runs download too.** New runs go into the newest pool without a
+  covering ticket. If that pool's earlier ticket failed, the item's new ticket reads the
+  pool's whole roster, so its unread runs are downloaded along with the listed ones.
+  Registration still covers exactly the listed runs.
 
 ### Re-importing, and studies we created ourselves
 
@@ -387,7 +413,7 @@ An accession must be one of these prefixes followed by digits, e.g. `PRJEB11419`
 | run | `SRR`, `ERR`, `DRR` |
 | experiment | `SRX`, `ERX`, `DRX` |
 
-Submit takes study accessions only; anything else, including a well-formed sample or
-run, is refused at submit (CLI exit 2, HTTP 422) and no batch is created. An accession
+Submit takes study and run accessions; anything else, including a well-formed sample or
+experiment, is refused at submit (CLI exit 2, HTTP 422) and no batch is created. An accession
 of the right shape that ENA does not recognize fails loud with an actionable message
 rather than resolving to a silent empty result.
