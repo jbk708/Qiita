@@ -7,7 +7,6 @@ so the step-logs route keeps serving and the ticket's directory skeleton stays.
 from __future__ import annotations
 
 import os
-import shutil
 import stat
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -161,6 +160,31 @@ def measure_workspace(ticket_root: Path, work_ticket_idx: int) -> Usage:
     )
 
 
+def _remove_tree(path: str, collect) -> None:
+    """Delete `path` without following symlinks, restoring owner write on read-only
+    directories we own (container output dirs are 0550)."""
+    try:
+        st = os.lstat(path)
+        if st.st_uid == os.geteuid() and not st.st_mode & stat.S_IWUSR:
+            os.chmod(path, st.st_mode | stat.S_IWUSR)
+        entries = list(os.scandir(path))
+    except OSError as exc:
+        collect(os.chmod, path, exc)
+        return
+    for entry in entries:
+        if entry.is_dir(follow_symlinks=False):
+            _remove_tree(entry.path, collect)
+            continue
+        try:
+            os.unlink(entry.path)
+        except OSError as exc:
+            collect(os.unlink, entry.path, exc)
+    try:
+        os.rmdir(path)
+    except OSError as exc:
+        collect(os.rmdir, path, exc)
+
+
 def reclaim_workspace(ticket_root: Path, work_ticket_idx: int) -> list[str]:
     """Delete everything under each attempt except `logs/`; return the failures, not raise."""
     errors: list[str] = []
@@ -174,7 +198,7 @@ def reclaim_workspace(ticket_root: Path, work_ticket_idx: int) -> list[str]:
                 if child.name == STEP_LOGS_SUBDIR:
                     continue
                 if child.is_dir(follow_symlinks=False):
-                    shutil.rmtree(child.path, onexc=collect)
+                    _remove_tree(child.path, collect)
                     continue
                 try:
                     os.unlink(child.path)
