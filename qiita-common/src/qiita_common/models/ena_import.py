@@ -45,8 +45,9 @@ TERMINAL_BATCH_ITEM_STATES: tuple[str, ...] = (
 class BatchImportRequest(BaseModel):
     """Body for `POST /api/v1/ena-import-batch`.
 
-    `accessions`: ENA STUDY accessions, one `qiita.study` per entry. The
-    transport each spawned ticket uses is the download job's to choose.
+    `accessions`: ENA study or run accessions, mixed. A study imports whole; runs
+    are grouped by their study and import only those runs. The transport each spawned
+    ticket uses is the download job's to choose.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -71,9 +72,15 @@ class EnaRunImportOutcome(BaseModel):
 
 
 class BatchImportItem(BaseModel):
-    """One accession's current state within a batch."""
+    """One accession's current state within a batch.
 
-    ena_study_accession: str
+    `ena_study_accession` is null only on a run-list item not yet grouped by study;
+    `requested_run_accessions` is null for a whole-study item.
+    """
+
+    idx: int
+    ena_study_accession: str | None
+    requested_run_accessions: list[str] | None = None
     state: BatchItemState
     study_idx: int | None = None
     failure_reason: str | None = None
