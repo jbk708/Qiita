@@ -66,7 +66,12 @@ from ...scratch_reclaim import (
 from ...workspace import WORK_TICKET_SUBDIR
 from .. import _common
 from .._reference_exclusion import add_admin_exclusion_subparsers
-from ._helpers import _DB_CONNECT_TIMEOUT_SECONDS, open_admin_pool, requires_database_url
+from ._helpers import (
+    _DB_CONNECT_TIMEOUT_SECONDS,
+    EXIT_PRECONDITION_FAILED,
+    open_admin_pool,
+    requires_database_url,
+)
 from .actions_sync import _handle_actions_sync, _sync_actions
 from .auth import _handle_login, _handle_token_revoke_all, _handle_whoami, _token_revoke_all
 from .compute_readiness import _DEFAULT_ORCHESTRATOR_VENV, _handle_compute_readiness
@@ -583,22 +588,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "reclaim",
         help="Delete finished tickets' scratch workspaces, keeping their logs",
         description=(
-            "Delete everything under PATH_SCRATCH/ticket/<idx>/<step>/attempt-<n>/ except"
-            " logs/, for tickets that are completed or no_data, or failed/cancelled"
-            " download-ena-study tickets a newer download ticket has superseded, with no"
-            " live step. Tickets the SynDNA read-count backfill would still write are"
-            " skipped. Workspaces with no work_ticket row are reported, and deleted only"
-            " with --include-orphans. Dry-run by default. Exit codes: 0 ok, 1 a workspace"
-            " failed, 2 bad configuration, 3 another run holds the lock. Needs"
-            " DATABASE_URL and PATH_SCRATCH."
+            "Delete everything under PATH_SCRATCH/ticket/<idx>/<step>/attempt-<n>/ except logs/,"
+            " for tickets that are completed or no_data, or failed/cancelled download-ena-study"
+            " tickets a newer download ticket has superseded, with no step still submitting or"
+            " running. Tickets the SynDNA read-count backfill would still write are skipped."
+            " Workspaces with no work_ticket row are reported, and deleted only with"
+            " --include-orphans. Dry-run by default. Exit codes: 0 ok, 1 a workspace failed, 2 bad"
+            " configuration, 3 another run holds the lock. Needs DATABASE_URL and PATH_SCRATCH."
         ),
     )
     p_scratch_reclaim.add_argument(
         "--older-than",
-        type=_positive_days,
+        type=_days_ago,
         required=True,
         metavar="DAYS",
-        help="Only tickets last updated more than DAYS days ago (updated_at, not completion).",
+        help=(
+            "Only tickets last updated more than DAYS days ago (counted from the ticket's"
+            " last update, not its completion)."
+        ),
     )
     p_scratch_reclaim.add_argument(
         "--action-id", default=None, help="Only tickets of this action (orphans are unaffected)."
@@ -1460,14 +1467,17 @@ def _handle_backfill_syndna_read_count(
     return 0
 
 
-def _positive_days(value: str) -> int:
+_EXIT_LOCK_HELD = 3
+
+
+def _days_ago(value: str) -> datetime:
     try:
         days = int(value)
-    except ValueError:
-        days = 0
-    if days < 1:
-        raise argparse.ArgumentTypeError(f"{value!r} is not a positive number of days")
-    return days
+        if days >= 1:
+            return datetime.now(UTC) - timedelta(days=days)
+    except ValueError, OverflowError:
+        pass
+    raise argparse.ArgumentTypeError(f"{value!r} is not a usable positive number of days")
 
 
 def _gib(n: int) -> str:
@@ -1505,14 +1515,14 @@ def _handle_scratch_reclaim(
     scratch = os.environ.get("PATH_SCRATCH")
     if not scratch or not Path(scratch).is_absolute():
         print("error: PATH_SCRATCH must be set to an absolute path", file=sys.stderr)
-        return 2
+        return EXIT_PRECONDITION_FAILED
 
     try:
         plan, result = asyncio.run(
             _scratch_reclaim(
                 database_url,
                 ticket_root=Path(scratch) / WORK_TICKET_SUBDIR,
-                cutoff=datetime.now(UTC) - timedelta(days=args.older_than),
+                cutoff=args.older_than,
                 action_id=args.action_id,
                 execute=args.execute,
                 include_orphans=args.include_orphans,
@@ -1520,7 +1530,7 @@ def _handle_scratch_reclaim(
         )
     except ReclaimLockHeld as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 3
+        return _EXIT_LOCK_HELD
     except (RuntimeError, ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -1537,6 +1547,9 @@ def _handle_scratch_reclaim(
     for (action_id, state), (n, total, freeable, logs, left) in sorted(groups.items()):
         print(f"  {action_id} {state}: {n}, {_gib(total)}, {_gib(freeable)}, {_gib(logs)}, {left}")
     print(f"eligible tickets : {len(plan.tickets)}")
+    for t in plan.tickets:
+        if t.error:
+            print(f"  ticket {t.work_ticket_idx}: {t.error}")
     print(f"skipped (SynDNA backfill still needs them): {len(plan.syndna_skipped)}")
     for idx in plan.syndna_skipped:
         print(f"  ticket {idx}")

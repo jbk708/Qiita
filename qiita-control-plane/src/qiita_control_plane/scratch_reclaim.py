@@ -2,7 +2,6 @@
 
 Only the children of `ticket/<idx>/<step>/attempt-<n>/` other than `logs/` are deleted,
 so the step-logs route keeps serving and the ticket's directory skeleton stays.
-Dry-run planning is read-only; `apply_reclaim` re-checks each ticket before deleting.
 """
 
 from __future__ import annotations
@@ -23,23 +22,24 @@ from qiita_common.models import TERMINAL_STEP_PROGRESS_STATES, WorkTicketState
 from .backfill.syndna_read_count import plan_backfill as plan_syndna_backfill
 from .ena_import import DOWNLOAD_ENA_STUDY_ACTION_ID
 from .ena_import.registration import fetch_pool_download_ticket
+from .workspace import ATTEMPT_DIR_PREFIX, ticket_workspace
 
 RECLAIMABLE_STATES = (WorkTicketState.COMPLETED.value, WorkTicketState.NO_DATA.value)
 _SUPERSEDABLE_STATES = (WorkTicketState.FAILED.value, WorkTicketState.CANCELLED.value)
 
-RECLAIM_LOCK_KEY = 4_310_290_149
+# Allocated in the advisory-lock registry in `repositories/__init__.py`.
+RECLAIM_LOCK_KEY = 4_310_290_150
 
-_ATTEMPT_PREFIX = "attempt-"
 _MAX_BIGINT = 2**63 - 1
 
 _ELIGIBLE_SQL = """
-SELECT wt.work_ticket_idx, wt.action_id, wt.state::text AS state, wt.sequenced_pool_idx
+SELECT wt.work_ticket_idx, wt.action_id, wt.state, wt.sequenced_pool_idx
   FROM qiita.work_ticket wt
  WHERE wt.updated_at < $1
    AND ($2::text IS NULL OR wt.action_id = $2)
    AND ($3::bigint IS NULL OR wt.work_ticket_idx = $3)
-   AND (wt.state::text = ANY($4::text[])
-        OR (wt.state::text = ANY($5::text[])
+   AND (wt.state = ANY($4::qiita.work_ticket_state[])
+        OR (wt.state = ANY($5::qiita.work_ticket_state[])
             AND wt.action_id = $6
             AND wt.sequenced_pool_idx IS NOT NULL))
    AND NOT EXISTS (
@@ -97,7 +97,7 @@ class ApplyResult:
 
 def _workspace_dir(ticket_root: Path, work_ticket_idx: int) -> Path:
     root = ticket_root.resolve()
-    path = root / str(work_ticket_idx)
+    path = ticket_workspace(root, work_ticket_idx)
     if path.is_symlink():
         raise ValueError(f"{path} is a symlink; refusing to reclaim it")
     if path.resolve().parent != root:
@@ -115,7 +115,9 @@ def _attempt_dirs(ticket_dir: Path) -> list[Path]:
         if not step.is_dir(follow_symlinks=False):
             continue
         for attempt in os.scandir(step.path):
-            if attempt.name.startswith(_ATTEMPT_PREFIX) and attempt.is_dir(follow_symlinks=False):
+            if attempt.is_dir(follow_symlinks=False) and attempt.name.startswith(
+                ATTEMPT_DIR_PREFIX
+            ):
                 attempts.append(Path(attempt.path))
     return attempts
 
@@ -133,7 +135,7 @@ def measure_workspace(ticket_root: Path, work_ticket_idx: int) -> Usage:
         st = os.lstat(path)
         key = (st.st_dev, st.st_ino)
         seen[key] = st
-        under_attempt = len(parts) >= 3 and parts[1].startswith(_ATTEMPT_PREFIX)
+        under_attempt = len(parts) >= 3 and parts[1].startswith(ATTEMPT_DIR_PREFIX)
         if under_attempt and parts[2] != STEP_LOGS_SUBDIR:
             freed_links[key] = freed_links.get(key, 0) + 1
             return
@@ -173,8 +175,11 @@ def reclaim_workspace(ticket_root: Path, work_ticket_idx: int) -> list[str]:
                     continue
                 if child.is_dir(follow_symlinks=False):
                     shutil.rmtree(child.path, onexc=collect)
-                else:
+                    continue
+                try:
                     os.unlink(child.path)
+                except OSError as exc:
+                    collect(os.unlink, child.path, exc)
     except (OSError, ValueError) as exc:
         errors.append(str(exc))
     return errors
@@ -223,7 +228,7 @@ async def _eligible(
 def _measured(ticket_root: Path, idx: int, action_id: str | None, state: str | None) -> TicketPlan:
     try:
         return TicketPlan(idx, action_id, state, measure_workspace(ticket_root, idx))
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         return TicketPlan(idx, action_id, state, _NO_USAGE, error=str(exc))
 
 
@@ -255,7 +260,7 @@ async def plan_reclaim(
     tickets, skipped = [], []
     for row in await _eligible(pool, cutoff=cutoff, action_id=action_id):
         idx = row["work_ticket_idx"]
-        if not os.path.lexists(root / str(idx)):
+        if not os.path.lexists(ticket_workspace(root, idx)):
             continue
         if idx in needed:
             skipped.append(idx)
