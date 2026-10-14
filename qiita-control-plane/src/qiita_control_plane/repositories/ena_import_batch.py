@@ -29,16 +29,55 @@ async def insert_ena_import_batch(
 
 
 async def insert_ena_import_batch_item(
-    conn: asyncpg.Connection, *, batch_idx: int, ena_study_accession: str
+    conn: asyncpg.Connection,
+    *,
+    batch_idx: int,
+    ena_study_accession: str | None = None,
+    requested_run_accessions: list[str] | None = None,
 ) -> int:
-    """Insert one 'pending' qiita.ena_import_batch_item row and return its idx."""
+    """Insert one 'pending' qiita.ena_import_batch_item row and return its idx.
+
+    A whole-study item names `ena_study_accession`; a run-list item names
+    `requested_run_accessions` and has no accession until it is split.
+    """
     require_transaction(conn)
     return await conn.fetchval(
-        "INSERT INTO qiita.ena_import_batch_item (batch_idx, ena_study_accession)"
-        " VALUES ($1, $2) RETURNING idx",
+        "INSERT INTO qiita.ena_import_batch_item"
+        " (batch_idx, ena_study_accession, requested_run_accessions)"
+        " VALUES ($1, $2, $3) RETURNING idx",
         batch_idx,
         ena_study_accession,
+        requested_run_accessions,
     )
+
+
+async def split_run_list_item(
+    conn: asyncpg.Connection, *, item_idx: int, groups: list[tuple[str, list[str]]]
+) -> list[int] | None:
+    """Split an ungrouped run-list item into one item per `(study accession, runs)` group.
+
+    The original row becomes the first group, so its idx stays stable; the rest are new
+    pending siblings. Returns the item idxs in group order, or None if the item was already
+    split.
+    """
+    require_transaction(conn)
+    (first_accession, first_runs), *rest = groups
+    batch_idx = await conn.fetchval(
+        "UPDATE qiita.ena_import_batch_item"
+        " SET ena_study_accession = $2, requested_run_accessions = $3"
+        " WHERE idx = $1 AND ena_study_accession IS NULL RETURNING batch_idx",
+        item_idx,
+        first_accession,
+        first_runs,
+    )
+    if batch_idx is None:
+        return None
+    return [item_idx] + [
+        await insert_ena_import_batch_item(
+            conn, batch_idx=batch_idx, ena_study_accession=accession, requested_run_accessions=runs
+        )
+        for accession, runs in rest
+    ]
 
 
 async def update_ena_import_batch_item_state(
@@ -213,6 +252,18 @@ async def fetch_sequenced_samples_missed_by_completed_download(
     return {r["idx"] for r in rows}
 
 
+async def fetch_sequenced_pool_idxs_for_sequenced_samples(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, sequenced_sample_idxs: list[int]
+) -> set[int]:
+    """The sequenced_pool idxs holding any of `sequenced_sample_idxs`."""
+    rows = await pool_or_conn.fetch(
+        "SELECT DISTINCT sequenced_pool_idx FROM qiita.sequenced_sample"
+        " WHERE idx = ANY($1::bigint[])",
+        sequenced_sample_idxs,
+    )
+    return {r["sequenced_pool_idx"] for r in rows}
+
+
 async def fetch_pool_latest_download_ticket(
     pool_or_conn: asyncpg.Pool | asyncpg.Connection,
     *,
@@ -240,7 +291,7 @@ async def fetch_inflight_ena_import_batch_items(
     """Every ena_import_batch_item row still pending/resolving/registered, with
     its batch's submitting principal, ordered by (batch_idx, idx)."""
     return await pool_or_conn.fetch(
-        "SELECT bi.idx, bi.ena_study_accession, bi.batch_idx,"
+        "SELECT bi.idx, bi.ena_study_accession, bi.requested_run_accessions, bi.batch_idx,"
         "       b.submitted_by_principal_idx"
         " FROM qiita.ena_import_batch_item bi"
         " JOIN qiita.ena_import_batch b ON b.idx = bi.batch_idx"
@@ -271,8 +322,8 @@ async def fetch_ena_import_batch_items(
 ) -> list[asyncpg.Record]:
     """All qiita.ena_import_batch_item rows for `batch_idx`, ordered by idx."""
     return await pool_or_conn.fetch(
-        "SELECT idx, ena_study_accession, state, failure_reason, study_idx,"
-        "       download_work_ticket_idxs, ena_run_outcomes"
+        "SELECT idx, ena_study_accession, requested_run_accessions, state, failure_reason,"
+        "       study_idx, download_work_ticket_idxs, ena_run_outcomes"
         " FROM qiita.ena_import_batch_item"
         " WHERE batch_idx = $1"
         " ORDER BY idx",
