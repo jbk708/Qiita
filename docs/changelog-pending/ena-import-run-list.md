@@ -9,5 +9,5 @@
   `run(s) unavailable at ENA: …` with nothing registered or flagged. A run list wholly
   covered by a whole-study accession in the same batch follows that item's downloads.
   Batch items now carry `idx` and `requested_run_accessions`, and `ena_study_accession`
-  is null on a run-list item until it is grouped. See the runbook's "Importing chosen
-  runs".
+  is null on a run-list item until it is grouped, and on one wholly absorbed. See the
+  runbook's "Importing chosen runs".

@@ -793,7 +793,7 @@ async def _follow_absorbing_items(
                 await _append_item_download_ticket(pool, item.idx, ticket_idx)
         await _mark_item_downloading(pool, item.idx)
     except Exception as exc:  # noqa: BLE001 -- item isolation.
-        _log.warning("ena_import_batch run-list item %d failed: %s", item.idx, exc)
+        _log.warning("ena_import_batch absorbed run-list item %d failed: %s", item.idx, exc)
         await _set_item_state(pool, item.idx, BatchItemState.FAILED, failure_reason=str(exc))
 
 

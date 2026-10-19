@@ -74,7 +74,7 @@ class EnaRunImportOutcome(BaseModel):
 class BatchImportItem(BaseModel):
     """One item's current state within a batch: a whole study, or a list of runs.
 
-    `ena_study_accession` is null only on a run-list item not yet grouped by study;
+    `ena_study_accession` is null only on a run-list item not grouped by study;
     `requested_run_accessions` is null for a whole-study item.
     """
 

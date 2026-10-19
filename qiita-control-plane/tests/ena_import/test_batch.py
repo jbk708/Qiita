@@ -3018,6 +3018,32 @@ async def test_run_list_wholly_covered_by_whole_study_items_follows_their_downlo
     await _cleanup_study(postgres_pool, study)
 
 
+async def test_redriving_an_absorbed_run_list_follows_an_item_already_downloading(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    study = unique_ena_accession("PRJEB")
+    runs = _runs(2)
+    _EnaWorld(monkeypatch, {study: runs})
+    batch_idx, _ = await _drive_accessions(
+        batch_app, postgres_pool, admin_principal, batch_cleanup, [study, runs[0]]
+    )
+    _, ungrouped = await _batch_items(postgres_pool, batch_idx)
+    await postgres_pool.execute(
+        "UPDATE qiita.ena_import_batch_item SET state = $2, download_work_ticket_idxs = '{}'"
+        " WHERE idx = $1",
+        ungrouped["idx"],
+        BatchItemState.RESOLVING.value,
+    )
+
+    await _run_reconcile(batch_app)
+
+    whole, ungrouped = await _batch_items(postgres_pool, batch_idx)
+    assert ungrouped["state"] == BatchItemState.DOWNLOADING.value
+    assert ungrouped["download_work_ticket_idxs"] == whole["download_work_ticket_idxs"]
+
+    await _cleanup_study(postgres_pool, study)
+
+
 async def test_run_list_absorbed_by_a_failed_whole_study_item_fails_naming_it(
     batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
 ):
