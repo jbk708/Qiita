@@ -70,7 +70,7 @@ the download against the current roster; runs already stored are not fetched aga
 Run accessions (`SRR…`, `ERR…`, `DRR…`) may be mixed with study accessions in one
 submit. The runs become a single ungrouped item that the control plane resolves in the
 background and splits into one item per study they belong to; each item then registers
-and downloads only its own listed runs. The study is created or reused exactly as for a
+only its own listed runs. The study is created or reused exactly as for a
 whole-study import, so the same import-created-study guard applies.
 
 - **One unresolved run fails the whole item.** A run ENA does not return, or returns
@@ -80,9 +80,9 @@ whole-study import, so the same import-created-study guard applies.
   later, skips the runs already present and registers the rest. A whole-study accession in the
   same batch that exactly matches a run's study absorbs those runs, so no item is
   duplicated; if every run is absorbed the run-list item fails naming the absorbing
-  accessions, so a watched submit exits `1` even though the runs are imported. The
-  match is on the exact string, so an `ERP…` whole-study item alongside runs whose
-  study reads `PRJEB…` becomes two items for one study. Each run is still
+  accessions, so a watched submit exits `1` even when the whole-study item imports
+  them. The match is on the exact string, so an `ERP…` whole-study item alongside runs
+  whose study reads `PRJEB…` becomes two items for one study. Each run is still
   registered once, the same as with two concurrent batches.
 - **Only its own pools are ticketed.** A run-list item submits or reuses a download ticket
   only for pools holding its runs; re-import the whole study to retry other failed pools.
@@ -183,10 +183,10 @@ a 5xx.
   check never leaves a run half-updated.
 - **A status this codebase does not recognize** fails the item the same way.
 
-A run-list import re-checks only its listed runs. They all resolved public, so it can
-clear a flag but never set one: a listed run ENA no longer returns fails the item
-instead (see [Importing chosen runs](#importing-chosen-runs)). Re-import the whole
-study to flag it.
+A run-list import re-checks only its listed runs, and none when ENA does not return
+their study or returns it non-public. They all resolved public, so it can clear a flag
+but never set one: a listed run ENA no longer returns fails the item instead (see
+[Importing chosen runs](#importing-chosen-runs)). Re-import the whole study to flag it.
 
 **A study blocked by one run.** A held run that keeps returning 500 fails every
 re-import of its study before anything new registers. Check the run on the ENA
