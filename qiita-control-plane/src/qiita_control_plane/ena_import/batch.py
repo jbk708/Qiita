@@ -564,8 +564,8 @@ async def _process_one_study(
         # held runs are rows Qiita already has, so this does not depend on
         # register_ena_study having run. Disjoint from register_ena_study's
         # outcomes below (which only cover runs the Portal returned), so the
-        # two lists concatenate with no overlap. A run-list item checks only its
-        # listed runs, which all resolved public, so it can clear a flag but never set one.
+        # two lists concatenate with no overlap. A run-list item's runs all resolved
+        # public, so it only clears flags.
         flagged = await _reconcile_and_record(
             pool,
             item,
@@ -702,7 +702,7 @@ async def _process_one_study(
 
 
 def _unresolved_runs_reason(unresolved: list[str]) -> str:
-    return f"run(s) not found or not public at ENA: {', '.join(unresolved)}"
+    return f"run(s) unavailable at ENA: {', '.join(unresolved)}"
 
 
 async def _expand_run_list_item(

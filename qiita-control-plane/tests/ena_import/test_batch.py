@@ -2914,8 +2914,7 @@ async def test_run_list_with_an_unresolved_run_fails_the_item_and_writes_nothing
 
     (row,) = await _batch_items(postgres_pool, batch_idx)
     assert row["state"] == BatchItemState.FAILED.value
-    assert unknown in row["failure_reason"]
-    assert known[0] not in row["failure_reason"]
+    assert row["failure_reason"] == f"run(s) unavailable at ENA: {unknown}"
     assert row["ena_study_accession"] is None
     assert await _registered_runs(postgres_pool, known) == set()
     assert (
@@ -3006,6 +3005,27 @@ async def test_run_list_wholly_covered_by_whole_study_items_fails_naming_them(
     assert whole["state"] == BatchItemState.DOWNLOADING.value
     assert ungrouped["state"] == BatchItemState.FAILED.value
     assert study in ungrouped["failure_reason"]
+
+    await _cleanup_study(postgres_pool, study)
+
+
+async def test_run_list_naming_a_held_run_ena_stopped_returning_fails_it_unflagged(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    study = unique_ena_accession("PRJEB")
+    runs = _runs(2)
+    world = _EnaWorld(monkeypatch, {study: list(runs)})
+    await _drive_accessions(batch_app, postgres_pool, admin_principal, batch_cleanup, [study])
+    world.studies[study] = [runs[0]]
+
+    batch_idx, _ = await _drive_accessions(
+        batch_app, postgres_pool, admin_principal, batch_cleanup, [runs[1]]
+    )
+
+    (row,) = await _batch_items(postgres_pool, batch_idx)
+    assert row["state"] == BatchItemState.FAILED.value
+    assert row["failure_reason"] == f"run(s) unavailable at ENA: {runs[1]}"
+    assert await _ena_status(postgres_pool, runs[1]) is None
 
     await _cleanup_study(postgres_pool, study)
 

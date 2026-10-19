@@ -73,9 +73,9 @@ background and splits into one item per study they belong to; each item then reg
 only its own listed runs. The study is created or reused exactly as for a
 whole-study import, so the same import-created-study guard applies.
 
-- **One unresolved run fails the whole item.** A run ENA does not return, or returns
-  non-public, fails the ungrouped item with a reason naming every such run, and nothing is
-  registered. Fix the list and resubmit.
+- **One unavailable run fails the whole item.** A run ENA does not return, or returns
+  non-public, fails the ungrouped item with `run(s) unavailable at ENA: …` naming every
+  such run, and nothing is registered or flagged. Fix the list and resubmit.
 - **Alongside a whole-study import.** A whole-study import of the same study, earlier or
   later, skips the runs already present and registers the rest. A whole-study accession in the
   same batch that exactly matches a run's study absorbs those runs, so no item is
@@ -184,9 +184,9 @@ a 5xx.
 - **A status this codebase does not recognize** fails the item the same way.
 
 A run-list import re-checks only its listed runs, and none when ENA does not return
-their study or returns it non-public. They all resolved public, so it can clear a flag
-but never set one: a listed run ENA no longer returns fails the item instead (see
-[Importing chosen runs](#importing-chosen-runs)). Re-import the whole study to flag it.
+their study or returns it non-public. A listed run ENA no longer returns is not flagged;
+it fails the item as unavailable (see [Importing chosen runs](#importing-chosen-runs)).
+Re-import the whole study to flag it.
 
 **A study blocked by one run.** A held run that keeps returning 500 fails every
 re-import of its study before anything new registers. Check the run on the ENA
