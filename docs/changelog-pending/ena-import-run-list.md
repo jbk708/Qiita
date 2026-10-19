@@ -7,7 +7,7 @@
   ticket, which also fetches runs a failed earlier download of that pool never stored.
   A run ENA does not return, or returns non-public, fails the item as
   `run(s) unavailable at ENA: …` with nothing registered or flagged. A run list wholly
-  covered by a whole-study accession in the same batch follows that item's downloads.
+  covered by whole-study accessions in the same batch follows those items' downloads.
   Batch items now carry `idx` and `requested_run_accessions`, and `ena_study_accession`
-  is null on a run-list item until it is grouped, and on one wholly absorbed. See the
-  runbook's "Importing chosen runs".
+  is null on a run-list item while it is not grouped by study. See the runbook's
+  "Importing chosen runs".
