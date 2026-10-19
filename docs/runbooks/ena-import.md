@@ -80,8 +80,9 @@ whole-study import, so the same import-created-study guard applies.
   later, skips the runs already present and registers the rest. A whole-study accession in the
   same batch that exactly matches a run's study absorbs those runs, so no item is
   duplicated; if every run is absorbed the run-list item fails naming the absorbing
-  accessions. The match is on the exact string, so an `ERP…` whole-study item alongside
-  runs whose study reads `PRJEB…` becomes two items for one study. Each run is still
+  accessions, so a watched submit exits `1` even though the runs are imported. The
+  match is on the exact string, so an `ERP…` whole-study item alongside runs whose
+  study reads `PRJEB…` becomes two items for one study. Each run is still
   registered once, the same as with two concurrent batches.
 - **Only its own pools are ticketed.** A run-list item submits or reuses a download ticket
   only for pools holding its runs; re-import the whole study to retry other failed pools.
@@ -181,6 +182,11 @@ a 5xx.
   no flags**: a 500 is not evidence a run is unavailable, and an availability
   check never leaves a run half-updated.
 - **A status this codebase does not recognize** fails the item the same way.
+
+A run-list import re-checks only its listed runs. They all resolved public, so it can
+clear a flag but never set one: a listed run ENA no longer returns fails the item
+instead (see [Importing chosen runs](#importing-chosen-runs)). Re-import the whole
+study to flag it.
 
 **A study blocked by one run.** A held run that keeps returning 500 fails every
 re-import of its study before anything new registers. Check the run on the ENA
