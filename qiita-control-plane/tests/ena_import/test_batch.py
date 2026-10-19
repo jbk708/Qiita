@@ -3047,6 +3047,7 @@ async def test_redriving_a_run_list_batch_adds_no_items(
         (study_b, [runs_b[0]]),
     ]
     assert {r["state"] for r in rows} == {BatchItemState.DOWNLOADING.value}
+    assert await _registered_runs(postgres_pool, runs_a + runs_b) == {runs_a[0], runs_b[0]}
 
     await _cleanup_study(postgres_pool, study_a)
     await _cleanup_study(postgres_pool, study_b)
