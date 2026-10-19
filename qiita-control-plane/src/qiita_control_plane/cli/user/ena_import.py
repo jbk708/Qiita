@@ -80,13 +80,13 @@ def _item_label(item: dict) -> str:
 
 
 def _report_state_change(batch_idx: int, item: dict) -> None:
-    accession, state = _item_label(item), item["state"]
+    label, state = _item_label(item), item["state"]
     detail = ""
     if state == BatchItemState.FAILED and item.get("failure_reason"):
         detail = f" ({item['failure_reason']})"
     elif item.get("download_work_ticket_idxs"):
         detail = f" tickets={item['download_work_ticket_idxs']}"
-    print(f"ena_import_batch {batch_idx}: {accession} -> {state}{detail}", file=sys.stderr)
+    print(f"ena_import_batch {batch_idx}: {label} -> {state}{detail}", file=sys.stderr)
 
 
 async def _watch_ena_import_batch(
@@ -102,7 +102,7 @@ async def _watch_ena_import_batch(
 
     A `RequestError` or 5xx response is retried until `timeout_seconds`
     elapses, logging one stderr line per retry; any other status is fatal
-    and propagates. Raises TimeoutError naming each still-pending accession's
+    and propagates. Raises TimeoutError naming each still-pending item's
     last known state — from the last successful poll, or `seed_items` if none
     succeeded — otherwise returns the final status body.
     """
