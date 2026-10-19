@@ -136,8 +136,8 @@ same study**
 checks it. Every held run the fresh Portal response no longer names as public is
 looked up against ENA's Browser API (`summary/{accession}`), which reports every
 run's status regardless of availability. Runs are asked for in batches; a batch
-that returns HTTP 500 is re-asked one run at a time, because one run ENA can't
-serve fails the whole batch. Each request is retried once on a transport error or
+that returns HTTP 500 is re-asked one run at a time, so one run ENA can't serve
+doesn't fail the rest. Each request is retried once on a transport error or
 a 5xx.
 
 - **Public** (or the run reappears as public in the Portal's fresh response)
