@@ -707,11 +707,11 @@ def _unresolved_runs_reason(unresolved: list[str]) -> str:
 
 async def _expand_run_list_item(
     pool: asyncpg.Pool, item: BatchImportItemHandle
-) -> list[BatchImportItemHandle]:
+) -> tuple[list[BatchImportItemHandle], list[str]]:
     """Resolve an ungrouped run-list item and split it into one item per study.
 
-    Returns the per-study items to process; empty when this item failed (any
-    unresolved run fails it, writing nothing) or was already split. Never raises.
+    Returns the per-study items to process, and the whole-study accessions that absorbed
+    every listed run (then there are no items). Never raises.
     """
     requested = item.requested_run_accessions
     try:
@@ -730,7 +730,7 @@ async def _expand_run_list_item(
                 BatchItemState.FAILED,
                 failure_reason=_unresolved_runs_reason(unresolved),
             )
-            return []
+            return [], []
 
         runs_by_study: dict[str, list[str]] = {}
         for run in requested:
@@ -744,20 +744,11 @@ async def _expand_run_list_item(
         }
         groups = [(s, r) for s, r in runs_by_study.items() if s not in whole_studies]
         if not groups:
-            await _set_item_state(
-                pool,
-                item.idx,
-                BatchItemState.FAILED,
-                failure_reason=(
-                    "every requested run belongs to a study imported whole by this batch: "
-                    + ", ".join(runs_by_study)
-                ),
-            )
-            return []
+            return [], list(runs_by_study)
         async with pool.acquire() as conn, conn.transaction():
             idxs = await split_run_list_item(conn, item_idx=item.idx, groups=groups)
         if idxs is None:
-            return []
+            return [], []
         return [
             BatchImportItemHandle(
                 idx=idx,
@@ -766,11 +757,44 @@ async def _expand_run_list_item(
                 requested_run_accessions=runs,
             )
             for idx, (study, runs) in zip(idxs, groups, strict=True)
-        ]
+        ], []
     except Exception as exc:  # noqa: BLE001 -- item isolation.
         _log.warning("ena_import_batch run-list item %d failed: %s", item.idx, exc)
         await _set_item_state(pool, item.idx, BatchItemState.FAILED, failure_reason=str(exc))
-        return []
+        return [], []
+
+
+async def _follow_absorbing_items(
+    pool: asyncpg.Pool, item: BatchImportItemHandle, accessions: list[str]
+) -> None:
+    """Give a wholly absorbed run-list item its absorbing items' download tickets, so it
+    rolls up with them. Never raises."""
+    try:
+        rows = [
+            r
+            for r in await fetch_ena_import_batch_items(pool, item.batch_idx)
+            if r["requested_run_accessions"] is None and r["ena_study_accession"] in accessions
+        ]
+        if failed := [
+            r["ena_study_accession"] for r in rows if r["state"] != BatchItemState.DOWNLOADING.value
+        ]:
+            await _set_item_state(
+                pool,
+                item.idx,
+                BatchItemState.FAILED,
+                failure_reason=(
+                    "every requested run belongs to a study this batch imports whole,"
+                    f" which failed: {', '.join(failed)}"
+                ),
+            )
+            return
+        for row in rows:
+            for ticket_idx in row["download_work_ticket_idxs"]:
+                await _append_item_download_ticket(pool, item.idx, ticket_idx)
+        await _mark_item_downloading(pool, item.idx)
+    except Exception as exc:  # noqa: BLE001 -- item isolation.
+        _log.warning("ena_import_batch run-list item %d failed: %s", item.idx, exc)
+        await _set_item_state(pool, item.idx, BatchItemState.FAILED, failure_reason=str(exc))
 
 
 async def _covering_download_ticket_idx(pool: asyncpg.Pool, sequenced_pool_idx: int) -> int | None:
@@ -795,7 +819,10 @@ async def _run_batch(
         if item.ena_study_accession is None:
             # The permit is released before the children are awaited: they need their own.
             async with semaphore:
-                children = await _expand_run_list_item(pool, item)
+                children, absorbing = await _expand_run_list_item(pool, item)
+            if absorbing:
+                await asyncio.gather(*[whole[a] for a in absorbing if a in whole])
+                await _follow_absorbing_items(pool, item, absorbing)
             await asyncio.gather(*[_bounded(child) for child in children])
             return
         async with semaphore:
@@ -806,7 +833,15 @@ async def _run_batch(
                 principal=principal,
             )
 
-    await asyncio.gather(*[_bounded(item) for item in items])
+    whole = {
+        item.ena_study_accession: asyncio.ensure_future(_bounded(item))
+        for item in items
+        if item.requested_run_accessions is None
+    }
+    await asyncio.gather(
+        *whole.values(),
+        *[_bounded(item) for item in items if item.requested_run_accessions is not None],
+    )
 
 
 def schedule_ena_import_batch(

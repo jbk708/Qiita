@@ -79,10 +79,10 @@ whole-study import, so the same import-created-study guard applies.
 - **Alongside a whole-study import.** A whole-study import of the same study, earlier or
   later, skips the runs already present and registers the rest. A whole-study accession in the
   same batch that exactly matches a run's study absorbs those runs, so no item is
-  duplicated; if every run is absorbed the run-list item fails naming the absorbing
-  accessions, so a watched submit exits `1` even when the whole-study item imports
-  them. The match is on the exact string, so an `ERP…` whole-study item alongside runs
-  whose study reads `PRJEB…` becomes two items for one study. Each run is still
+  duplicated. If every run is absorbed, the run-list item takes the absorbing items'
+  download tickets and ends `done` with them; it fails, naming them, if one fails. The
+  match is on the exact string, so an `ERP…` whole-study item alongside runs whose
+  study reads `PRJEB…` becomes two items for one study. Each run is still
   registered once, the same as with two concurrent batches.
 - **Only its own pools are ticketed.** A run-list item submits or reuses a download ticket
   only for pools holding its runs; re-import the whole study to retry other failed pools.

@@ -2990,7 +2990,7 @@ async def test_run_list_folds_into_a_whole_study_item_of_the_same_accession(
     await _cleanup_study(postgres_pool, study_b)
 
 
-async def test_run_list_wholly_covered_by_whole_study_items_fails_naming_them(
+async def test_run_list_wholly_covered_by_whole_study_items_follows_their_downloads(
     batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
 ):
     study = unique_ena_accession("PRJEB")
@@ -3003,8 +3003,46 @@ async def test_run_list_wholly_covered_by_whole_study_items_fails_naming_them(
 
     whole, ungrouped = await _batch_items(postgres_pool, batch_idx)
     assert whole["state"] == BatchItemState.DOWNLOADING.value
+    assert ungrouped["state"] == BatchItemState.DOWNLOADING.value
+    assert ungrouped["failure_reason"] is None
+    assert ungrouped["download_work_ticket_idxs"] == whole["download_work_ticket_idxs"]
+
+    await postgres_pool.execute(
+        "UPDATE qiita.work_ticket SET state = $2 WHERE work_ticket_idx = ANY($1::bigint[])",
+        list(whole["download_work_ticket_idxs"]),
+        WorkTicketState.COMPLETED.value,
+    )
+    status = await fetch_batch_status(postgres_pool, batch_idx=batch_idx)
+    assert [i.state for i in status.items] == [BatchItemState.DONE, BatchItemState.DONE]
+
+    await _cleanup_study(postgres_pool, study)
+
+
+async def test_run_list_absorbed_by_a_failed_whole_study_item_fails_naming_it(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    study = unique_ena_accession("PRJEB")
+    runs = _runs(2)
+    _EnaWorld(monkeypatch, {study: runs})
+    async with postgres_pool.acquire() as conn, conn.transaction():
+        await create_study(
+            conn,
+            owner_idx=admin_principal.principal_idx,
+            created_by_idx=admin_principal.principal_idx,
+            title="native study",
+            bioproject_accession=study,
+        )
+
+    batch_idx, _ = await _drive_accessions(
+        batch_app, postgres_pool, admin_principal, batch_cleanup, [study, runs[0]]
+    )
+
+    whole, ungrouped = await _batch_items(postgres_pool, batch_idx)
+    assert whole["state"] == BatchItemState.FAILED.value
     assert ungrouped["state"] == BatchItemState.FAILED.value
-    assert study in ungrouped["failure_reason"]
+    assert ungrouped["failure_reason"] == (
+        f"every requested run belongs to a study this batch imports whole, which failed: {study}"
+    )
 
     await _cleanup_study(postgres_pool, study)
 
