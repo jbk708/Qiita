@@ -66,9 +66,9 @@ class EnaAvailabilityClient:
         `statusDescription`.
 
         Raises `httpx.HTTPStatusError` when a run still returns non-2xx on its
-        own. A 500 covers withdrawn and a transient fault alike, so
-        it is not evidence the run is unavailable and writes no flag. Also
-        raises `UnknownEnaBrowserStatusError` for an unrecognized status, and
+        own. A 500 covers withdrawn and a transient fault alike, so it is not
+        evidence the run is unavailable and writes no flag. Also raises
+        `UnknownEnaBrowserStatusError` for an unrecognized status, and
         `ValueError` when a response omits a requested run.
         """
         statuses: dict[str, str | None] = {}
