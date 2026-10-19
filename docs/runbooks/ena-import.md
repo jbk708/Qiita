@@ -146,11 +146,10 @@ a 5xx.
   `sequenced_sample.ena_status`, and a `flagged_unavailable` outcome on the batch
   item naming it. The outcome is recorded as soon as the flag commits, so it stays
   on the item even if a later step fails it.
-- **A run that still errors on its own — including HTTP 500** (observed live for
-  both a nonexistent accession and, per ENA's docs, a withdrawn run; the two are
-  indistinguishable from this endpoint alone) **— fails the whole item and writes
-  no flags**: a 500 is not evidence a run is unavailable, and an availability
-  check never leaves a run half-updated.
+- **A run that still errors on its own — HTTP 500 (per ENA's docs, a withdrawn
+  run), or a response that leaves it out (observed live for a nonexistent
+  accession) — fails the whole item and writes no flags**: neither is evidence a
+  run is unavailable, and an availability check never leaves a run half-updated.
 - **A status this codebase does not recognize** fails the item the same way.
 
 **A study blocked by one run.** A held run that keeps returning 500 fails every
