@@ -14,7 +14,12 @@ import httpx
 import pytest
 import pytest_asyncio
 from qiita_common.auth_constants import MSG_PRINCIPAL_DISABLED_OR_RETIRED, SystemRole
-from qiita_common.models import NON_TERMINAL_WORK_TICKET_STATES
+from qiita_common.models import (
+    NON_TERMINAL_WORK_TICKET_STATES,
+    FailureType,
+    WorkTicketFailureStage,
+    WorkTicketState,
+)
 from qiita_common.models.ena_import import BatchItemState
 
 from qiita_control_plane.auth.principal import HumanUser
@@ -2836,7 +2841,9 @@ async def test_whole_study_import_after_a_run_list_registers_only_the_rest(
             work_ticket_idx=None,
         )
     await postgres_pool.execute(
-        "UPDATE qiita.work_ticket SET state = 'completed' WHERE work_ticket_idx = $1", first_ticket
+        "UPDATE qiita.work_ticket SET state = $2 WHERE work_ticket_idx = $1",
+        first_ticket,
+        WorkTicketState.COMPLETED.value,
     )
 
     second_idx, _ = await _drive_accessions(
@@ -3054,9 +3061,12 @@ async def _seed_failed_pool_with_one_run(
     )
     (ticket,) = await _item_ticket_idxs(postgres_pool, items[0].idx)
     await postgres_pool.execute(
-        "UPDATE qiita.work_ticket SET state = 'failed', failure_type = 'permanent',"
-        " failure_stage = 'submission', failure_reason = 'boom' WHERE work_ticket_idx = $1",
+        "UPDATE qiita.work_ticket SET state = $2, failure_type = $3,"
+        " failure_stage = $4, failure_reason = 'boom' WHERE work_ticket_idx = $1",
         ticket,
+        WorkTicketState.FAILED.value,
+        FailureType.PERMANENT.value,
+        WorkTicketFailureStage.SUBMISSION.value,
     )
     return await postgres_pool.fetchval(
         "SELECT sequenced_pool_idx FROM qiita.work_ticket WHERE work_ticket_idx = $1", ticket

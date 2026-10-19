@@ -237,9 +237,9 @@ did.
   `failure_reason` on any `failed` item. An item whose download ticket failed or was
   cancelled reports `failed`. Also admin-only.
 
-A control-plane restart re-drives every accession still `pending`, `resolving` or
+A control-plane restart re-drives every item still `pending`, `resolving` or
 `registered`, unless the batch's submitter has since been disabled or retired: those
-accessions fail with that reason instead, and a re-import by an active admin picks
+items fail with that reason instead, and a re-import by an active admin picks
 them up.
 
 `qiita submit-ena-import ACCESSION [ACCESSION ...]` (or `--from-file FILE`, one accession
@@ -251,7 +251,7 @@ whole call — then by default polls to terminal with `--poll-interval-seconds` 
 right after submit. A transient failure while polling — a dropped connection or a 5xx —
 is retried until the timeout instead of failing the watch; any other HTTP error is
 fatal. Exit codes: `0` every item reached `done`; `1` an item ended `failed`, the watch
-timed out (naming each still-pending accession and its last known state), an HTTP
+timed out (naming each still-pending item and its last known state), an HTTP
 error, or no token was found; `2` bad input (a malformed accession, a bad `--from-file`
 line, an out-of-range flag); `130` Ctrl-C, naming the batch to poll if the POST had
 already succeeded. `qiita ena-import-status IDX` reads a batch's current state and
