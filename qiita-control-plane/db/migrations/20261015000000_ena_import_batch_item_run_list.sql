@@ -16,7 +16,7 @@ ALTER TABLE qiita.ena_import_batch_item
 
 COMMENT ON COLUMN qiita.ena_import_batch_item.requested_run_accessions IS
     'The ENA runs this item imports, or NULL to import its whole study. A NULL '
-    'ena_study_accession marks a run-list item not yet grouped by study.';
+    'ena_study_accession marks a run-list item not grouped by study.';
 
 COMMENT ON TABLE qiita.ena_import_batch_item IS
     'One INSDC study accession, or one run list, within a qiita.ena_import_batch, '
