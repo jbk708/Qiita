@@ -146,6 +146,16 @@ async def _seed_mask_sample(s, mask_idx: int, state: str = "completed") -> None:
     )
 
 
+async def _seed_alignment_sample(s, alignment_idx: int, state: str = "completed") -> None:
+    await s["pool"].execute(
+        "INSERT INTO qiita.alignment_sample (alignment_idx, prep_sample_idx, state)"
+        " VALUES ($1, $2, $3)",
+        alignment_idx,
+        s["prep_sample_idx"],
+        state,
+    )
+
+
 async def _add(
     s,
     check: QcCheck,
@@ -366,8 +376,18 @@ async def test_verdict_drops_mask_row_without_a_completed_mask_sample(seeded):
     assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.HOST_FRACTION)
 
 
+async def test_verdict_drops_alignment_row_without_a_completed_alignment_sample(seeded):
+    no_gate, pending = await _seed_alignment(seeded), await _seed_alignment(seeded)
+    await _seed_alignment_sample(seeded, pending, state="pending")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, alignment_idx=no_gate)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.FAIL, alignment_idx=pending)
+    await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.INFO)
+    assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.HOST_FRACTION)
+
+
 async def test_verdict_keeps_alignment_and_unproduced_rows_when_mask_row_drops(seeded):
     mask_idx, alignment_idx = await _seed_mask(seeded), await _seed_alignment(seeded)
+    await _seed_alignment_sample(seeded, alignment_idx)
     await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=mask_idx)
     await _add(seeded, QcCheck.COMPOSITION, QcSeverity.WARNING, alignment_idx=alignment_idx)
     await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.INFO)
@@ -385,6 +405,7 @@ async def test_verdict_drops_invalidated_row_of_each_producer_kind(seeded, produ
         await _seed_mask_sample(seeded, kwargs["mask_idx"])
     elif producer == "alignment":
         kwargs["alignment_idx"] = await _seed_alignment(seeded)
+        await _seed_alignment_sample(seeded, kwargs["alignment_idx"])
     failing = await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, **kwargs)
     await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)
     assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.DATA_TYPE)

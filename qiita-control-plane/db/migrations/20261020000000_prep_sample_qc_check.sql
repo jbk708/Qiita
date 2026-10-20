@@ -60,15 +60,19 @@ SELECT DISTINCT ON (c.prep_sample_idx)
   LEFT JOIN qiita.mask_definition md ON md.mask_idx = c.mask_idx
   LEFT JOIN qiita.mask_sample ms
     ON ms.mask_idx = c.mask_idx AND ms.prep_sample_idx = c.prep_sample_idx
+  LEFT JOIN qiita.alignment_sample als
+    ON als.alignment_idx = c.alignment_idx AND als.prep_sample_idx = c.prep_sample_idx
  WHERE c.state = 'current'
    AND (c.mask_idx IS NULL OR (md.status = 'active' AND ms.state = 'completed'))
+   AND (c.alignment_idx IS NULL OR als.state = 'completed')
  ORDER BY c.prep_sample_idx,
           CASE c.severity WHEN 'fail' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,
           c."check", c.idx;
 
 COMMENT ON VIEW qiita.qc_verdict IS
-    'Worst severity per prep_sample among the rows that count: current, and for a mask '
-    'row an active mask with a completed mask_sample. Python twin: qiita_common.models.QcVerdict.';
+    'Worst severity per prep_sample among the rows that count: current, for a mask row '
+    'an active mask with a completed mask_sample, and for an alignment row a completed '
+    'alignment_sample. Python twin: qiita_common.models.QcVerdict.';
 
 -- migrate:down
 
