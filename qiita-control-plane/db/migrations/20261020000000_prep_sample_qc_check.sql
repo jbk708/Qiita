@@ -2,8 +2,7 @@
 
 -- migrate:up
 
--- FKs cascade: these rows are derived receipts and must not block a pool
--- force-delete or a mask/alignment delete.
+-- The derived-row FKs cascade so these receipts never block a delete; the invalidator is RESTRICT.
 CREATE TABLE qiita.prep_sample_qc_check (
     idx                 BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     prep_sample_idx     BIGINT NOT NULL REFERENCES qiita.prep_sample(idx) ON DELETE CASCADE,
@@ -34,29 +33,25 @@ CREATE TABLE qiita.prep_sample_qc_check (
     CONSTRAINT prep_sample_qc_check_reason_format CHECK (reason ~ '^[a-z][a-z0-9_]*$'),
     CONSTRAINT prep_sample_qc_check_one_producer CHECK (num_nonnulls(mask_idx, alignment_idx) <= 1),
     CONSTRAINT prep_sample_qc_check_invalidation_fields CHECK (
-        (state = 'invalidated')
-            = (invalidated_at IS NOT NULL
-               AND invalidated_by_idx IS NOT NULL
-               AND invalidation_reason IS NOT NULL)
+        (state = 'current'
+            AND num_nonnulls(invalidated_at, invalidated_by_idx, invalidation_reason) = 0)
+        OR (state = 'invalidated'
+            AND num_nonnulls(invalidated_at, invalidated_by_idx, invalidation_reason) = 3)
     ),
     CONSTRAINT prep_sample_qc_check_invalidation_reason_nonblank CHECK (
         invalidation_reason IS NULL OR btrim(invalidation_reason) <> ''
     )
 );
 
--- NULLS NOT DISTINCT is safe here, unlike on exported_identifier, because "check"
--- is part of the key.
+-- NULLS NOT DISTINCT so a NULL producer still collides within (prep_sample, "check").
 CREATE UNIQUE INDEX prep_sample_qc_check_key
     ON qiita.prep_sample_qc_check (prep_sample_idx, "check", mask_idx, alignment_idx)
     NULLS NOT DISTINCT;
 
 COMMENT ON TABLE qiita.prep_sample_qc_check IS
-    'One QC check result per (prep_sample, check, producer); the producer is a '
-    'mask, an alignment or neither. check, severity and state are TEXT + CHECK, '
-    'not Postgres ENUMs; Python twins qiita_common.models.QcCheck, QcSeverity and '
-    'QcCheckState. reason codes live in qiita_common/data/qc_reasons.yml, not in a '
-    'CHECK. A re-run is an upsert and must reset state and the three invalidated_* '
-    'fields, which clears an earlier invalidation in place.';
+    'One QC check result per (prep_sample, check, producer). Python twins: '
+    'qiita_common.models.QcCheck, QcSeverity, QcCheckState; reason codes live in '
+    'qiita_common/data/qc_reasons.yml.';
 
 CREATE VIEW qiita.qc_verdict AS
 SELECT DISTINCT ON (c.prep_sample_idx)
@@ -72,11 +67,8 @@ SELECT DISTINCT ON (c.prep_sample_idx)
           c."check", c.idx;
 
 COMMENT ON VIEW qiita.qc_verdict IS
-    'Worst severity per prep_sample among the check rows that count, with the '
-    'check that set it (ties go to the first "check", then idx). A row counts when '
-    'state is current and, for a mask row, the mask is active and its mask_sample '
-    'is completed; a mask row with no mask_sample row does not count. Python twin: '
-    'qiita_common.models.QcVerdict.';
+    'Worst severity per prep_sample among the rows that count: current, and for a mask '
+    'row an active mask with a completed mask_sample. Python twin: qiita_common.models.QcVerdict.';
 
 -- migrate:down
 

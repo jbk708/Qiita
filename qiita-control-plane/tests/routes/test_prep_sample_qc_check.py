@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from qiita_common.api_paths import URL_QC_CHECK_BY_PREP_SAMPLE
-from qiita_common.models import Tier
+from qiita_common.models import QcCheck, QcCheckState, QcSeverity, Tier
 
 from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
@@ -39,7 +39,9 @@ async def _seed_ticket(pool, *, principal_idx: int, version: str, prep_sample_id
     )
 
 
-async def _add_check(pool, ticket_idx: int, prep_sample_idx: int, check: str, severity: str, **kw):
+async def _add_check(
+    pool, ticket_idx: int, prep_sample_idx: int, check: QcCheck, severity: QcSeverity, **kw
+):
     await pool.execute(
         "INSERT INTO qiita.prep_sample_qc_check"
         ' (prep_sample_idx, "check", severity, reason, measured_value, threshold,'
@@ -52,7 +54,7 @@ async def _add_check(pool, ticket_idx: int, prep_sample_idx: int, check: str, se
         kw.get("measured_value"),
         kw.get("threshold"),
         ticket_idx,
-        kw.get("state", "current"),
+        kw.get("state", QcCheckState.CURRENT),
         kw.get("invalidated_at"),
         kw.get("invalidated_by_idx"),
         kw.get("invalidation_reason"),
@@ -166,13 +168,13 @@ async def test_viewer_reads_rows_and_verdict(ctx):
     ps_idx, ticket_idx, study_idx = await ctx["make_prep_sample"]()
     await _as_viewer(ctx, study_idx)
     pool = ctx["pool"]
-    await _add_check(pool, ticket_idx, ps_idx, "data_type", "info")
+    await _add_check(pool, ticket_idx, ps_idx, QcCheck.DATA_TYPE, QcSeverity.INFO)
     await _add_check(
         pool,
         ticket_idx,
         ps_idx,
-        "composition",
-        "fail",
+        QcCheck.COMPOSITION,
+        QcSeverity.FAIL,
         reason="high_unknown",
         measured_value=0.9,
         threshold=0.5,
@@ -181,9 +183,9 @@ async def test_viewer_reads_rows_and_verdict(ctx):
         pool,
         ticket_idx,
         ps_idx,
-        "classifier",
-        "warning",
-        state="invalidated",
+        QcCheck.CLASSIFIER,
+        QcSeverity.WARNING,
+        state=QcCheckState.INVALIDATED,
         invalidated_at=await pool.fetchval("SELECT now()"),
         invalidated_by_idx=ctx["owner_idx"],
         invalidation_reason="replaced",
@@ -194,20 +196,24 @@ async def test_viewer_reads_rows_and_verdict(ctx):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["prep_sample_idx"] == ps_idx
-    assert body["verdict"] == {"severity": "fail", "check": "composition"}
-    assert [c["check"] for c in body["checks"]] == ["classifier", "composition", "data_type"]
+    assert body["verdict"] == {"severity": QcSeverity.FAIL, "check": QcCheck.COMPOSITION}
+    assert [c["check"] for c in body["checks"]] == [
+        QcCheck.CLASSIFIER,
+        QcCheck.COMPOSITION,
+        QcCheck.DATA_TYPE,
+    ]
     composition = body["checks"][1]
     assert composition["reason"] == "high_unknown"
     assert composition["measured_value"] == 0.9
     assert composition["threshold"] == 0.5
     assert composition["work_ticket_idx"] == ticket_idx
     classifier = body["checks"][0]
-    assert classifier["state"] == "invalidated"
+    assert classifier["state"] == QcCheckState.INVALIDATED
     assert classifier["invalidation_reason"] == "replaced"
     assert "invalidated_by_idx" not in classifier
 
 
-async def test_viewer_on_sample_with_no_rows_gets_empty(ctx):
+async def test_viewer_on_prep_sample_with_no_rows_gets_empty(ctx):
     ps_idx, _, study_idx = await ctx["make_prep_sample"]()
     await _as_viewer(ctx, study_idx)
     resp = await ctx["user"].get(_url(ps_idx))
@@ -215,32 +221,32 @@ async def test_viewer_on_sample_with_no_rows_gets_empty(ctx):
     assert resp.json() == {"prep_sample_idx": ps_idx, "verdict": None, "checks": []}
 
 
-async def test_no_access_403_for_existing_foreign_sample_without_leaking_rows(ctx):
+async def test_no_access_403_for_existing_foreign_prep_sample_without_leaking_rows(ctx):
     ps_idx, ticket_idx, _ = await ctx["make_prep_sample"]()
-    await _add_check(ctx["pool"], ticket_idx, ps_idx, "data_type", "fail")
+    await _add_check(ctx["pool"], ticket_idx, ps_idx, QcCheck.DATA_TYPE, QcSeverity.FAIL)
     resp = await ctx["user"].get(_url(ps_idx))
     assert resp.status_code == 403, resp.text
-    assert "data_type" not in resp.text
+    assert QcCheck.DATA_TYPE not in resp.text
 
 
-async def test_no_access_403_for_unlinked_sample(ctx):
+async def test_no_access_403_for_unlinked_prep_sample(ctx):
     ps_idx, _, _ = await ctx["make_prep_sample"](linked=False)
     assert (await ctx["user"].get(_url(ps_idx))).status_code == 403
 
 
-async def test_no_access_403_for_nonexistent_sample(ctx):
+async def test_no_access_403_for_nonexistent_prep_sample(ctx):
     bogus = await ctx["pool"].fetchval("SELECT COALESCE(MAX(idx), 0) FROM qiita.prep_sample") + 999
     assert (await ctx["user"].get(_url(bogus))).status_code == 403
 
 
-async def test_admin_reads_foreign_sample(ctx):
+async def test_admin_reads_foreign_prep_sample(ctx):
     ps_idx, ticket_idx, _ = await ctx["make_prep_sample"]()
-    await _add_check(ctx["pool"], ticket_idx, ps_idx, "data_type", "warning")
+    await _add_check(ctx["pool"], ticket_idx, ps_idx, QcCheck.DATA_TYPE, QcSeverity.WARNING)
     resp = await ctx["wet"].get(_url(ps_idx))
     assert resp.status_code == 200, resp.text
-    assert resp.json()["verdict"] == {"severity": "warning", "check": "data_type"}
+    assert resp.json()["verdict"] == {"severity": QcSeverity.WARNING, "check": QcCheck.DATA_TYPE}
 
 
-async def test_admin_gets_404_for_nonexistent_sample(ctx):
+async def test_admin_gets_404_for_nonexistent_prep_sample(ctx):
     bogus = await ctx["pool"].fetchval("SELECT COALESCE(MAX(idx), 0) FROM qiita.prep_sample") + 999
     assert (await ctx["wet"].get(_url(bogus))).status_code == 404

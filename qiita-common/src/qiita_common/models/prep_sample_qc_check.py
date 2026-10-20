@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 class QcCheck(StrEnum):
-    """Mirrors TEXT+CHECK `prep_sample_qc_check_check_values`; no ENUM_PAIRS entry."""
+    """Mirrors the `prep_sample_qc_check_check_values` CHECK."""
 
     DATA_TYPE = "data_type"
     COMPOSITION = "composition"
@@ -20,7 +20,7 @@ class QcCheck(StrEnum):
 
 
 class QcSeverity(StrEnum):
-    """Mirrors TEXT+CHECK `prep_sample_qc_check_severity_values`; no ENUM_PAIRS entry."""
+    """Mirrors the `prep_sample_qc_check_severity_values` CHECK."""
 
     INFO = "info"
     WARNING = "warning"
@@ -28,7 +28,7 @@ class QcSeverity(StrEnum):
 
 
 class QcCheckState(StrEnum):
-    """Mirrors TEXT+CHECK `prep_sample_qc_check_state_values`; no ENUM_PAIRS entry."""
+    """Mirrors the `prep_sample_qc_check_state_values` CHECK."""
 
     CURRENT = "current"
     INVALIDATED = "invalidated"

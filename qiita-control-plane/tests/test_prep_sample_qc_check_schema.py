@@ -32,12 +32,12 @@ _DEPRECATE_MASK = (
     " deprecated_by_idx = $2, deprecation_reason = 'test' WHERE mask_idx = $1"
 )
 _INVALIDATE_MASK_SAMPLE = (
-    "UPDATE qiita.mask_sample SET state = 'invalidated', invalidated_at = now(),"
+    "UPDATE qiita.mask_sample SET state = $4, invalidated_at = now(),"
     " invalidated_by_idx = $3, invalidation_reason = 'test'"
     " WHERE mask_idx = $1 AND prep_sample_idx = $2"
 )
 _INVALIDATE_CHECK = (
-    "UPDATE qiita.prep_sample_qc_check SET state = 'invalidated', invalidated_at = now(),"
+    "UPDATE qiita.prep_sample_qc_check SET state = $3, invalidated_at = now(),"
     " invalidated_by_idx = $2, invalidation_reason = 'test' WHERE idx = $1"
 )
 
@@ -88,11 +88,13 @@ async def seeded(postgres_pool):
         _ACTION_ID,
         version,
     )
-    for table, key, idxs in (
-        ("mask_definition", "mask_idx", state["masks"]),
-        ("alignment_definition", "alignment_idx", state["alignments"]),
-    ):
-        await pool.execute(f"DELETE FROM qiita.{table} WHERE {key} = ANY($1::bigint[])", idxs)
+    await pool.execute(
+        "DELETE FROM qiita.mask_definition WHERE mask_idx = ANY($1::bigint[])", state["masks"]
+    )
+    await pool.execute(
+        "DELETE FROM qiita.alignment_definition WHERE alignment_idx = ANY($1::bigint[])",
+        state["alignments"],
+    )
     await teardown_entity_graph(
         pool,
         study_idxs=[],
@@ -139,14 +141,14 @@ async def _seed_mask_sample(s, mask_idx: int, state: str = "completed") -> None:
 
 async def _add(
     s,
-    check: str,
-    severity: str,
+    check: QcCheck,
+    severity: QcSeverity,
     *,
     prep_sample_idx: int | None = None,
     reason: str | None = None,
     mask_idx: int | None = None,
     alignment_idx: int | None = None,
-    state: str = "current",
+    state: QcCheckState = QcCheckState.CURRENT,
     invalidated_at=None,
     invalidated_by_idx: int | None = None,
     invalidation_reason: str | None = None,
@@ -206,30 +208,29 @@ async def test_strenum_matches_check_list(postgres_pool, conname, enum):
     ],
 )
 async def test_value_outside_check_rejected(seeded, column, bad):
-    kwargs = {"check": "data_type", "severity": "fail"}
-    if column == "reason":
-        kwargs["reason"] = bad
-    elif column == "state":
-        kwargs["state"] = bad
-    else:
-        kwargs[column] = bad
-    check, severity = kwargs.pop("check"), kwargs.pop("severity")
+    kwargs = {"check": QcCheck.DATA_TYPE, "severity": QcSeverity.FAIL, column: bad}
     with pytest.raises(asyncpg.CheckViolationError):
-        await _add(seeded, check, severity, **kwargs)
+        await _add(seeded, kwargs.pop("check"), kwargs.pop("severity"), **kwargs)
 
 
 async def test_null_reason_accepted(seeded):
-    await _add(seeded, "data_type", "info", reason=None)
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.INFO, reason=None)
 
 
 async def test_snake_case_reason_accepted(seeded):
-    await _add(seeded, "data_type", "fail", reason="data_type_mismatch")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, reason="data_type_mismatch")
 
 
 async def test_both_producers_rejected(seeded):
     mask_idx, alignment_idx = await _seed_mask(seeded), await _seed_alignment(seeded)
     with pytest.raises(asyncpg.CheckViolationError):
-        await _add(seeded, "data_type", "fail", mask_idx=mask_idx, alignment_idx=alignment_idx)
+        await _add(
+            seeded,
+            QcCheck.DATA_TYPE,
+            QcSeverity.FAIL,
+            mask_idx=mask_idx,
+            alignment_idx=alignment_idx,
+        )
 
 
 @pytest.mark.parametrize("producer", ["none", "mask", "alignment"])
@@ -239,67 +240,72 @@ async def test_second_row_under_same_key_refused(seeded, producer):
         kwargs["mask_idx"] = await _seed_mask(seeded)
     elif producer == "alignment":
         kwargs["alignment_idx"] = await _seed_alignment(seeded)
-    await _add(seeded, "composition", "info", **kwargs)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO, **kwargs)
     with pytest.raises(asyncpg.UniqueViolationError):
-        await _add(seeded, "composition", "fail", **kwargs)
+        await _add(seeded, QcCheck.COMPOSITION, QcSeverity.FAIL, **kwargs)
 
 
 async def test_same_check_under_different_producers_allowed(seeded):
     mask_idx = await _seed_mask(seeded)
-    await _add(seeded, "composition", "info")
-    await _add(seeded, "composition", "info", mask_idx=mask_idx)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO, mask_idx=mask_idx)
 
 
 async def test_invalidated_state_without_fields_rejected(seeded):
     with pytest.raises(asyncpg.CheckViolationError):
-        await _add(seeded, "data_type", "fail", state="invalidated")
+        await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, state=QcCheckState.INVALIDATED)
 
 
-async def test_invalidation_fields_without_invalidated_state_rejected(seeded):
+@pytest.mark.parametrize("n_fields", [1, 2, 3])
+async def test_current_row_with_invalidation_fields_set_rejected(seeded, n_fields):
+    fields = {
+        "invalidated_at": await seeded["pool"].fetchval("SELECT now()"),
+        "invalidated_by_idx": seeded["principal_idx"],
+        "invalidation_reason": "why",
+    }
     with pytest.raises(asyncpg.CheckViolationError):
         await _add(
             seeded,
-            "data_type",
-            "fail",
-            invalidated_at=await seeded["pool"].fetchval("SELECT now()"),
-            invalidated_by_idx=seeded["principal_idx"],
-            invalidation_reason="why",
+            QcCheck.DATA_TYPE,
+            QcSeverity.FAIL,
+            **dict(list(fields.items())[:n_fields]),
         )
 
 
 async def test_blank_invalidation_reason_rejected(seeded):
-    idx = await _add(seeded, "data_type", "fail")
+    idx = await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL)
     with pytest.raises(asyncpg.CheckViolationError):
         await seeded["pool"].execute(
-            "UPDATE qiita.prep_sample_qc_check SET state = 'invalidated',"
+            "UPDATE qiita.prep_sample_qc_check SET state = $3,"
             " invalidated_at = now(), invalidated_by_idx = $2, invalidation_reason = '  '"
             " WHERE idx = $1",
             idx,
             seeded["principal_idx"],
+            QcCheckState.INVALIDATED,
         )
 
 
 async def test_verdict_is_worst_severity_and_names_its_check(seeded):
     pool = seeded["pool"]
-    await _add(seeded, "data_type", "info")
-    await _add(seeded, "composition", "warning")
-    await _add(seeded, "host_fraction", "fail")
-    assert await _verdict(seeded) == ("fail", "host_fraction")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.INFO)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.WARNING)
+    await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.FAIL)
+    assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.HOST_FRACTION)
 
     biosample_idx, other_ps, _ = await _seed_prep_sample_and_ticket(
         pool, seeded["principal_idx"], seeded["version"]
     )
     seeded["biosamples"].append(biosample_idx)
     seeded["prep_samples"].append(other_ps)
-    await _add(seeded, "data_type", "info", prep_sample_idx=other_ps)
-    await _add(seeded, "composition", "warning", prep_sample_idx=other_ps)
-    assert await _verdict(seeded, other_ps) == ("warning", "composition")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.INFO, prep_sample_idx=other_ps)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.WARNING, prep_sample_idx=other_ps)
+    assert await _verdict(seeded, other_ps) == (QcSeverity.WARNING, QcCheck.COMPOSITION)
 
 
 async def test_verdict_tie_goes_to_first_check_by_name(seeded):
-    await _add(seeded, "source_tracker", "fail")
-    await _add(seeded, "classifier", "fail")
-    assert await _verdict(seeded) == ("fail", "classifier")
+    await _add(seeded, QcCheck.SOURCE_TRACKER, QcSeverity.FAIL)
+    await _add(seeded, QcCheck.CLASSIFIER, QcSeverity.FAIL)
+    assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.CLASSIFIER)
 
 
 async def test_verdict_absent_without_rows(seeded):
@@ -309,42 +315,46 @@ async def test_verdict_absent_without_rows(seeded):
 async def test_verdict_drops_row_whose_mask_is_deprecated(seeded):
     mask_idx = await _seed_mask(seeded)
     await _seed_mask_sample(seeded, mask_idx)
-    await _add(seeded, "data_type", "fail", mask_idx=mask_idx)
-    await _add(seeded, "composition", "info")
-    assert await _verdict(seeded) == ("fail", "data_type")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=mask_idx)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)
+    assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.DATA_TYPE)
     await seeded["pool"].execute(_DEPRECATE_MASK, mask_idx, seeded["principal_idx"])
-    assert await _verdict(seeded) == ("info", "composition")
+    assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.COMPOSITION)
 
 
 async def test_verdict_drops_row_whose_mask_sample_is_invalidated(seeded):
     mask_idx = await _seed_mask(seeded)
     await _seed_mask_sample(seeded, mask_idx)
-    await _add(seeded, "data_type", "fail", mask_idx=mask_idx)
-    await _add(seeded, "composition", "info")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=mask_idx)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)
     await seeded["pool"].execute(
-        _INVALIDATE_MASK_SAMPLE, mask_idx, seeded["prep_sample_idx"], seeded["principal_idx"]
+        _INVALIDATE_MASK_SAMPLE,
+        mask_idx,
+        seeded["prep_sample_idx"],
+        seeded["principal_idx"],
+        QcCheckState.INVALIDATED,
     )
-    assert await _verdict(seeded) == ("info", "composition")
+    assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.COMPOSITION)
 
 
 async def test_verdict_drops_mask_row_without_a_completed_mask_sample(seeded):
     no_gate, pending = await _seed_mask(seeded), await _seed_mask(seeded)
     await _seed_mask_sample(seeded, pending, state="pending")
-    await _add(seeded, "data_type", "fail", mask_idx=no_gate)
-    await _add(seeded, "composition", "fail", mask_idx=pending)
-    await _add(seeded, "host_fraction", "info")
-    assert await _verdict(seeded) == ("info", "host_fraction")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=no_gate)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.FAIL, mask_idx=pending)
+    await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.INFO)
+    assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.HOST_FRACTION)
 
 
 async def test_verdict_keeps_alignment_and_unproduced_rows_when_mask_row_drops(seeded):
     mask_idx, alignment_idx = await _seed_mask(seeded), await _seed_alignment(seeded)
-    await _add(seeded, "data_type", "fail", mask_idx=mask_idx)
-    await _add(seeded, "composition", "warning", alignment_idx=alignment_idx)
-    await _add(seeded, "host_fraction", "info")
-    assert await _verdict(seeded) == ("warning", "composition")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=mask_idx)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.WARNING, alignment_idx=alignment_idx)
+    await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.INFO)
+    assert await _verdict(seeded) == (QcSeverity.WARNING, QcCheck.COMPOSITION)
 
-    await _add(seeded, "read_retention", "fail")
-    assert await _verdict(seeded) == ("fail", "read_retention")
+    await _add(seeded, QcCheck.READ_RETENTION, QcSeverity.FAIL)
+    assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.READ_RETENTION)
 
 
 @pytest.mark.parametrize("producer", ["none", "mask", "alignment"])
@@ -355,19 +365,21 @@ async def test_verdict_drops_invalidated_row_of_each_producer_kind(seeded, produ
         await _seed_mask_sample(seeded, kwargs["mask_idx"])
     elif producer == "alignment":
         kwargs["alignment_idx"] = await _seed_alignment(seeded)
-    failing = await _add(seeded, "data_type", "fail", **kwargs)
-    await _add(seeded, "composition", "info")
-    assert await _verdict(seeded) == ("fail", "data_type")
-    await seeded["pool"].execute(_INVALIDATE_CHECK, failing, seeded["principal_idx"])
-    assert await _verdict(seeded) == ("info", "composition")
+    failing = await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, **kwargs)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)
+    assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.DATA_TYPE)
+    await seeded["pool"].execute(
+        _INVALIDATE_CHECK, failing, seeded["principal_idx"], QcCheckState.INVALIDATED
+    )
+    assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.COMPOSITION)
 
 
 async def test_deleting_mask_alignment_and_ticket_cascades_to_rows(seeded):
     pool = seeded["pool"]
     mask_idx, alignment_idx = await _seed_mask(seeded), await _seed_alignment(seeded)
-    await _add(seeded, "data_type", "fail", mask_idx=mask_idx)
-    await _add(seeded, "composition", "fail", alignment_idx=alignment_idx)
-    await _add(seeded, "host_fraction", "fail")
+    await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=mask_idx)
+    await _add(seeded, QcCheck.COMPOSITION, QcSeverity.FAIL, alignment_idx=alignment_idx)
+    await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.FAIL)
     await pool.execute("DELETE FROM qiita.mask_definition WHERE mask_idx = $1", mask_idx)
     await pool.execute(
         "DELETE FROM qiita.alignment_definition WHERE alignment_idx = $1", alignment_idx
@@ -376,7 +388,7 @@ async def test_deleting_mask_alignment_and_ticket_cascades_to_rows(seeded):
         'SELECT "check" FROM qiita.prep_sample_qc_check WHERE prep_sample_idx = $1',
         seeded["prep_sample_idx"],
     )
-    assert [r["check"] for r in remaining] == ["host_fraction"]
+    assert [r["check"] for r in remaining] == [QcCheck.HOST_FRACTION]
     await pool.execute(
         "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = $1", seeded["ticket_idx"]
     )

@@ -1,5 +1,4 @@
 # Allowed QC reason codes, by check. Keys must be QcCheck members.
-# Adding or removing a reason needs no migration; the writer validates against this file.
 data_type:
   - data_type_mismatch
 composition:
