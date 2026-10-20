@@ -435,6 +435,56 @@ def test_watch_exits_1_when_any_item_failed(monkeypatch, patch_async_client, cap
     assert "ENA returned no runs" in out
 
 
+def test_watch_exits_1_and_names_the_failed_runs_when_an_item_is_completed_partial(
+    monkeypatch, patch_async_client, capsys
+):
+    from qiita_control_plane.cli.user._parser import _build_parser
+
+    post_body = {"ena_import_batch_idx": 5, "items": [_item("PRJEB11419", "pending")]}
+    get_bodies = [
+        {
+            "ena_import_batch_idx": 5,
+            "items": [
+                _item(
+                    "PRJEB11419",
+                    "completed_partial",
+                    failure_reason="ERR1 (permanent)",
+                    ena_runs=[
+                        {
+                            "run_accession": "ERR1",
+                            "status": "download_failed",
+                            "failure_reason": "no sequence data found",
+                            "failure_type": "permanent",
+                        }
+                    ],
+                )
+            ],
+        },
+    ]
+    handler, calls = _make_handler(post_body=post_body, get_bodies=get_bodies)
+    patch_async_client(httpx.MockTransport(handler))
+    monkeypatch.setenv("QIITA_TOKEN", "qk_test")
+
+    parser = _build_parser()
+    ns = parser.parse_args(
+        [
+            "--base-url",
+            "https://q.example.test",
+            "submit-ena-import",
+            "PRJEB11419",
+            "--poll-interval-seconds",
+            "0.001",
+        ]
+    )
+    rc = ns.handler(ns, parser)
+
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert "PRJEB11419 -> completed_partial (ERR1 (permanent))" in err
+    assert "no sequence data found" in out
+    assert [m for m, _p, _b in calls] == ["POST", "GET"]
+
+
 def test_watch_exits_0_when_a_done_item_has_failed_ena_runs(
     monkeypatch, patch_async_client, capsys
 ):
@@ -941,6 +991,27 @@ def test_ena_import_status_issues_get_against_the_idx(monkeypatch):
         f"https://q.example.test{URL_ENA_IMPORT_BATCH_BY_IDX.format(ena_import_batch_idx=5)}"
     )
     assert captured["json"] is None
+
+
+def test_ena_import_status_exits_0_for_a_completed_partial_item(monkeypatch, capsys):
+    from qiita_control_plane.cli import _common
+    from qiita_control_plane.cli.user import main
+
+    response_json = {
+        "ena_import_batch_idx": 5,
+        "items": [_item("PRJEB11419", "completed_partial", failure_reason="ERR1 (permanent)")],
+    }
+
+    def fake_request(method, url, headers=None, json=None, params=None, timeout=None):
+        return httpx.Response(200, json=response_json, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(_common.httpx, "request", fake_request)
+    monkeypatch.setenv("QIITA_TOKEN", "qk_test")
+
+    rc = main(["--base-url", "https://q.example.test", "ena-import-status", "5"])
+
+    assert rc == 0
+    assert "completed_partial" in capsys.readouterr().out
 
 
 def test_ena_import_status_non_200_surfaces_status_and_body(monkeypatch, capsys):

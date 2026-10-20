@@ -82,7 +82,9 @@ def _item_label(item: dict) -> str:
 def _report_state_change(batch_idx: int, item: dict) -> None:
     label, state = _item_label(item), item["state"]
     detail = ""
-    if state == BatchItemState.FAILED and item.get("failure_reason"):
+    if state in (BatchItemState.FAILED, BatchItemState.COMPLETED_PARTIAL) and item.get(
+        "failure_reason"
+    ):
         detail = f" ({item['failure_reason']})"
     elif item.get("download_work_ticket_idxs"):
         detail = f" tickets={item['download_work_ticket_idxs']}"
@@ -98,7 +100,7 @@ async def _watch_ena_import_batch(
     poll_interval_seconds: float,
     timeout_seconds: float,
 ) -> dict:
-    """Poll until every item is `done` or `failed`.
+    """Poll until every item is terminal (`done`, `completed_partial` or `failed`).
 
     A `RequestError` or 5xx response is retried until `timeout_seconds`
     elapses, logging one stderr line per retry; any other status is fatal
@@ -285,7 +287,8 @@ def _handle_submit_ena_import(args: argparse.Namespace, parser: argparse.Argumen
 
     print(json.dumps(result, indent=2, default=str))
     watching_failed = not args.no_watch and any(
-        item["state"] == BatchItemState.FAILED for item in result["items"]
+        item["state"] in (BatchItemState.FAILED, BatchItemState.COMPLETED_PARTIAL)
+        for item in result["items"]
     )
     return 1 if watching_failed else 0
 

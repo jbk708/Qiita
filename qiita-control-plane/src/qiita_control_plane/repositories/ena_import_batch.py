@@ -229,13 +229,14 @@ async def fetch_sequenced_samples_missed_by_completed_download(
     action_id: str,
     action_version: str,
 ) -> set[int]:
-    """The `sequenced_sample_idxs` with no stored reads whose pool's latest
-    ticket for the action completed. A completed download stored every run on
-    the roster it read, so such a run was off that roster and nothing will
-    fetch it."""
+    """The `sequenced_sample_idxs` with no stored reads and no recorded download
+    failure whose pool's latest ticket for the action completed. A completed
+    download stored or failed every run on the roster it read, so such a run was
+    off that roster and nothing will fetch it."""
     rows = await pool_or_conn.fetch(
         "SELECT ss.idx FROM qiita.sequenced_sample ss"
         " WHERE ss.idx = ANY($1::bigint[])"
+        "   AND ss.download_failure_type IS NULL"
         "   AND NOT EXISTS (SELECT 1 FROM qiita.sequence_range sr"
         "                   WHERE sr.prep_sample_idx = ss.prep_sample_idx)"
         "   AND (SELECT wt.state FROM qiita.work_ticket wt"
@@ -247,6 +248,27 @@ async def fetch_sequenced_samples_missed_by_completed_download(
         action_version,
     )
     return {r["idx"] for r in rows}
+
+
+async def fetch_failed_downloads(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, *, run_accessions: list[str]
+) -> dict[str, tuple[str, str]]:
+    """`run_accession -> (reason, failure_type)` for the runs with a recorded
+    download failure and no stored reads."""
+    rows = await pool_or_conn.fetch(
+        "SELECT ss.ena_run_accession, ss.download_failure_reason,"
+        "       ss.download_failure_type::text AS download_failure_type"
+        " FROM qiita.sequenced_sample ss"
+        " WHERE ss.ena_run_accession = ANY($1::text[])"
+        "   AND ss.download_failure_type IS NOT NULL"
+        "   AND NOT EXISTS (SELECT 1 FROM qiita.sequence_range sr"
+        "                   WHERE sr.prep_sample_idx = ss.prep_sample_idx)",
+        run_accessions,
+    )
+    return {
+        r["ena_run_accession"]: (r["download_failure_reason"], r["download_failure_type"])
+        for r in rows
+    }
 
 
 async def fetch_pool_latest_download_ticket(

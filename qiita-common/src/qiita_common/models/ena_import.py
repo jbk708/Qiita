@@ -16,14 +16,18 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from qiita_common.models.work_ticket import FailureType
+
 
 class BatchItemState(StrEnum):
     """Per-item lifecycle within one ena_import_batch.
 
     pending -> resolving -> registered -> downloading -> done, with `failed`
-    reachable from any non-terminal step. `done` is a rolled-up display state
-    computed on demand from the item's download tickets' states (all
-    terminal-success) — the batch driver never writes it.
+    reachable from any non-terminal step. `done` and `completed_partial` are
+    rolled-up display states computed on demand from the item's download
+    tickets and runs: all tickets terminal-success, and respectively no run
+    or at least one run with a recorded download failure and no stored reads.
+    The batch driver never writes either, so neither is in the SQL CHECK.
     """
 
     PENDING = "pending"
@@ -31,6 +35,7 @@ class BatchItemState(StrEnum):
     REGISTERED = "registered"
     DOWNLOADING = "downloading"
     DONE = "done"
+    COMPLETED_PARTIAL = "completed_partial"
     FAILED = "failed"
 
 
@@ -38,6 +43,7 @@ class BatchItemState(StrEnum):
 # watch loop imports a shared tuple instead of a private per-caller copy.
 TERMINAL_BATCH_ITEM_STATES: tuple[str, ...] = (
     BatchItemState.DONE.value,
+    BatchItemState.COMPLETED_PARTIAL.value,
     BatchItemState.FAILED.value,
 )
 
@@ -61,14 +67,26 @@ class EnaRunImportOutcome(BaseModel):
 
     `status` is the `EnaRunRegistrationStatus` value (`registered` /
     `skipped_already_present` / `excluded` / `failed` / `flagged_unavailable` /
-    `held_not_downloaded`). `failure_reason` is set on every status but the
-    first two. `metadata_warnings`: harmonization gaps on the biosample this run created.
+    `held_not_downloaded` / `download_failed`). `failure_reason` is set on every
+    status but the first two; `failure_type` only on `download_failed`.
+    `metadata_warnings`: harmonization gaps on the biosample this run created.
     """
 
     run_accession: str
     status: str
     failure_reason: str | None = None
+    failure_type: FailureType | None = None
     metadata_warnings: list[str] = Field(default_factory=list)
+
+
+class FailedRunOutcome(BaseModel):
+    """One run `ingest_ena_reads` could not store, as listed in its `run_outcomes`
+    output for `persist-ena-run-outcomes`."""
+
+    prep_sample_idx: int
+    ena_run_accession: str
+    failure_reason: str
+    failure_type: FailureType
 
 
 class BatchImportItem(BaseModel):

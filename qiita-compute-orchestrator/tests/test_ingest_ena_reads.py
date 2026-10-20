@@ -10,12 +10,14 @@ monkeypatched throughout, so this suite never touches live ENA or a real CP.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 import duckdb
 import pytest
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
+from qiita_common.models import WorkTicketFailureStage
 
 import qiita_compute_orchestrator.jobs.ingest_ena_reads as ingest_module
 import qiita_compute_orchestrator.sequence_range_retry as retry_module
@@ -570,11 +572,12 @@ def test_not_found_fetch_error_is_permanent(fake_mint, monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("permanent_first", [True, False])
-def test_permanent_failure_wins_over_transient_in_any_roster_order(
+def test_transient_failure_wins_over_permanent_in_any_roster_order(
     fake_mint, monkeypatch, tmp_path, permanent_first
 ):
-    """A permanent run must not be retried behind a transient one, whatever the
-    roster order, and the reason names every failed run."""
+    """A permanent run no longer fails the pool, so a transient one decides the
+    kind and the ticket retries first, whatever the roster order. The reason
+    still names every failed run."""
     bad = "ERR001" if permanent_first else "ERR002"
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
@@ -587,8 +590,8 @@ def test_permanent_failure_wins_over_transient_in_any_roster_order(
 
     with pytest.raises(BackendFailure) as exc:
         _run(inputs, tmp_path / "ws")
-    assert exc.value.kind == FailureKind.BAD_INPUT
-    assert exc.value.transient is False
+    assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
+    assert exc.value.transient is True
     assert "ERR001" in exc.value.reason
     assert "ERR002" in exc.value.reason
 
@@ -628,13 +631,13 @@ def test_many_failed_runs_cap_the_combined_reason(fake_mint, monkeypatch, tmp_pa
     assert reason.endswith("…")
 
 
-def test_deciding_permanent_run_keeps_its_full_reason_in_a_capped_reason(
+def test_deciding_transient_run_keeps_its_full_reason_in_a_capped_reason(
     fake_mint, monkeypatch, tmp_path
 ):
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
         if run_accession == "ERR009":
-            raise duckdb.InvalidInputException("read_ena_sequences: malformed FASTQ record")
-        raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+            raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+        raise duckdb.InvalidInputException("read_ena_sequences: malformed FASTQ record")
 
     monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
     accessions = [f"ERR{i:03d}" for i in range(1, 11)]
@@ -642,9 +645,176 @@ def test_deciding_permanent_run_keeps_its_full_reason_in_a_capped_reason(
 
     with pytest.raises(BackendFailure) as exc:
         _run(inputs, tmp_path / "ws")
+    assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
+    assert "ENA run ERR009: downloaded bytes don't match" in exc.value.reason
+    assert "md5 mismatch" in exc.value.reason
+
+
+def test_every_run_failed_permanently_raises_permanent(fake_mint, monkeypatch, tmp_path):
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        raise duckdb.InvalidInputException("read_ena_sequences: malformed FASTQ record")
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
     assert exc.value.kind == FailureKind.BAD_INPUT
-    assert "ENA run ERR009: fetch failed" in exc.value.reason
-    assert "malformed FASTQ record" in exc.value.reason
+    assert not (tmp_path / "ws" / "run_outcomes.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# A pool with some permanently failed runs lands the rest
+# ---------------------------------------------------------------------------
+
+_GOOD_ROWS = [(1, "r1", "ACGT", None, None, None)]
+
+
+def _read_run_outcomes(outputs) -> list[dict]:
+    return json.loads(outputs["run_outcomes"].read_text())
+
+
+def _fake_with_failing_run(bad_run: str, failure):
+    """A `_stage_run_reads` fake where `bad_run` fails as `failure` (a raised
+    exception, or a `(count, warnings)` return) and every other run is good."""
+
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        if run_accession != bad_run:
+            _write_intermediate(intermediate_path, _GOOD_ROWS)
+            return 1, []
+        if isinstance(failure, BaseException):
+            raise failure
+        _write_intermediate(intermediate_path, [])
+        return failure
+
+    return _fake
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        duckdb.IOException("read_ena_sequences: malformed FASTQ record in run 'ERR001'"),
+        duckdb.IOException(
+            "IO Error: read_ena_sequences: no sequence data found for the provided accession(s)"
+        ),
+        _http_error(
+            404, "HTTP Error: HTTP GET error on 'https://ftp.example/x.fastq.gz' (HTTP 404)"
+        ),
+        (0, []),
+    ],
+    ids=["format-error", "no-sequence-data", "http-404", "zero-reads"],
+)
+def test_permanently_failed_run_does_not_block_the_good_runs(
+    fake_mint, monkeypatch, tmp_path, failure
+):
+    """The good run is minted, stored and registered; the permanent one is only
+    listed in `run_outcomes`, with no mint and no register part."""
+    monkeypatch.setattr(
+        ingest_module, "_stage_run_reads", _fake_with_failing_run("ERR001", failure)
+    )
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    outputs = _run(inputs, tmp_path / "ws")
+
+    assert fake_mint == [(11, 1)]
+    register_dir = outputs["read_staging_dir"] / "read"
+    assert [p.name for p in register_dir.iterdir()] == ["11.parquet"]
+    (failed,) = _read_run_outcomes(outputs)
+    assert failed["prep_sample_idx"] == 10
+    assert failed["ena_run_accession"] == "ERR001"
+    assert failed["failure_type"] == "permanent"
+    assert "ERR001" in failed["failure_reason"]
+
+
+def test_run_outcomes_is_a_top_level_json_file(fake_mint, monkeypatch, tmp_path):
+    """register-files would load a top-level `.parquet` as its own table, so the
+    outcome list must not be one."""
+    monkeypatch.setattr(
+        ingest_module,
+        "_stage_run_reads",
+        _fake_with_failing_run("ERR001", duckdb.IOException("malformed FASTQ record")),
+    )
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    outputs = _run(inputs, tmp_path / "ws")
+
+    assert outputs["run_outcomes"] == outputs["read_staging_dir"] / "run_outcomes.json"
+    assert not list(outputs["read_staging_dir"].glob("*.parquet"))
+
+
+def test_run_outcomes_is_empty_when_every_run_is_stored(fake_mint, monkeypatch, tmp_path):
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake_with_failing_run("none", (0, [])))
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    outputs = _run(inputs, tmp_path / "ws")
+
+    assert _read_run_outcomes(outputs) == []
+
+
+def test_transient_failure_beside_a_stored_run_retries_the_step(fake_mint, monkeypatch, tmp_path):
+    """A stored run does not let a transient failure land: the step fails so the
+    ticket retries, and no outcome file is written."""
+
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        if run_accession == "ERR001":
+            raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+        _write_intermediate(intermediate_path, _GOOD_ROWS)
+        return 1, []
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value.transient is True
+    assert not (tmp_path / "ws" / "run_outcomes.json").exists()
+
+
+def test_transient_and_permanent_failures_beside_a_stored_run_retry_first(
+    fake_mint, monkeypatch, tmp_path
+):
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        if run_accession == "ERR001":
+            raise duckdb.InvalidInputException("read_ena_sequences: malformed FASTQ record")
+        if run_accession == "ERR002":
+            raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+        _write_intermediate(intermediate_path, _GOOD_ROWS)
+        return 1, []
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002"), (12, "ERR003")])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
+
+
+def test_permanent_mint_failure_fails_the_step_beside_a_good_run(monkeypatch, tmp_path):
+    """Only fetch failures are landable. A permanent failure in the mint is a
+    fault in the ticket, not a bad run, so it fails the whole step."""
+
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        _write_intermediate(intermediate_path, _GOOD_ROWS)
+        return 1, []
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+
+    async def _mint(http, prep_sample_idx, count, *, work_ticket_idx, step_name):
+        if prep_sample_idx == 10:
+            raise BackendFailure(
+                kind=FailureKind.UNKNOWN_PERMANENT,
+                stage=WorkTicketFailureStage.STEP_RUN,
+                step_name=step_name,
+                reason="mint refused",
+            )
+        return 1
+
+    monkeypatch.setattr(ingest_module, "mint_or_reuse_sequence_range", _mint)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    with pytest.raises(BackendFailure, match="mint refused"):
+        _run(inputs, tmp_path / "ws")
+    assert not (tmp_path / "ws" / "run_outcomes.json").exists()
 
 
 # ---------------------------------------------------------------------------
