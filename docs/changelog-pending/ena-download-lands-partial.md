@@ -1,6 +1,6 @@
 ### Changed
 
-- **A pool with some permanently failed runs now lands the rest.** When a `download-ena-study`
+- **A pool with some permanently failed runs now lands the rest (#731).** When a `download-ena-study`
   ticket's only remaining failures are permanent (a format error, a run with no sequence data),
   `ingest_ena_reads` stores every other run, and the new `persist-ena-run-outcomes` step records
   each failed run's reason and failure type on its `sequenced_sample`. The batch item reads

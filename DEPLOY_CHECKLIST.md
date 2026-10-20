@@ -23,17 +23,17 @@ _None yet._
 
 ### 3. Migrations
 
-- `[operator]` (#feat/m1-26-partial-pool-landing) `make migrate` applies `20261021000000_sequenced_sample_download_failure.sql` (two nullable columns and a both-or-neither CHECK on `qiita.sequenced_sample`; no backfill).
+- `[operator]` (#731) `make migrate` applies `20261021000000_sequenced_sample_download_failure.sql` (two nullable columns and a both-or-neither CHECK on `qiita.sequenced_sample`; no backfill).
 
 ### 4. Deploy
 
-- `[admin]` (#feat/m1-26-partial-pool-landing) Before stopping the control plane, confirm no `download-ena-study` ticket is in flight; if the query lists any, wait for them to finish. `download-ena-study` 1.0.0 is edited in place (`qiita-admin actions sync` in `activate.sh` re-syncs it), and a ticket whose ingest step finished on the old code fails on the missing `run_outcomes` output:
+- `[admin]` (#731) Before stopping the control plane, confirm no `download-ena-study` ticket is in flight; if the query lists any, wait for them to finish. `download-ena-study` 1.0.0 is edited in place (`qiita-admin actions sync` in `activate.sh` re-syncs it), and a ticket whose ingest step finished on the old code fails on the missing `run_outcomes` output:
   `SELECT work_ticket_idx, state FROM qiita.work_ticket WHERE action_id = 'download-ena-study' AND state IN ('pending','queued','processing');`
   If one was missed and ends FAILED, redrive it (`POST /work-ticket/{idx}/run`): a download redrive drops the completed step rows, so ingest re-runs on the new code and skips runs already stored.
 
 ### 5. Verify
 
-- `[admin]` (#feat/m1-26-partial-pool-landing) `qiita.action` lists `download-ena-study` 1.0.0 with three steps, ending in `persist-ena-run-outcomes`, and `\d qiita.sequenced_sample` shows `download_failure_reason` and `download_failure_type`.
+- `[admin]` (#731) `qiita.action` lists `download-ena-study` 1.0.0 with three steps, ending in `persist-ena-run-outcomes`, and `\d qiita.sequenced_sample` shows `download_failure_reason` and `download_failure_type`.
 
 ### 6. After the deploy verifies green
 
@@ -41,7 +41,7 @@ _None yet._
 
 ### Notes (no host action)
 
-- (#feat/m1-26-partial-pool-landing) `GET /ena-import-batch/{idx}` items can read `completed_partial` (a pool landed with some runs failed permanently), and `ena_runs[].status` can be `download_failed`, with a new `failure_type`; clients matching on the closed set of states or statuses must accept them. `submit-ena-import --watch` exits 1 on a `completed_partial` item. A partially landed ticket is `completed` and sends no email.
+- (#731) `GET /ena-import-batch/{idx}` items can read `completed_partial` (a pool landed with some runs failed permanently), and `ena_runs[].status` can be `download_failed`, with a new `failure_type`; clients matching on the closed set of states or statuses must accept them. `submit-ena-import --watch` exits 1 on a `completed_partial` item. A partially landed ticket is `completed` and sends no email.
 
 ## Deployed history
 
