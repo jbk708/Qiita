@@ -137,21 +137,25 @@ async def _seed_alignment(s) -> int:
     return alignment_idx
 
 
-async def _seed_mask_sample(s, mask_idx: int, state: str = "completed") -> None:
+async def _seed_mask_sample(
+    s, mask_idx: int, state: str = "completed", prep_sample_idx: int | None = None
+) -> None:
     await s["pool"].execute(
         "INSERT INTO qiita.mask_sample (mask_idx, prep_sample_idx, state) VALUES ($1, $2, $3)",
         mask_idx,
-        s["prep_sample_idx"],
+        prep_sample_idx or s["prep_sample_idx"],
         state,
     )
 
 
-async def _seed_alignment_sample(s, alignment_idx: int, state: str = "completed") -> None:
+async def _seed_alignment_sample(
+    s, alignment_idx: int, state: str = "completed", prep_sample_idx: int | None = None
+) -> None:
     await s["pool"].execute(
         "INSERT INTO qiita.alignment_sample (alignment_idx, prep_sample_idx, state)"
         " VALUES ($1, $2, $3)",
         alignment_idx,
-        s["prep_sample_idx"],
+        prep_sample_idx or s["prep_sample_idx"],
         state,
     )
 
@@ -374,6 +378,24 @@ async def test_verdict_drops_mask_row_without_a_completed_mask_sample(seeded):
     await _add(seeded, QcCheck.COMPOSITION, QcSeverity.FAIL, mask_idx=pending)
     await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.INFO)
     assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.HOST_FRACTION)
+
+
+@pytest.mark.parametrize("producer", ["mask", "alignment"])
+async def test_verdict_ignores_a_gate_row_of_another_prep_sample(seeded, producer):
+    biosample_idx, other_ps, _ = await _seed_prep_sample_and_ticket(
+        seeded["pool"], seeded["principal_idx"], seeded["version"]
+    )
+    seeded["biosamples"].append(biosample_idx)
+    seeded["prep_samples"].append(other_ps)
+    if producer == "mask":
+        mask_idx = await _seed_mask(seeded)
+        await _seed_mask_sample(seeded, mask_idx, prep_sample_idx=other_ps)
+        await _add(seeded, QcCheck.HOST_FRACTION, QcSeverity.FAIL, mask_idx=mask_idx)
+    else:
+        alignment_idx = await _seed_alignment(seeded)
+        await _seed_alignment_sample(seeded, alignment_idx, prep_sample_idx=other_ps)
+        await _add(seeded, QcCheck.CLASSIFIER, QcSeverity.FAIL, alignment_idx=alignment_idx)
+    assert await _verdict(seeded) is None
 
 
 async def test_verdict_drops_alignment_row_without_a_completed_alignment_sample(seeded):
