@@ -2,7 +2,7 @@
 
 -- migrate:up
 
--- The derived-row FKs cascade so these receipts never block a delete; the invalidator is RESTRICT.
+-- The derived-row FKs cascade so these rows never block a delete.
 CREATE TABLE qiita.prep_sample_qc_check (
     idx                 BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     prep_sample_idx     BIGINT NOT NULL REFERENCES qiita.prep_sample(idx) ON DELETE CASCADE,

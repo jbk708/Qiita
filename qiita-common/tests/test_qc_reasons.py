@@ -1,12 +1,11 @@
 """Invariants of `qc_reasons.yml` and its loader."""
 
 import re
-from importlib import resources
 
 import pytest
 
 from qiita_common.models import QcCheck
-from qiita_common.qc_reasons import load_qc_reasons
+from qiita_common.qc_reasons import load_qc_reasons, parse_qc_reasons
 
 _SNAKE_CASE = re.compile(r"^[a-z][a-z0-9_]*$")
 
@@ -26,21 +25,9 @@ def test_codes_are_snake_case():
     assert not bad
 
 
-def test_duplicate_reason_within_a_check_raises(monkeypatch):
-    class _Files:
-        def joinpath(self, _name):
-            return self
-
-        def read_text(self, encoding):
-            return "data_type:\n  - data_type_mismatch\n  - data_type_mismatch\n"
-
-    monkeypatch.setattr(resources, "files", lambda _pkg: _Files())
-    load_qc_reasons.cache_clear()
-    try:
-        with pytest.raises(ValueError, match="data_type_mismatch.*data_type"):
-            load_qc_reasons()
-    finally:
-        load_qc_reasons.cache_clear()
+def test_duplicate_reason_within_a_check_raises():
+    with pytest.raises(ValueError, match="data_type_mismatch.*data_type"):
+        parse_qc_reasons("data_type:\n  - data_type_mismatch\n  - data_type_mismatch\n")
 
 
 def test_loader_is_cached_and_frozen():

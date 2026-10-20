@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from qiita_common.api_paths import URL_QC_CHECK_BY_PREP_SAMPLE
-from qiita_common.models import QcCheck, QcCheckState, QcSeverity, Tier
+from qiita_common.models import QcCheck, QcCheckState, QcSeverity, Tier, WorkTicketState
 
 from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
@@ -30,12 +30,13 @@ async def _seed_ticket(pool, *, principal_idx: int, version: str, prep_sample_id
         "INSERT INTO qiita.work_ticket ("
         "  action_id, action_version, originator_principal_idx,"
         "  scope_target_kind, prep_sample_idx, action_context, state"
-        ") VALUES ($1, $2, $3, 'prep_sample', $4, '{}'::jsonb, 'completed')"
+        ") VALUES ($1, $2, $3, 'prep_sample', $4, '{}'::jsonb, $5)"
         " RETURNING work_ticket_idx",
         _ACTION_ID,
         version,
         principal_idx,
         prep_sample_idx,
+        WorkTicketState.COMPLETED,
     )
 
 

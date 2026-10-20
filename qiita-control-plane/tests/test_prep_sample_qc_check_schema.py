@@ -6,7 +6,13 @@ import secrets
 import asyncpg
 import pytest
 import pytest_asyncio
-from qiita_common.models import QcCheck, QcCheckState, QcSeverity
+from qiita_common.models import (
+    MaskDefinitionStatus,
+    QcCheck,
+    QcCheckState,
+    QcSeverity,
+    WorkTicketState,
+)
 
 from qiita_control_plane.testing.db_seeds import (
     delete_action_if_created,
@@ -28,11 +34,11 @@ _INSERT = (
 )
 
 _DEPRECATE_MASK = (
-    "UPDATE qiita.mask_definition SET status = 'deprecated', deprecated_at = now(),"
+    "UPDATE qiita.mask_definition SET status = $3, deprecated_at = now(),"
     " deprecated_by_idx = $2, deprecation_reason = 'test' WHERE mask_idx = $1"
 )
 _INVALIDATE_MASK_SAMPLE = (
-    "UPDATE qiita.mask_sample SET state = $4, invalidated_at = now(),"
+    "UPDATE qiita.mask_sample SET state = 'invalidated', invalidated_at = now(),"
     " invalidated_by_idx = $3, invalidation_reason = 'test'"
     " WHERE mask_idx = $1 AND prep_sample_idx = $2"
 )
@@ -50,12 +56,13 @@ async def _seed_prep_sample_and_ticket(pool, principal_idx: int, version: str):
         "INSERT INTO qiita.work_ticket ("
         "  action_id, action_version, originator_principal_idx,"
         "  scope_target_kind, prep_sample_idx, action_context, state"
-        ") VALUES ($1, $2, $3, 'prep_sample', $4, '{}'::jsonb, 'completed')"
+        ") VALUES ($1, $2, $3, 'prep_sample', $4, '{}'::jsonb, $5)"
         " RETURNING work_ticket_idx",
         _ACTION_ID,
         version,
         principal_idx,
         prep_sample_idx,
+        WorkTicketState.COMPLETED,
     )
     return biosample_idx, prep_sample_idx, ticket_idx
 
@@ -210,7 +217,7 @@ async def test_strenum_matches_check_list(postgres_pool, conname, enum):
 async def test_value_outside_check_rejected(seeded, column, bad):
     kwargs = {"check": QcCheck.DATA_TYPE, "severity": QcSeverity.FAIL, column: bad}
     with pytest.raises(asyncpg.CheckViolationError):
-        await _add(seeded, kwargs.pop("check"), kwargs.pop("severity"), **kwargs)
+        await _add(seeded, **kwargs)
 
 
 async def test_null_reason_accepted(seeded):
@@ -251,9 +258,21 @@ async def test_same_check_under_different_producers_allowed(seeded):
     await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO, mask_idx=mask_idx)
 
 
-async def test_invalidated_state_without_fields_rejected(seeded):
+@pytest.mark.parametrize("n_fields", [0, 1, 2])
+async def test_invalidated_row_without_all_fields_rejected(seeded, n_fields):
+    fields = {
+        "invalidated_at": await seeded["pool"].fetchval("SELECT now()"),
+        "invalidated_by_idx": seeded["principal_idx"],
+        "invalidation_reason": "why",
+    }
     with pytest.raises(asyncpg.CheckViolationError):
-        await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, state=QcCheckState.INVALIDATED)
+        await _add(
+            seeded,
+            QcCheck.DATA_TYPE,
+            QcSeverity.FAIL,
+            state=QcCheckState.INVALIDATED,
+            **dict(list(fields.items())[:n_fields]),
+        )
 
 
 @pytest.mark.parametrize("n_fields", [1, 2, 3])
@@ -318,7 +337,9 @@ async def test_verdict_drops_row_whose_mask_is_deprecated(seeded):
     await _add(seeded, QcCheck.DATA_TYPE, QcSeverity.FAIL, mask_idx=mask_idx)
     await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)
     assert await _verdict(seeded) == (QcSeverity.FAIL, QcCheck.DATA_TYPE)
-    await seeded["pool"].execute(_DEPRECATE_MASK, mask_idx, seeded["principal_idx"])
+    await seeded["pool"].execute(
+        _DEPRECATE_MASK, mask_idx, seeded["principal_idx"], MaskDefinitionStatus.DEPRECATED
+    )
     assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.COMPOSITION)
 
 
@@ -332,7 +353,6 @@ async def test_verdict_drops_row_whose_mask_sample_is_invalidated(seeded):
         mask_idx,
         seeded["prep_sample_idx"],
         seeded["principal_idx"],
-        QcCheckState.INVALIDATED,
     )
     assert await _verdict(seeded) == (QcSeverity.INFO, QcCheck.COMPOSITION)
 

@@ -10,10 +10,15 @@ from qiita_common.models import QcCheck
 
 @cache
 def load_qc_reasons() -> dict[QcCheck, frozenset[str]]:
-    """Return the allowed reason codes for each `QcCheck`; a repeated code raises."""
-    raw = yaml.safe_load(
+    """Return the allowed reason codes for each `QcCheck`."""
+    return parse_qc_reasons(
         resources.files("qiita_common.data").joinpath("qc_reasons.yml").read_text(encoding="utf-8")
     )
+
+
+def parse_qc_reasons(text: str) -> dict[QcCheck, frozenset[str]]:
+    """Parse `qc_reasons.yml` text; a repeated code within a check raises."""
+    raw = yaml.safe_load(text)
     reasons = {}
     for check, codes in raw.items():
         unique = frozenset(codes)
