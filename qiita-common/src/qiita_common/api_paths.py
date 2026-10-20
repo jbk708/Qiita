@@ -169,8 +169,6 @@ class LibraryPrimitive(StrEnum):
     # See qiita_control_plane.actions.library.finalize_shard.
     FINALIZE_SHARD = "finalize-shard"
     PERSIST_READ_METRICS = "persist-read-metrics"
-    # Records each run the download step could not store on its sequenced_sample.
-    # See qiita_control_plane.actions.library.persist_ena_run_outcomes.
     PERSIST_ENA_RUN_OUTCOMES = "persist-ena-run-outcomes"
     # Read-mask: the per-insert SynDNA read counts from the `syndna` step's
     # alignment, into qiita.syndna_read_count. See

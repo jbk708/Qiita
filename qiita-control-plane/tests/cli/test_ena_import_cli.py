@@ -15,6 +15,9 @@ import zlib
 import httpx
 import pytest
 from qiita_common.api_paths import URL_ENA_IMPORT_BATCH_BY_IDX
+from qiita_common.models import FailureType
+
+from qiita_control_plane.ena_import.registration import EnaRunRegistrationStatus
 
 
 def _item(accession: str, state: str, **extra) -> dict:
@@ -448,13 +451,13 @@ def test_watch_exits_1_and_names_the_failed_runs_when_an_item_is_completed_parti
                 _item(
                     "PRJEB11419",
                     "completed_partial",
-                    failure_reason="ERR1 (permanent)",
+                    failure_reason=f"ERR1 ({FailureType.PERMANENT.value})",
                     ena_runs=[
                         {
                             "run_accession": "ERR1",
-                            "status": "download_failed",
+                            "status": EnaRunRegistrationStatus.DOWNLOAD_FAILED.value,
                             "failure_reason": "no sequence data found",
-                            "failure_type": "permanent",
+                            "failure_type": FailureType.PERMANENT.value,
                         }
                     ],
                 )
@@ -480,7 +483,7 @@ def test_watch_exits_1_and_names_the_failed_runs_when_an_item_is_completed_parti
 
     assert rc == 1
     out, err = capsys.readouterr()
-    assert "PRJEB11419 -> completed_partial (ERR1 (permanent))" in err
+    assert f"PRJEB11419 -> completed_partial (ERR1 ({FailureType.PERMANENT.value}))" in err
     assert "no sequence data found" in out
     assert [m for m, _p, _b in calls] == ["POST", "GET"]
 
@@ -999,7 +1002,13 @@ def test_ena_import_status_exits_0_for_a_completed_partial_item(monkeypatch, cap
 
     response_json = {
         "ena_import_batch_idx": 5,
-        "items": [_item("PRJEB11419", "completed_partial", failure_reason="ERR1 (permanent)")],
+        "items": [
+            _item(
+                "PRJEB11419",
+                "completed_partial",
+                failure_reason=f"ERR1 ({FailureType.PERMANENT.value})",
+            )
+        ],
     }
 
     def fake_request(method, url, headers=None, json=None, params=None, timeout=None):

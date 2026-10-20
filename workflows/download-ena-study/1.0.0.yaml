@@ -99,9 +99,7 @@ steps:
     inputs: [read_staging_dir]
     outputs: []
 
-  # Record the runs ingest_ena_reads could not store (permanent fetch failures)
-  # on their sequenced_sample. Last, so a resumed ticket never re-runs
-  # register-files: step progress is keyed by index.
+  # Last: step progress is keyed by index, so a resumed ticket never re-runs register-files.
   - action: persist-ena-run-outcomes
     inputs: [run_outcomes]
     outputs: []

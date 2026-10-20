@@ -1,13 +1,4 @@
 -- Per-run download failure on a sequenced_sample.
---
--- `download_failure_reason` / `download_failure_type` are the run's last
--- recorded download failure, written by the download ticket's
--- persist-ena-run-outcomes step when the rest of its pool landed. They mean
--- something only while the run has no `sequence_range` row, so a later
--- successful download needs no clearing write.
---
--- Additive and backfill-free: no existing row is touched, and the
--- `qiita.failure_type` ENUM already exists.
 
 -- migrate:up
 ALTER TABLE qiita.sequenced_sample

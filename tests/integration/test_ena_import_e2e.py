@@ -23,7 +23,7 @@ from conftest import cleanup_ena_study, ducklake_connect
 from qiita_common.actions import ActionDefinition, WorkflowAction
 from qiita_common.api_paths import LOOPBACK_HOST
 from qiita_common.auth_constants import SystemRole
-from qiita_common.models import FailureType
+from qiita_common.models import FailureType, WorkTicketState
 from qiita_common.models.ena_import import BatchItemState
 from qiita_control_plane.auth.principal import HumanUser
 from qiita_control_plane.dispatch import build_dispatch_semaphore
@@ -38,6 +38,7 @@ from qiita_control_plane.ena_import.batch import (
     fetch_batch_status,
     schedule_ena_import_batch,
 )
+from qiita_control_plane.ena_import.registration import EnaRunRegistrationStatus
 from qiita_control_plane.repositories.sequenced_sample import (
     fetch_sequenced_pool_ena_run_roster,
 )
@@ -784,23 +785,24 @@ async def test_pool_with_a_permanently_failed_run_lands_the_rest_and_reads_compl
     assert _count_read_rows(data_plane, [good_psi]) == len(_RUN1_ROWS)
     assert _count_read_rows(data_plane, [bad_psi]) == 0
     recorded = await postgres_pool.fetch(
-        "SELECT ena_run_accession, download_failure_type::text AS failure_type,"
+        "SELECT ena_run_accession, download_failure_type AS failure_type,"
         "       download_failure_reason FROM qiita.sequenced_sample"
         " WHERE sequenced_pool_idx = $1 AND download_failure_type IS NOT NULL",
         sequenced_pool_idx,
     )
     assert [(r["ena_run_accession"], r["failure_type"]) for r in recorded] == [
-        (bad_run, "permanent")
+        (bad_run, FailureType.PERMANENT)
     ]
     assert "no sequence data found" in recorded[0]["download_failure_reason"]
 
     await postgres_pool.execute(
-        "UPDATE qiita.work_ticket SET state = 'completed' WHERE work_ticket_idx = $1",
+        "UPDATE qiita.work_ticket SET state = $2 WHERE work_ticket_idx = $1",
         work_ticket_idx,
+        WorkTicketState.COMPLETED.value,
     )
     (item,) = (await fetch_batch_status(postgres_pool, batch_idx=batch_idx)).items
     assert item.state == BatchItemState.COMPLETED_PARTIAL
     by_run = {r.run_accession: r for r in item.ena_runs}
-    assert by_run[bad_run].status == "download_failed"
+    assert by_run[bad_run].status == EnaRunRegistrationStatus.DOWNLOAD_FAILED.value
     assert by_run[bad_run].failure_type == FailureType.PERMANENT
-    assert by_run[good_run].status == "registered"
+    assert by_run[good_run].status == EnaRunRegistrationStatus.REGISTERED.value

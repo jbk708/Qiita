@@ -147,13 +147,14 @@ def test_failed_run_outcome_carries_its_class():
 
 
 def test_run_outcome_carries_failure_type_when_set():
+    from qiita_common.models import FailureType
     from qiita_common.models.ena_import import EnaRunImportOutcome
 
     outcome = EnaRunImportOutcome(
         run_accession="ERR001",
         status="download_failed",
         failure_reason="no sequence data found",
-        failure_type="permanent",
+        failure_type=FailureType.PERMANENT,
     )
-    assert outcome.failure_type == "permanent"
+    assert outcome.failure_type == FailureType.PERMANENT
     assert EnaRunImportOutcome(run_accession="ERR002", status="registered").failure_type is None

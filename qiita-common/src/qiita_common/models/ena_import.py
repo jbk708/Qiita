@@ -5,9 +5,10 @@
 `GET /api/v1/ena-import-batch/{idx}` (`BatchImportStatus`) polls per-item
 progress.
 
-`BatchItemState` mirrors the `qiita.ena_import_batch_item.state` CHECK
-constraint — TEXT/CHECK, not a Postgres ENUM, same carve-out as `UploadStatus` /
+The persisted `BatchItemState` values mirror the `qiita.ena_import_batch_item.state`
+CHECK constraint — TEXT/CHECK, not a Postgres ENUM, same carve-out as `UploadStatus` /
 `ReferenceStatus`; see CLAUDE.md "Enum parity". Keep both sides in sync by hand.
+`done` and `completed_partial` are display-only and not in the CHECK.
 """
 
 from __future__ import annotations
@@ -24,10 +25,7 @@ class BatchItemState(StrEnum):
 
     pending -> resolving -> registered -> downloading -> done, with `failed`
     reachable from any non-terminal step. `done` and `completed_partial` are
-    rolled-up display states computed on demand from the item's download
-    tickets and runs: all tickets terminal-success, and respectively no run
-    or at least one run with a recorded download failure and no stored reads.
-    The batch driver never writes either, so neither is in the SQL CHECK.
+    display states `fetch_batch_status` rolls up; the batch driver never writes them.
     """
 
     PENDING = "pending"

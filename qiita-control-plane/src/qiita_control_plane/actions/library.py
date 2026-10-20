@@ -2146,12 +2146,8 @@ async def persist_read_metrics(
 async def persist_ena_run_outcomes(
     pool: asyncpg.Pool, sequenced_pool_idx: int, run_outcomes_path: Path
 ) -> int:
-    """Record each run listed in `run_outcomes_path` as a failed download on its
-    sequenced_sample, and return how many. An empty list writes nothing.
-
-    All-or-nothing, and fails loud on a run that is not in the pool under that
-    accession: the file is one ticket's output, so a stranger means the wrong
-    file was handed in."""
+    """Record each run in `run_outcomes_path` as a failed download on its sequenced_sample;
+    raises if one is not in the pool."""
     if not run_outcomes_path.exists():
         raise FileNotFoundError(f"run_outcomes file not found: {run_outcomes_path}")
     failed = TypeAdapter(list[FailedRunOutcome]).validate_json(run_outcomes_path.read_bytes())

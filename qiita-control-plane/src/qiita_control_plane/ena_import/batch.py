@@ -29,15 +29,15 @@ partially ran.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, replace
 from typing import Any
 
 import asyncpg
 from fastapi import FastAPI, HTTPException, status
+from pydantic import TypeAdapter
 from qiita_common.ena_accession import EnaAccessionKind, validate_import_accession
-from qiita_common.models import FailureType, WorkTicketState
+from qiita_common.models import WorkTicketState
 from qiita_common.models.ena import EnaStatus
 from qiita_common.models.ena_import import (
     BatchImportItem,
@@ -48,6 +48,7 @@ from qiita_common.models.ena_import import (
 
 from ..auth.principal import HumanUser, PrincipalUnusableError, load_human_user
 from ..repositories.ena_import_batch import (
+    FailedDownload,
     append_ena_import_batch_item_download_ticket,
     ena_import_batch_exists,
     ena_import_created_study,
@@ -107,6 +108,8 @@ _STUDY_CONCURRENCY = 4
 
 # Failed runs a `completed_partial` item's failure_reason lists before "and N more".
 _LISTED_FAILED_RUNS = 20
+
+_OUTCOMES = TypeAdapter(list[EnaRunImportOutcome])
 
 
 def build_ena_import_study_semaphore() -> asyncio.Semaphore:
@@ -965,9 +968,7 @@ async def fetch_batch_status(pool: asyncpg.Pool, *, batch_idx: int) -> BatchImpo
 
     # ena_run_outcomes is a JSONB column; asyncpg has no default jsonb codec, so
     # it comes back as a JSON string. Empty ('[]') until register_ena_study ran.
-    outcomes = [
-        [EnaRunImportOutcome(**o) for o in json.loads(row["ena_run_outcomes"])] for row in item_rows
-    ]
+    outcomes = [_OUTCOMES.validate_json(row["ena_run_outcomes"]) for row in item_rows]
     runs_of_interest = [
         row["requested_run_accessions"]
         if row["requested_run_accessions"] is not None
@@ -1020,23 +1021,26 @@ async def fetch_batch_status(pool: asyncpg.Pool, *, batch_idx: int) -> BatchImpo
     return BatchImportStatus(ena_import_batch_idx=batch_idx, items=items)
 
 
-def _failed_runs_reason(failed: list[str], failed_downloads: dict[str, tuple[str, str]]) -> str:
-    listed = [f"{run} ({failed_downloads[run][1]})" for run in failed[:_LISTED_FAILED_RUNS]]
+def _failed_runs_reason(failed: list[str], failed_downloads: dict[str, FailedDownload]) -> str:
+    listed = [
+        f"{run} ({failed_downloads[run].failure_type.value})"
+        for run in failed[:_LISTED_FAILED_RUNS]
+    ]
     if len(failed) > _LISTED_FAILED_RUNS:
         listed.append(f"and {len(failed) - _LISTED_FAILED_RUNS} more")
     return ", ".join(listed)
 
 
 def _with_download_failure(
-    outcome: EnaRunImportOutcome, failed_downloads: dict[str, tuple[str, str]]
+    outcome: EnaRunImportOutcome, failed_downloads: dict[str, FailedDownload]
 ) -> EnaRunImportOutcome:
     if outcome.run_accession not in failed_downloads:
         return outcome
-    reason, failure_type = failed_downloads[outcome.run_accession]
+    failed = failed_downloads[outcome.run_accession]
     return outcome.model_copy(
         update={
             "status": EnaRunRegistrationStatus.DOWNLOAD_FAILED.value,
-            "failure_reason": reason,
-            "failure_type": FailureType(failure_type),
+            "failure_reason": failed.reason,
+            "failure_type": failed.failure_type,
         }
     )

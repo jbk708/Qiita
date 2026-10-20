@@ -17,7 +17,7 @@ import duckdb
 import pytest
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
-from qiita_common.models import WorkTicketFailureStage
+from qiita_common.models import FailureType, WorkTicketFailureStage
 
 import qiita_compute_orchestrator.jobs.ingest_ena_reads as ingest_module
 import qiita_compute_orchestrator.sequence_range_retry as retry_module
@@ -575,9 +575,8 @@ def test_not_found_fetch_error_is_permanent(fake_mint, monkeypatch, tmp_path):
 def test_transient_failure_wins_over_permanent_in_any_roster_order(
     fake_mint, monkeypatch, tmp_path, permanent_first
 ):
-    """A permanent run no longer fails the pool, so a transient one decides the
-    kind and the ticket retries first, whatever the roster order. The reason
-    still names every failed run."""
+    """A transient run decides the kind, so the ticket retries first whatever
+    the roster order. The reason still names every failed run."""
     bad = "ERR001" if permanent_first else "ERR002"
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
@@ -660,7 +659,7 @@ def test_every_run_failed_permanently_raises_permanent(fake_mint, monkeypatch, t
     with pytest.raises(BackendFailure) as exc:
         _run(inputs, tmp_path / "ws")
     assert exc.value.kind == FailureKind.BAD_INPUT
-    assert not (tmp_path / "ws" / "run_outcomes.json").exists()
+    assert not (tmp_path / "ws" / ingest_module.RUN_OUTCOMES_FILENAME).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +721,7 @@ def test_permanently_failed_run_does_not_block_the_good_runs(
     (failed,) = _read_run_outcomes(outputs)
     assert failed["prep_sample_idx"] == 10
     assert failed["ena_run_accession"] == "ERR001"
-    assert failed["failure_type"] == "permanent"
+    assert failed["failure_type"] == FailureType.PERMANENT.value
     assert "ERR001" in failed["failure_reason"]
 
 
@@ -738,7 +737,9 @@ def test_run_outcomes_is_a_top_level_json_file(fake_mint, monkeypatch, tmp_path)
 
     outputs = _run(inputs, tmp_path / "ws")
 
-    assert outputs["run_outcomes"] == outputs["read_staging_dir"] / "run_outcomes.json"
+    assert (
+        outputs["run_outcomes"] == outputs["read_staging_dir"] / ingest_module.RUN_OUTCOMES_FILENAME
+    )
     assert not list(outputs["read_staging_dir"].glob("*.parquet"))
 
 
@@ -767,7 +768,7 @@ def test_transient_failure_beside_a_stored_run_retries_the_step(fake_mint, monke
     with pytest.raises(BackendFailure) as exc:
         _run(inputs, tmp_path / "ws")
     assert exc.value.transient is True
-    assert not (tmp_path / "ws" / "run_outcomes.json").exists()
+    assert not (tmp_path / "ws" / ingest_module.RUN_OUTCOMES_FILENAME).exists()
 
 
 def test_transient_and_permanent_failures_beside_a_stored_run_retry_first(
@@ -814,7 +815,7 @@ def test_permanent_mint_failure_fails_the_step_beside_a_good_run(monkeypatch, tm
 
     with pytest.raises(BackendFailure, match="mint refused"):
         _run(inputs, tmp_path / "ws")
-    assert not (tmp_path / "ws" / "run_outcomes.json").exists()
+    assert not (tmp_path / "ws" / ingest_module.RUN_OUTCOMES_FILENAME).exists()
 
 
 # ---------------------------------------------------------------------------

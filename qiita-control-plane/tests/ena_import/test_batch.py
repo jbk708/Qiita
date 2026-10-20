@@ -3370,19 +3370,21 @@ _NO_DATA_REASON = "ENA run: fetch failed (IOException): no sequence data found"
 async def _record_download_failure(postgres_pool, run_accession: str) -> None:
     await postgres_pool.execute(
         "UPDATE qiita.sequenced_sample"
-        " SET download_failure_reason = $2, download_failure_type = 'permanent'"
+        " SET download_failure_reason = $2, download_failure_type = $3"
         " WHERE ena_run_accession = $1",
         run_accession,
         _NO_DATA_REASON,
+        FailureType.PERMANENT.value,
     )
 
 
 async def _complete_download_tickets(postgres_pool, batch_idx: int) -> None:
     await postgres_pool.execute(
-        "UPDATE qiita.work_ticket SET state = 'completed' WHERE work_ticket_idx = ANY("
+        "UPDATE qiita.work_ticket SET state = $2 WHERE work_ticket_idx = ANY("
         " SELECT unnest(download_work_ticket_idxs) FROM qiita.ena_import_batch_item"
         " WHERE batch_idx = $1)",
         batch_idx,
+        WorkTicketState.COMPLETED.value,
     )
 
 
@@ -3415,7 +3417,7 @@ async def test_completed_download_with_a_recorded_failure_reads_completed_partia
     (item,) = (await fetch_batch_status(postgres_pool, batch_idx=batch_idx)).items
 
     assert item.state == BatchItemState.COMPLETED_PARTIAL
-    assert item.failure_reason == f"{bad_run} (permanent)"
+    assert item.failure_reason == f"{bad_run} ({FailureType.PERMANENT.value})"
     by_run = {r.run_accession: r for r in item.ena_runs}
     assert by_run[bad_run].status == EnaRunRegistrationStatus.DOWNLOAD_FAILED.value
     assert by_run[bad_run].failure_reason == _NO_DATA_REASON
@@ -3466,7 +3468,7 @@ async def test_partial_item_lists_a_bounded_number_of_failed_runs(
 
     assert item.state == BatchItemState.COMPLETED_PARTIAL
     assert item.failure_reason.endswith("and 3 more")
-    assert item.failure_reason.count("(permanent)") == 20
+    assert item.failure_reason.count(f"({FailureType.PERMANENT.value})") == 20
     assert {r.status for r in item.ena_runs} == {EnaRunRegistrationStatus.DOWNLOAD_FAILED.value}
 
     await _cleanup_study(postgres_pool, study)
@@ -3477,7 +3479,7 @@ async def test_reimport_of_a_partially_landed_pool_stays_partial_and_not_held(
 ):
     """The completed ticket is reused. The failed run has no reads and its pool's
     download completed, but it was fetched and failed, so it is not
-    `held_not_downloaded`, and the overlay replaces `skipped_already_present`."""
+    `held_not_downloaded`, and the recorded failure replaces `skipped_already_present`."""
     study = unique_ena_accession("PRJEB")
     ok_run, bad_run = _runs(2)
     _EnaWorld(monkeypatch, {study: [ok_run, bad_run]})
@@ -3528,7 +3530,7 @@ async def test_run_list_item_is_partial_only_for_a_failed_run_it_asked_for(
         BatchItemState.COMPLETED_PARTIAL,
         BatchItemState.COMPLETED_PARTIAL,
     )
-    assert listed.failure_reason == f"{asked} (permanent)"
+    assert listed.failure_reason == f"{asked} ({FailureType.PERMANENT.value})"
 
     await _cleanup_study(postgres_pool, study)
 

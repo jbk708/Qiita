@@ -138,8 +138,7 @@ class Inputs(BaseModel):
 
 
 class _RunFetchFailure(Exception):
-    """A run's fetch failed; `failure` is its classification. Marks the only
-    per-run failures that may land the rest of the pool."""
+    """A run's fetch failure; `failure` is its classification."""
 
     def __init__(self, failure: BackendFailure) -> None:
         super().__init__(failure.reason)
@@ -407,7 +406,6 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     ]
     if fetch_failures:
         combined = _combine_failures([(acc, f) for _, acc, f in fetch_failures])
-        # A transient failure retries the ticket before anything lands.
         if combined.transient or len(fetch_failures) == len(roster):
             raise combined
 

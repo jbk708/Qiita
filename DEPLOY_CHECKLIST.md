@@ -27,9 +27,9 @@ _None yet._
 
 ### 4. Deploy
 
-- `[admin]` (#feat/m1-26-partial-pool-landing) Before stopping the control plane, confirm no `download-ena-study` ticket is in flight; if the query lists any, wait for them to finish. `download-ena-study` 1.0.0 is edited in place (`qiita-admin actions sync` in `activate.sh` re-syncs it), and a ticket whose ingest step finished on the old code fails on the missing `run_outcomes` output, which a redrive cannot recover:
+- `[admin]` (#feat/m1-26-partial-pool-landing) Before stopping the control plane, confirm no `download-ena-study` ticket is in flight; if the query lists any, wait for them to finish. `download-ena-study` 1.0.0 is edited in place (`qiita-admin actions sync` in `activate.sh` re-syncs it), and a ticket whose ingest step finished on the old code fails on the missing `run_outcomes` output:
   `SELECT work_ticket_idx, state FROM qiita.work_ticket WHERE action_id = 'download-ena-study' AND state IN ('pending','queued','processing');`
-  If one was missed and its `register-files` step has no COMPLETED row in `qiita.work_ticket_step`, re-import the study. If `register-files` completed, do not re-import or `--force` that pool (its reads would load twice); escalate.
+  If one was missed and ends FAILED, redrive it (`POST /work-ticket/{idx}/run`): a download redrive drops the completed step rows, so ingest re-runs on the new code and skips runs already stored.
 
 ### 5. Verify
 

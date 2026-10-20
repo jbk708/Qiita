@@ -1,9 +1,4 @@
-"""DB tests for the persist-ena-run-outcomes library primitive.
-
-`persist_ena_run_outcomes` records each run `ingest_ena_reads` listed as failed
-onto its sequenced_sample, so the batch status can report the run's reason and
-class after the pool's other runs landed.
-"""
+"""DB tests for the persist-ena-run-outcomes library primitive."""
 
 import json
 import secrets
@@ -11,6 +6,7 @@ import secrets
 import asyncpg
 import pytest
 import pytest_asyncio
+from qiita_common.models import FailureType
 
 from qiita_control_plane.actions.library import persist_ena_run_outcomes
 from qiita_control_plane.testing.db_seeds import (
@@ -29,14 +25,14 @@ pytestmark = pytest.mark.db
 
 @pytest_asyncio.fixture
 async def pools(postgres_pool):
-    """Two pools of two runs each. Yields `(pool, samples, pool_idxs)`, where
-    `samples[p]` lists pool p's `(prep_sample_idx, run_accession)` pairs."""
+    """Two pools of two runs each. Yields `(pool, members, pool_idxs)`, where
+    `members[p]` lists pool p's `(prep_sample_idx, run_accession)` pairs."""
     owner = await seed_user_principal(postgres_pool, prefix="perO-test", suffix="owner")
     biosample_idxs, prep_sample_idxs, run_idxs, pool_idxs = [], [], [], []
-    samples: list[list[tuple[int, str]]] = []
+    members: list[list[tuple[int, str]]] = []
     for _ in range(2):
         run_idx = pool_idx = None
-        members = []
+        pool_members = []
         for _ in range(2):
             biosample_idx, prep_sample_idx = await seed_biosample_with_sequenced_prep_sample(
                 postgres_pool, owner_idx=owner
@@ -57,12 +53,12 @@ async def pools(postgres_pool):
             )
             biosample_idxs.append(biosample_idx)
             prep_sample_idxs.append(prep_sample_idx)
-            members.append((prep_sample_idx, accession))
+            pool_members.append((prep_sample_idx, accession))
         run_idxs.append(run_idx)
         pool_idxs.append(pool_idx)
-        samples.append(members)
+        members.append(pool_members)
 
-    yield postgres_pool, samples, pool_idxs
+    yield postgres_pool, members, pool_idxs
 
     await teardown_entity_graph(
         postgres_pool,
@@ -86,7 +82,7 @@ def _outcomes_file(tmp_path, entries: list[tuple[int, str, str]]):
                     "prep_sample_idx": psi,
                     "ena_run_accession": acc,
                     "failure_reason": reason,
-                    "failure_type": "permanent",
+                    "failure_type": FailureType.PERMANENT.value,
                 }
                 for psi, acc, reason in entries
             ]
@@ -97,7 +93,7 @@ def _outcomes_file(tmp_path, entries: list[tuple[int, str, str]]):
 
 async def _failure(pool, prep_sample_idx):
     row = await pool.fetchrow(
-        "SELECT download_failure_reason, download_failure_type::text AS download_failure_type"
+        "SELECT download_failure_reason, download_failure_type"
         " FROM qiita.sequenced_sample WHERE prep_sample_idx = $1",
         prep_sample_idx,
     )
@@ -105,30 +101,30 @@ async def _failure(pool, prep_sample_idx):
 
 
 async def test_records_reason_and_class_on_each_listed_run(pools, tmp_path):
-    pool, samples, pool_idxs = pools
-    (bad_psi, bad_acc), (ok_psi, _) = samples[0]
+    pool, members, pool_idxs = pools
+    (bad_psi, bad_acc), (ok_psi, _) = members[0]
     path = _outcomes_file(tmp_path, [(bad_psi, bad_acc, "no sequence data found")])
 
     await persist_ena_run_outcomes(pool, pool_idxs[0], path)
 
-    assert await _failure(pool, bad_psi) == ("no sequence data found", "permanent")
+    assert await _failure(pool, bad_psi) == ("no sequence data found", FailureType.PERMANENT)
     assert await _failure(pool, ok_psi) == (None, None)
 
 
 async def test_empty_list_writes_nothing(pools, tmp_path):
-    pool, samples, pool_idxs = pools
+    pool, members, pool_idxs = pools
     path = _outcomes_file(tmp_path, [])
 
     await persist_ena_run_outcomes(pool, pool_idxs[0], path)
 
-    for psi, _ in samples[0]:
+    for psi, _ in members[0]:
         assert await _failure(pool, psi) == (None, None)
 
 
 async def test_run_outside_the_pool_fails_loud_and_writes_nothing(pools, tmp_path):
-    pool, samples, pool_idxs = pools
-    (own_psi, own_acc), _ = samples[0]
-    stranger_psi, stranger_acc = samples[1][0]
+    pool, members, pool_idxs = pools
+    (own_psi, own_acc), _ = members[0]
+    stranger_psi, stranger_acc = members[1][0]
     path = _outcomes_file(
         tmp_path, [(own_psi, own_acc, "boom"), (stranger_psi, stranger_acc, "boom")]
     )
@@ -141,8 +137,8 @@ async def test_run_outside_the_pool_fails_loud_and_writes_nothing(pools, tmp_pat
 
 
 async def test_accession_that_does_not_match_the_prep_sample_fails_loud(pools, tmp_path):
-    pool, samples, pool_idxs = pools
-    (psi, _), (_, other_acc) = samples[0]
+    pool, members, pool_idxs = pools
+    (psi, _), (_, other_acc) = members[0]
     path = _outcomes_file(tmp_path, [(psi, other_acc, "boom")])
 
     with pytest.raises(RuntimeError, match=other_acc):
@@ -158,12 +154,15 @@ async def test_missing_outcomes_file_fails_loud(pools, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "assignment", ["download_failure_reason = 'x'", "download_failure_type = 'permanent'"]
+    ("column", "value"),
+    [("download_failure_reason", "x"), ("download_failure_type", FailureType.PERMANENT.value)],
 )
-async def test_check_rejects_a_row_with_only_one_failure_column(pools, assignment):
-    pool, samples, _ = pools
-    psi, _ = samples[0][0]
+async def test_check_rejects_a_row_with_only_one_failure_column(pools, column, value):
+    pool, members, _ = pools
+    psi, _ = members[0][0]
     with pytest.raises(asyncpg.CheckViolationError, match="sequenced_sample_download_failure_pair"):
         await pool.execute(
-            f"UPDATE qiita.sequenced_sample SET {assignment} WHERE prep_sample_idx = $1", psi
+            f"UPDATE qiita.sequenced_sample SET {column} = $2 WHERE prep_sample_idx = $1",
+            psi,
+            value,
         )
