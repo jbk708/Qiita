@@ -8,7 +8,6 @@ progress.
 The persisted `BatchItemState` values mirror the `qiita.ena_import_batch_item.state`
 CHECK constraint — TEXT/CHECK, not a Postgres ENUM, same carve-out as `UploadStatus` /
 `ReferenceStatus`; see CLAUDE.md "Enum parity". Keep both sides in sync by hand.
-`done` and `completed_partial` are display-only and not in the CHECK.
 """
 
 from __future__ import annotations

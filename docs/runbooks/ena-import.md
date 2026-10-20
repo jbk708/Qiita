@@ -107,15 +107,14 @@ the failure, which holds the old roster: cancel it by idx (`work_ticket_idxs`) t
 job, then re-import the study. The ticket stays FAILED and keeps refusing `/run`.
 A re-import does not retry the failed runs of a `completed_partial` pool: its ticket is
 COMPLETED and is reused, and the runs keep reporting `download_failed`.
-Nothing schedules a re-import or a redrive; each is an operator gesture. A native `POST .../sequenced-sample`
-add to a pool whose download has already read (or is reading) its roster is refused the
-same way, 409: create a new `sequenced_pool` on the run and submit its own
-`download-ena-study` ticket instead.
-A `PATCH /sequenced-sample/{idx}` that changes `ena_run_accession` is refused (409) in
-those states, when a failed ticket still has a live download job, and once the
-sequenced_sample's reads have a `sequence_range` (the download reuses them rather than
-fetching the new run); retire its prep_sample and add the corrected run to a new
-`sequenced_pool` the same way.
+Nothing schedules a re-import or a redrive; each is an operator gesture. A native
+`POST .../sequenced-sample` add to a pool whose download has already read (or is reading) its
+roster is refused the same way, 409: create a new `sequenced_pool` on the run and submit
+its own `download-ena-study` ticket instead. A `PATCH /sequenced-sample/{idx}` that
+changes `ena_run_accession` is refused (409) in those states, when a failed ticket still
+has a live download job, and once the sequenced_sample's reads have a `sequence_range`
+(the download reuses them rather than fetching the new run); retire its prep_sample and
+add the corrected run to a new `sequenced_pool` the same way.
 
 An import will only add to a study **an import created**. A study Qiita created
 natively and later deposited to ENA carries a `bioproject_accession` too, so
@@ -264,8 +263,9 @@ is retried until the timeout instead of failing the watch; any other HTTP error 
 fatal. Exit codes: `0` every item reached `done`; `1` an item ended `failed` or
 `completed_partial`, the watch timed out (naming each still-pending item and its last
 known state), an HTTP error, or no token was found; `2` bad input (a malformed
-accession, a bad `--from-file` line, an out-of-range flag); `130` Ctrl-C, naming the batch to poll if the POST had
-already succeeded. `qiita ena-import-status IDX` reads a batch's current state and
+accession, a bad `--from-file` line, an out-of-range flag); `130` Ctrl-C, naming the
+batch to poll if the POST had already succeeded. `qiita ena-import-status IDX` reads a
+batch's current state and
 always exits `0` once the read itself succeeds. See the REST bullets above for the
 state set and what each field means.
 

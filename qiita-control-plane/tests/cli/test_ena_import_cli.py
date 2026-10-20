@@ -15,7 +15,7 @@ import zlib
 import httpx
 import pytest
 from qiita_common.api_paths import URL_ENA_IMPORT_BATCH_BY_IDX
-from qiita_common.models import FailureType
+from qiita_common.models import BatchItemState, FailureType
 
 from qiita_control_plane.ena_import.registration import EnaRunRegistrationStatus
 
@@ -450,7 +450,7 @@ def test_watch_exits_1_and_names_the_failed_runs_when_an_item_is_completed_parti
             "items": [
                 _item(
                     "PRJEB11419",
-                    "completed_partial",
+                    BatchItemState.COMPLETED_PARTIAL,
                     failure_reason=f"ERR1 ({FailureType.PERMANENT.value})",
                     ena_runs=[
                         {
@@ -483,7 +483,8 @@ def test_watch_exits_1_and_names_the_failed_runs_when_an_item_is_completed_parti
 
     assert rc == 1
     out, err = capsys.readouterr()
-    assert f"PRJEB11419 -> completed_partial (ERR1 ({FailureType.PERMANENT.value}))" in err
+    partial, permanent = BatchItemState.COMPLETED_PARTIAL.value, FailureType.PERMANENT.value
+    assert f"PRJEB11419 -> {partial} (ERR1 ({permanent}))" in err
     assert "no sequence data found" in out
     assert [m for m, _p, _b in calls] == ["POST", "GET"]
 
@@ -1005,7 +1006,7 @@ def test_ena_import_status_exits_0_for_a_completed_partial_item(monkeypatch, cap
         "items": [
             _item(
                 "PRJEB11419",
-                "completed_partial",
+                BatchItemState.COMPLETED_PARTIAL,
                 failure_reason=f"ERR1 ({FailureType.PERMANENT.value})",
             )
         ],
@@ -1020,7 +1021,7 @@ def test_ena_import_status_exits_0_for_a_completed_partial_item(monkeypatch, cap
     rc = main(["--base-url", "https://q.example.test", "ena-import-status", "5"])
 
     assert rc == 0
-    assert "completed_partial" in capsys.readouterr().out
+    assert BatchItemState.COMPLETED_PARTIAL.value in capsys.readouterr().out
 
 
 def test_ena_import_status_non_200_surfaces_status_and_body(monkeypatch, capsys):

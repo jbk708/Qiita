@@ -100,7 +100,7 @@ async def _failure(pool, prep_sample_idx):
     return row["download_failure_reason"], row["download_failure_type"]
 
 
-async def test_records_reason_and_class_on_each_listed_run(pools, tmp_path):
+async def test_records_reason_and_failure_type_on_each_listed_run(pools, tmp_path):
     pool, members, pool_idxs = pools
     (bad_psi, bad_acc), (ok_psi, _) = members[0]
     path = _outcomes_file(tmp_path, [(bad_psi, bad_acc, "no sequence data found")])

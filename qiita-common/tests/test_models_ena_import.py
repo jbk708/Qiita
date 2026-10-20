@@ -133,7 +133,7 @@ def test_batch_import_item_whole_study_has_no_run_list():
     assert item.requested_run_accessions is None
 
 
-def test_failed_run_outcome_carries_its_class():
+def test_failed_run_outcome_carries_its_failure_type():
     from qiita_common.models import FailureType
     from qiita_common.models.ena_import import FailedRunOutcome
 
