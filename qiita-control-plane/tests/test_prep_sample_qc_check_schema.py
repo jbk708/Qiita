@@ -266,6 +266,15 @@ async def test_second_row_under_same_key_refused(seeded, producer):
         await _add(seeded, QcCheck.COMPOSITION, QcSeverity.FAIL, **kwargs)
 
 
+async def test_rerun_after_invalidation_is_refused_as_a_second_row(seeded):
+    idx = await _add(seeded, QcCheck.CLASSIFIER, QcSeverity.WARNING)
+    await seeded["pool"].execute(
+        _INVALIDATE_CHECK, idx, seeded["principal_idx"], QcCheckState.INVALIDATED
+    )
+    with pytest.raises(asyncpg.UniqueViolationError):
+        await _add(seeded, QcCheck.CLASSIFIER, QcSeverity.INFO)
+
+
 async def test_same_check_under_different_producers_allowed(seeded):
     mask_idx = await _seed_mask(seeded)
     await _add(seeded, QcCheck.COMPOSITION, QcSeverity.INFO)

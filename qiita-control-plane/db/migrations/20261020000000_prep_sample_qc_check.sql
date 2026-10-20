@@ -2,7 +2,8 @@
 
 -- migrate:up
 
--- The derived-row FKs cascade so these rows never block a delete.
+-- The derived-row FKs cascade so these rows never block a delete; without its ticket a
+-- row has no provenance.
 CREATE TABLE qiita.prep_sample_qc_check (
     idx                 BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
     prep_sample_idx     BIGINT NOT NULL REFERENCES qiita.prep_sample(idx) ON DELETE CASCADE,
