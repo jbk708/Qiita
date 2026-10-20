@@ -169,6 +169,14 @@ from qiita_common.models.prep_sample import (
     PrepSampleStudyFieldCreateRequest,
     PrepSampleStudyFieldResponse,
 )
+from qiita_common.models.prep_sample_qc_check import (
+    PrepSampleQcCheck,
+    PrepSampleQcCheckResponse,
+    QcCheck,
+    QcCheckState,
+    QcSeverity,
+    QcVerdict,
+)
 from qiita_common.models.processing import (
     AssemblyExportRosterResponse,
     AssemblySampleState,
@@ -724,6 +732,12 @@ __all__ = [
     "PrepSampleGlobalFieldResponse",
     "PrepSampleStudyFieldCreateRequest",
     "PrepSampleStudyFieldResponse",
+    "PrepSampleQcCheck",
+    "PrepSampleQcCheckResponse",
+    "QcCheck",
+    "QcCheckState",
+    "QcSeverity",
+    "QcVerdict",
     # Sequencing-run / sequenced-pool / sequenced-sample.
     "AlignmentDefinitionDeleteResponse",
     "PoolAlignmentCohort",
