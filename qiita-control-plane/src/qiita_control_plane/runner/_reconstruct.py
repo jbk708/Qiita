@@ -746,6 +746,24 @@ async def _run_action_primitive(
         )
         return {}
 
+    if entry.name == LibraryPrimitive.PERSIST_QC_CHECKS:
+        if entry.inputs != ["qc_checks"]:
+            raise RuntimeError(
+                f"persist-qc-checks expects inputs [qc_checks]; got {entry.inputs!r}"
+            )
+        if scope_target["kind"] != ScopeTargetKind.PREP_SAMPLE.value:
+            raise RuntimeError(
+                "persist-qc-checks requires a prep_sample-scoped ticket; "
+                f"got {scope_target['kind']!r}"
+            )
+        await LIBRARY[LibraryPrimitive.PERSIST_QC_CHECKS](
+            pool,
+            work_ticket_idx=work_ticket_idx,
+            prep_sample_idx=scope_target["prep_sample_idx"],
+            qc_checks_path=Path(bound["qc_checks"]),
+        )
+        return {}
+
     if entry.name == LibraryPrimitive.PERSIST_QC_REPORT:
         # Persist the two fastqc-equivalent QC reports onto this prep_sample's
         # 1:1 sequenced_sample. Each declared input is a Path to a qc_report.json

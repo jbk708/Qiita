@@ -2371,6 +2371,79 @@ async def test_run_action_primitive_persist_syndna_read_count_rejects_a_bad_entr
         )
 
 
+async def test_run_action_primitive_persist_qc_checks_dispatches(monkeypatch, tmp_path):
+    """The persist-qc-checks arm passes the ticket idx, the scope target's prep_sample_idx
+    and the `qc_checks` binding's path."""
+    from pathlib import Path
+
+    from qiita_common.actions import WorkflowAction
+    from qiita_common.api_paths import LibraryPrimitive
+
+    from qiita_control_plane.actions import library
+    from qiita_control_plane.runner import _run_action_primitive
+
+    recorded: dict = {}
+
+    async def fake_persist(pool, *, work_ticket_idx, prep_sample_idx, qc_checks_path):
+        recorded.update(
+            work_ticket_idx=work_ticket_idx,
+            prep_sample_idx=prep_sample_idx,
+            qc_checks_path=qc_checks_path,
+        )
+        return 3
+
+    monkeypatch.setitem(library.LIBRARY, LibraryPrimitive.PERSIST_QC_CHECKS, fake_persist)
+
+    entry = WorkflowAction(
+        kind="action", name="persist-qc-checks", inputs=["qc_checks"], outputs=[]
+    )
+    sidecar = tmp_path / "qc_checks.json"
+    out = await _run_action_primitive(
+        None,
+        entry,
+        {"qc_checks": str(sidecar)},
+        tmp_path,
+        {"kind": "prep_sample", "prep_sample_idx": 5},
+        work_ticket_idx=9,
+        signing_key=b"sekret",
+        data_plane_url="grpc://dp:50051",
+    )
+    assert out == {}
+    assert recorded == {
+        "work_ticket_idx": 9,
+        "prep_sample_idx": 5,
+        "qc_checks_path": Path(sidecar),
+    }
+
+
+@pytest.mark.parametrize(
+    ("inputs", "scope", "match"),
+    [
+        (["alignment"], {"kind": "prep_sample", "prep_sample_idx": 5}, "expects inputs"),
+        (["qc_checks"], {"kind": "block", "block_idx": 42}, "prep_sample-scoped"),
+    ],
+)
+async def test_run_action_primitive_persist_qc_checks_rejects_a_bad_entry(
+    tmp_path, inputs, scope, match
+):
+    from qiita_common.actions import WorkflowAction
+
+    from qiita_control_plane.runner import _run_action_primitive
+
+    entry = WorkflowAction(kind="action", name="persist-qc-checks", inputs=inputs, outputs=[])
+    with pytest.raises(RuntimeError, match=match):
+        await _run_action_primitive(
+            None,
+            entry,
+            {"qc_checks": "x", "alignment": "x"},
+            tmp_path,
+            scope,
+            work_ticket_idx=1,
+            signing_key=b"x",
+            data_plane_url="grpc://x",
+        )
+
+
 async def test_run_action_primitive_finalize_mask_sample_rejects_non_prep_sample_scope(tmp_path):
     """finalize-mask-sample is only meaningful for a prep_sample-scoped ticket; a
     block- or otherwise-scoped ticket is a contract error, surfaced loudly."""
