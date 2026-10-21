@@ -41,6 +41,7 @@ from qiita_common.models import (
 from qiita_common.testing.containers import REFERENCE_HASH_CONTAINER, REFERENCE_LOAD_CONTAINER
 
 from qiita_control_plane import step_progress
+from qiita_control_plane.actions.library import QcProducer
 from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 
 pytestmark = pytest.mark.db
@@ -6850,7 +6851,8 @@ async def test_run_action_primitive_persist_qc_checks_refuses_an_unresolved_prod
     entry = WorkflowAction(
         kind="action", name=LibraryPrimitive.PERSIST_QC_CHECKS, inputs=["qc_checks"], outputs=[]
     )
-    with pytest.raises(RuntimeError, match="no QC producer"):
+    match = "cannot be counted" if bind_none else "did not bind"
+    with pytest.raises(RuntimeError, match=match):
         await _run_action_primitive(
             None,
             entry,
@@ -6868,16 +6870,16 @@ async def test_run_action_primitive_persist_qc_checks_refuses_an_unresolved_prod
     [
         (
             [LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, LibraryPrimitive.FINALIZE_MASK_SAMPLE],
-            "alignment",
+            QcProducer.ALIGNMENT,
         ),
         (
             [LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE],
-            "alignment",
+            QcProducer.ALIGNMENT,
         ),
-        ([LibraryPrimitive.FINALIZE_MASK_SAMPLE], "mask"),
+        ([LibraryPrimitive.FINALIZE_MASK_SAMPLE], QcProducer.MASK),
         ([LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE], None),
         ([LibraryPrimitive.FINALIZE_MASK_SAMPLE, LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE], None),
-        ([], "none"),
+        ([], QcProducer.NONE),
     ],
 )
 def test_qc_producer_follows_the_workflow_gates(steps, expected):
@@ -6887,3 +6889,14 @@ def test_qc_producer_follows_the_workflow_gates(steps, expected):
 
     entries = [WorkflowAction(kind="action", name=n, inputs=[], outputs=[]) for n in steps]
     assert _workflow_qc_producer(entries) == expected
+
+
+def test_qc_producer_covers_every_per_sample_gate():
+    """A new finalize-*-sample gate must be mapped in `_workflow_qc_producer` before it
+    can fall through to an ungated `QcProducer.NONE`."""
+    gates = {p for p in LibraryPrimitive if p.startswith("finalize-") and p.endswith("-sample")}
+    assert gates == {
+        LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE,
+        LibraryPrimitive.FINALIZE_MASK_SAMPLE,
+        LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE,
+    }

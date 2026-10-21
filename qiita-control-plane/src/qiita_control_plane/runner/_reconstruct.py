@@ -51,6 +51,7 @@ from ..workspace import step_attempt_dir, step_logs_dir, step_output_dir
 from ._alignment import _workflow_writes_alignment_gate
 from ._dispatch import _best_effort_record_failed, _result_with_infra_retry
 from ._mask import MASK_IDX_BINDING
+from ._processing import _workflow_writes_assembly_gate
 from ._read_ingest import (
     ROUTER_PENDING_BINDING,
     SHARD_MAPPING_BINDING,
@@ -336,17 +337,17 @@ QC_PRODUCER_BINDING = "qc_producer"
 
 
 def _workflow_qc_producer(steps: list[Any]) -> QcProducer | None:
-    """The gate the workflow's QC rows are counted under: alignment, else mask, else none.
-
-    None when it finalizes a gate with no QC producer (assembly); the persist arm refuses
-    that rather than write rows `qc_verdict` would count ungated.
-    """
+    """The gate the workflow's QC rows are counted under: alignment, else mask, else
+    `QcProducer.NONE`. Python `None` (refused by the persist arm) when it finalizes a gate
+    with no QC producer (assembly), so `qc_verdict` never counts such rows ungated."""
     if _workflow_writes_alignment_gate(steps):
         return QcProducer.ALIGNMENT
-    names = {e.name for e in steps if isinstance(e, WorkflowAction)}
-    if LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE in names:
+    if _workflow_writes_assembly_gate(steps):
         return None
-    if LibraryPrimitive.FINALIZE_MASK_SAMPLE in names:
+    if any(
+        isinstance(e, WorkflowAction) and e.name == LibraryPrimitive.FINALIZE_MASK_SAMPLE
+        for e in steps
+    ):
         return QcProducer.MASK
     return QcProducer.NONE
 
@@ -777,10 +778,12 @@ async def _run_action_primitive(
                 "persist-qc-checks requires a prep_sample-scoped ticket; "
                 f"got {scope_target['kind']!r}"
             )
-        if bound.get(QC_PRODUCER_BINDING) is None:
+        if QC_PRODUCER_BINDING not in bound:
+            raise RuntimeError(f"persist-qc-checks: the runner did not bind {QC_PRODUCER_BINDING}")
+        if bound[QC_PRODUCER_BINDING] is None:
             raise RuntimeError(
-                "persist-qc-checks: no QC producer for this workflow; it finalizes a gate "
-                "QC checks cannot be counted under"
+                "persist-qc-checks: this workflow finalizes a gate QC checks cannot be "
+                "counted under (assembly)"
             )
         await LIBRARY[LibraryPrimitive.PERSIST_QC_CHECKS](
             pool,
