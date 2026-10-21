@@ -749,8 +749,8 @@ def test_permanently_failed_run_does_not_block_the_good_runs(
 def test_unrecognised_error_fails_the_step_beside_a_good_run(
     fake_mint, monkeypatch, tmp_path, failure
 ):
-    """The raw error propagates, not a BackendFailure, so a Slurm OOM traceback
-    still reaches the OOM upgrade in `SlurmBackend.result_step`."""
+    """The raw error propagates, not a BackendFailure, so a Slurm OOM traceback is
+    still upgraded to OOM_KILLED."""
     monkeypatch.setattr(
         ingest_module, "_stage_run_reads", _fake_with_failing_run("ERR001", failure)
     )

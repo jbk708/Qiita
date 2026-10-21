@@ -415,8 +415,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     combined = (
         _combine_failures([(acc, f) for _, acc, f in fetch_failures]) if fetch_failures else None
     )
-    # A transient failure wins over any other error so the ticket retries. Runs
-    # that already completed only wrote their own durable copy, which is harmless.
+    # Runs that already completed only wrote their own durable copy, which is harmless.
     if combined is not None and combined.transient:
         raise combined
     for outcome in outcomes:
