@@ -7,6 +7,7 @@ accession and `_run_and_log` is a no-op so no real orchestrator is reached.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import uuid
 
@@ -222,6 +223,7 @@ async def download_ena_study_action(postgres_pool):
                 "properties": {
                     "ena_study_accession": {"type": "string", "minLength": 1},
                     "download_method": {"type": "string", "enum": ["http"]},
+                    "run_concurrency": {"type": "integer", "minimum": 1, "maximum": 8},
                 },
             }
         ),
@@ -403,6 +405,38 @@ async def test_process_one_study_registers_and_submits_download_ticket(
     assert ticket_row["originator_principal_idx"] == admin_principal.principal_idx
     context = json.loads(ticket_row["action_context"])
     assert context["ena_study_accession"] == accession
+
+    await _cleanup_study(postgres_pool, accession)
+
+
+async def test_process_one_study_carries_configured_run_concurrency_into_the_ticket(
+    batch_app, postgres_pool, admin_principal, download_ena_study_action, batch_cleanup, monkeypatch
+):
+    """The deploy-wide `ENA_DOWNLOAD_RUN_CONCURRENCY` reaches the batch ticket's stored context."""
+    monkeypatch.setattr(
+        batch_app.state,
+        "settings",
+        dataclasses.replace(batch_app.state.settings, ena_download_run_concurrency=6),
+    )
+    accession = unique_ena_accession("PRJNA")
+    batch_idx, items = await create_ena_import_batch(
+        postgres_pool,
+        accessions=[accession],
+        principal=admin_principal,
+    )
+    batch_cleanup.append(batch_idx)
+
+    await schedule_ena_import_batch(batch_app, items=items, principal=admin_principal)
+
+    item_row = await postgres_pool.fetchrow(
+        "SELECT download_work_ticket_idxs FROM qiita.ena_import_batch_item WHERE batch_idx = $1",
+        batch_idx,
+    )
+    ticket_row = await postgres_pool.fetchrow(
+        "SELECT action_context FROM qiita.work_ticket WHERE work_ticket_idx = $1",
+        item_row["download_work_ticket_idxs"][0],
+    )
+    assert json.loads(ticket_row["action_context"])["run_concurrency"] == 6
 
     await _cleanup_study(postgres_pool, accession)
 

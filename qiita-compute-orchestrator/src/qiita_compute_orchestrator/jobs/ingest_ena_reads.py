@@ -43,10 +43,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import duckdb
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
 from qiita_common.models import FailureType, WorkTicketFailureStage
@@ -63,16 +64,20 @@ from ..miint import (
 from ..read_staging import hardlink, per_slot_caps, read_roster_parquet, write_sorted_reads
 from ..sequence_range_retry import is_transient_http_status, mint_or_reuse_sequence_range
 
+_LOG = logging.getLogger(__name__)
+
 # Hard-coded (not derived from the YAML) so a rename diverging from the
 # `- step: ingest_ena_reads` entry fails loudly at BackendFailure attribution.
 YAML_STEP_NAME = "ingest_ena_reads"
 
 RUN_OUTCOMES_FILENAME = "run_outcomes.json"
 
-# Bounded per-run fan-out, same shape as ingest_reads' _CONCURRENCY (here
-# network-bound). Per-slot DuckDB caps come from `per_slot_caps`; the two
-# _DUCKDB_* values are the off-SLURM (test/local) per-slot fallback.
+# Default per-run fan-out (network-bound); `Inputs.run_concurrency` overrides it.
+# The cap keeps one slot per worker of asyncio's default executor (>= 12 threads).
+# Per-slot DuckDB caps come from `per_slot_caps`; the two _DUCKDB_* values are
+# the off-SLURM (test/local) per-slot fallback.
 _CONCURRENCY = 4
+_MAX_RUN_CONCURRENCY = 8
 _DUCKDB_MEMORY_GB = 7
 _DUCKDB_THREADS = 2
 
@@ -135,6 +140,7 @@ class Inputs(BaseModel):
     ena_run_map: Path
     reads_staging_root: Path
     download_method: str = "http"
+    run_concurrency: int = Field(_CONCURRENCY, ge=1, le=_MAX_RUN_CONCURRENCY)
     sequenced_pool_idx: int
     sequencing_run_idx: int
     work_ticket_idx: int
@@ -287,7 +293,7 @@ def _combine_failures(failed: list[tuple[str, BackendFailure]]) -> BackendFailur
 
 
 async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
-    """Download every pool run's reads, up to `_CONCURRENCY` at once. See the
+    """Download every pool run's reads, up to `inputs.run_concurrency` at once. See the
     module docstring for the per-run pipeline and fail-loud checks."""
     roster = read_roster_parquet(
         inputs.ena_run_map, value_column="ena_run_accession", roster_name="ena_run_map"
@@ -299,9 +305,16 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     register_dir.mkdir(parents=True, exist_ok=True)
 
     memory_gb, threads = per_slot_caps(
-        _CONCURRENCY, threads=_DUCKDB_THREADS, fallback_memory_gb=_DUCKDB_MEMORY_GB
+        inputs.run_concurrency, threads=_DUCKDB_THREADS, fallback_memory_gb=_DUCKDB_MEMORY_GB
     )
-    sem = asyncio.Semaphore(_CONCURRENCY)
+    _LOG.info(
+        "ingest_ena_reads: %d runs, run_concurrency=%d (%d GB, %d threads per slot)",
+        len(roster),
+        inputs.run_concurrency,
+        memory_gb,
+        threads,
+    )
+    sem = asyncio.Semaphore(inputs.run_concurrency)
 
     async def _process_run(http: object, prep_sample_idx: int, run_accession: str) -> str:
         """Store one run's reads. Returns `"registered"`; raises on any failure

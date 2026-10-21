@@ -57,6 +57,8 @@ _DEFAULT_CP_TO_CO_TOKEN_PATH = Path("/etc/qiita/cp-to-co.token")
 # nothing above `dispatch._DISPATCH_CONCURRENCY` (8): its children dispatch
 # through the same shared process-wide slots, so they queue instead.
 _DEFAULT_FANOUT_MAX_INFLIGHT = DEFAULT_FANOUT_MAX_INFLIGHT
+# Matches `maximum` of `run_concurrency` in workflows/download-ena-study/1.0.0.yaml.
+MAX_ENA_DOWNLOAD_RUN_CONCURRENCY = 8
 
 
 # Email-notification defaults. SMTP_HOST is deliberately unset by default so a
@@ -159,6 +161,16 @@ def _parse_optional_positive_int_env(var: str) -> int | None:
     return _parse_positive_int_env(var, default=1)
 
 
+def _parse_ena_download_run_concurrency() -> int | None:
+    value = _parse_optional_positive_int_env("ENA_DOWNLOAD_RUN_CONCURRENCY")
+    if value is not None and value > MAX_ENA_DOWNLOAD_RUN_CONCURRENCY:
+        raise RuntimeError(
+            f"ENA_DOWNLOAD_RUN_CONCURRENCY must be at most "
+            f"{MAX_ENA_DOWNLOAD_RUN_CONCURRENCY}, got {value}"
+        )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
@@ -208,6 +220,8 @@ class Settings:
     max_sequence_mint_count: int = _DEFAULT_MAX_SEQUENCE_MINT_COUNT
     # Per-cohort cap on concurrently-dispatched fan-out child work_tickets.
     fanout_max_inflight: int = _DEFAULT_FANOUT_MAX_INFLIGHT
+    # Runs fetched at once per batch-submitted download ticket; None keeps the job's default.
+    ena_download_run_concurrency: int | None = None
     # Per-ticket workspace root the workflow runner mints under
     # (`<root>/<work_ticket_idx>/<step>/attempt-N/`). Derived in from_env()
     # as `PATH_SCRATCH/ticket`. The CP creates the subdir; the path is
@@ -419,6 +433,7 @@ class Settings:
                 "FANOUT_MAX_INFLIGHT",
                 _DEFAULT_FANOUT_MAX_INFLIGHT,
             ),
+            ena_download_run_concurrency=_parse_ena_download_run_concurrency(),
             path_scratch_ticket=ws_root,
             path_scratch_staging=upload_root,
             path_ingest_roots=ingest_roots,

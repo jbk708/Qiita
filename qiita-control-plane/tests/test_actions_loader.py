@@ -1246,7 +1246,10 @@ def test_load_actions_loads_on_disk_download_ena_study_yaml():
     assert ingest.module == "qiita_compute_orchestrator.jobs.ingest_ena_reads"
     assert ingest.container is None
     assert ingest.inputs == ["ena_run_map", "reads_staging_root"]
-    assert ingest.params == {"download_method": "download_method"}
+    assert ingest.params == {
+        "download_method": "download_method",
+        "run_concurrency": "run_concurrency",
+    }
     assert ingest.outputs == ["read_staging_dir", "run_outcomes"]
 
     # download_method is OPTIONAL (not in `required`) and pinned to 'http'.
@@ -1254,9 +1257,26 @@ def test_load_actions_loads_on_disk_download_ena_study_yaml():
     props = dl.context_schema["properties"]
     assert props["ena_study_accession"]["type"] == "string"
     assert props["download_method"]["enum"] == ["http"]
+    assert props["run_concurrency"] == {"type": "integer", "minimum": 1, "maximum": 8}
 
     # The inert placeholder must be gone now that the real workflow has landed.
     assert not (repo_root / "workflows" / "download-ena-study" / "workflow.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("run_concurrency", "accepted"),
+    [(1, True), (8, True), (0, False), (9, False), ("8", False)],
+)
+def test_download_ena_study_run_concurrency_is_bounded(run_concurrency, accepted):
+    from pathlib import Path
+
+    from qiita_control_plane.actions import load_actions
+    from qiita_control_plane.actions.context_validator import validate_context
+
+    actions = load_actions(Path(__file__).resolve().parents[2] / "workflows")
+    schema = next(a for a in actions if a.action_id == "download-ena-study").context_schema
+    context = {"ena_study_accession": "PRJEB1", "run_concurrency": run_concurrency}
+    assert (not validate_context(schema, context)) is accepted
 
 
 def test_download_ena_study_yaml_declares_ena_run_map_binding():
