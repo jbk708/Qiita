@@ -232,7 +232,7 @@ def test_run_concurrency_defaults_to_four(tmp_path):
 
 @pytest.mark.parametrize("bad", [0, -1, MAX_ENA_DOWNLOAD_RUN_CONCURRENCY + 1])
 def test_run_concurrency_out_of_range_is_rejected(tmp_path, bad):
-    """0 would hang the semaphore; above the cap outruns the executor at 8 CPUs."""
+    """0 would hang the semaphore; the cap is the documented bound."""
     with pytest.raises(ValidationError):
         Inputs(
             ena_run_map=tmp_path / "m.parquet",

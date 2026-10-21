@@ -73,7 +73,6 @@ YAML_STEP_NAME = "ingest_ena_reads"
 RUN_OUTCOMES_FILENAME = "run_outcomes.json"
 
 # Default per-run fan-out (network-bound); `Inputs.run_concurrency` overrides it.
-# The cap keeps one slot per worker of asyncio's default executor at the baseline 8 CPUs.
 # Per-slot DuckDB caps come from `per_slot_caps`; the two _DUCKDB_* values are
 # the off-SLURM (test/local) per-slot fallback.
 _CONCURRENCY = 4
