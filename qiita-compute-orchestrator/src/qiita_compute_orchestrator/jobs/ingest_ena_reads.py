@@ -108,8 +108,6 @@ _TRANSIENT_ERROR_MARKERS = (
     "curl",
     "could not connect",
 )
-# A raised duckdb.Error with one of these is a bad run, not a fault in the step:
-# only these (and a 404) land the pool partial. Anything else fails the step.
 _PERMANENT_ERROR_MARKERS = ("malformed", "invalid fastq", "no sequence data")
 # ENA's own words when it answers a search with HTTP 200 but stops writing the
 # results; with duckdb-miint#310, miint quotes them when the answer survives its
@@ -200,11 +198,10 @@ def _stage_run_reads(
 def _classify_ena_fetch_error(
     run_accession: str, exc: duckdb.Error, *, step_name: str
 ) -> BackendFailure:
-    """Classify a raised `duckdb.Error` from `_stage_run_reads` as retriable or
-    permanent. Retriable: a transport/network-shaped error; ENA or its file server
-    answering with a status `is_transient_http_status` accepts, or ENA saying it
-    did not write all the results; a run that failed mid-stream; an md5 mismatch.
-    Permanent: anything else, such as a format/parse error or a 404."""
+    """Classify a raised `duckdb.Error` from `_stage_run_reads`. Retriable: a
+    network-shaped error, a transient or zero HTTP status, ENA's incomplete answer,
+    a mid-stream failure, an md5 mismatch. Anything else is BAD_INPUT, which
+    `_is_permanent_fetch_error` then narrows to the recognised bad runs."""
     text = str(exc).lower()
     # A run that broke mid-download: its data is partial, which is not the same
     # as ENA being unreachable, so the reason does not carry
@@ -221,7 +218,7 @@ def _classify_ena_fetch_error(
             ),
         )
     # httpfs and miint's ENA client raise duckdb.HTTPException with the status;
-    # httpfs reports a 502 from a proxy as status 0.
+    # status 0 means no usable HTTP status, so it retries.
     status = getattr(exc, "status_code", None)
     unavailable = (
         any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
@@ -263,8 +260,7 @@ def _classify_ena_fetch_error(
 
 
 def _is_permanent_fetch_error(exc: duckdb.Error) -> bool:
-    """True for a raised error naming a bad run (a 404 or a format error), the
-    only kind that lands the pool partial; an unrecognised one fails the step."""
+    """True for a raised error naming a bad run: a 404, a format error, no data."""
     text = str(exc).lower()
     return getattr(exc, "status_code", None) == 404 or any(
         marker in text for marker in _PERMANENT_ERROR_MARKERS
@@ -309,8 +305,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
 
     async def _process_run(http: object, prep_sample_idx: int, run_accession: str) -> str:
         """Store one run's reads. Returns `"registered"`; raises on any failure
-        — unlike `ingest_reads`, an ENA run has no legitimate "empty" outcome.
-        A fetch failure raises `_RunFetchFailure`; anything else fails the step."""
+        — unlike `ingest_reads`, an ENA run has no legitimate "empty" outcome."""
         async with sem:
             durable = compute_reads_staging_path(inputs.reads_staging_root, prep_sample_idx)
             part = register_dir / f"{prep_sample_idx}.parquet"
@@ -343,7 +338,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                     )
                     if failure.transient or _is_permanent_fetch_error(exc):
                         raise _RunFetchFailure(failure) from exc
-                    raise failure from exc
+                    raise
 
                 # Only a build that skips instead of raising reports a failed run
                 # here (module docstring). This branch retries a 404 on open;
@@ -412,20 +407,23 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                 return_exceptions=True,
             )
 
-    # Runs that already completed only wrote their own durable copy, which is
-    # harmless.
-    for outcome in outcomes:
-        if isinstance(outcome, BaseException) and not isinstance(outcome, _RunFetchFailure):
-            raise outcome
     fetch_failures = [
         (psi, acc, o.failure)
         for (psi, acc), o in zip(roster, outcomes, strict=True)
         if isinstance(o, _RunFetchFailure)
     ]
-    if fetch_failures:
-        combined = _combine_failures([(acc, f) for _, acc, f in fetch_failures])
-        if combined.transient or len(fetch_failures) == len(roster):
-            raise combined
+    combined = (
+        _combine_failures([(acc, f) for _, acc, f in fetch_failures]) if fetch_failures else None
+    )
+    # A transient failure wins over any other error so the ticket retries. Runs
+    # that already completed only wrote their own durable copy, which is harmless.
+    if combined is not None and combined.transient:
+        raise combined
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException) and not isinstance(outcome, _RunFetchFailure):
+            raise outcome
+    if combined is not None and len(fetch_failures) == len(roster):
+        raise combined
 
     run_outcomes = workspace / RUN_OUTCOMES_FILENAME
     run_outcomes.write_text(

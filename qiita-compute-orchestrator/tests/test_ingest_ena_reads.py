@@ -486,12 +486,11 @@ def _http_error(status: int, message: str) -> duckdb.HTTPException:
             "HTTP Error: Request returned HTTP 408 for HTTP HEAD to "
             "'https://ftp.sra.ebi.ac.uk/vol1/fastq/ERR001/ERR001.fastq.gz'",
         ),
-        # httpfs reports a 502 from a proxy as status 0
+        # no usable HTTP status
         _http_error(
             0,
-            "HTTP Error: Unable to connect to URL "
-            "'https://ftp.sra.ebi.ac.uk/vol1/fastq/ERR001/ERR001.fastq.gz': "
-            "(HTTP 0 Internal Server Error)",
+            "HTTP Error: HTTP GET error on "
+            "'https://ftp.sra.ebi.ac.uk/vol1/fastq/ERR001/ERR001.fastq.gz' (HTTP 0)",
         ),
         duckdb.IOException(
             "IO Error: Could not connect to server error for HTTP HEAD to "
@@ -750,17 +749,34 @@ def test_permanently_failed_run_does_not_block_the_good_runs(
 def test_unrecognised_error_fails_the_step_beside_a_good_run(
     fake_mint, monkeypatch, tmp_path, failure
 ):
-    """Only a recognised bad run lands partial. Anything else (OOM, a local
-    staging fault) fails the step so the ticket is FAILED and redrivable."""
+    """The raw error propagates, not a BackendFailure, so a Slurm OOM traceback
+    still reaches the OOM upgrade in `SlurmBackend.result_step`."""
     monkeypatch.setattr(
         ingest_module, "_stage_run_reads", _fake_with_failing_run("ERR001", failure)
     )
     inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
 
+    with pytest.raises(type(failure)) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value is failure
+    assert not (tmp_path / "ws" / ingest_module.RUN_OUTCOMES_FILENAME).exists()
+
+
+def test_transient_failure_wins_over_an_unrecognised_error(fake_mint, monkeypatch, tmp_path):
+    def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
+        if run_accession == "ERR001":
+            raise duckdb.OutOfMemoryException("Out of Memory Error: failed to allocate data")
+        if run_accession == "ERR002":
+            raise duckdb.IOException("read_ena_sequences: md5 mismatch for run: expected a got b")
+        _write_intermediate(intermediate_path, _GOOD_ROWS)
+        return 1, []
+
+    monkeypatch.setattr(ingest_module, "_stage_run_reads", _fake)
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002"), (12, "ERR003")])
+
     with pytest.raises(BackendFailure) as exc:
         _run(inputs, tmp_path / "ws")
-    assert exc.value.kind == FailureKind.BAD_INPUT
-    assert not (tmp_path / "ws" / ingest_module.RUN_OUTCOMES_FILENAME).exists()
+    assert exc.value.kind == FailureKind.EXTERNAL_FETCH_TRANSIENT
 
 
 def test_run_outcomes_is_a_top_level_json_file(fake_mint, monkeypatch, tmp_path):

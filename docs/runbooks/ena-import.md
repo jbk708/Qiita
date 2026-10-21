@@ -396,7 +396,8 @@ boundary from bytes that really disagree with the digest, so the step is retried
 the ticket's retry limit; when the retries run out the ticket ends FAILED with
 failure_type `permanent` and both digests in the reason. A run that broke mid-download
 (including a corrupt body that surfaces mid-stream) and an HTTP 5xx, 408 or 429 from ENA
-or its file server are retried the same way, as is ENA's "Not all results may have been
+or its file server, a failed connection to the server and an HTTP status 0 (no usable
+status) are retried the same way, as is ENA's "Not all results may have been
 written" answer with a miint build that includes duckdb-miint#310. A run whose file
 cannot be opened depends on the miint build: before duckdb-miint#312 miint skips it with
 a warning, which is retried like the rest, so a 404 costs the full retry limit; from
@@ -410,8 +411,8 @@ A run that fails in a way a retry cannot clear (a format error, a run with no se
 data, a 404 from duckdb-miint#312 on) does not fail its pool when another run was
 stored: the other runs load, the ticket completes, and the failed run is recorded with its
 reason and `permanent` failure type (the item reads `completed_partial`). The ticket is
-COMPLETED, so an opted-in submitter gets the usual completion email with no
-`failure_reason`; read the batch status for the failed runs. If a run failed in a way a retry
+COMPLETED, so the submitter gets the work-ticket digest unless they opted out of
+processing emails, and it carries no `failure_reason`; read the batch status for the failed runs. If a run failed in a way a retry
 could clear, the step still fails and retries first, and a run that failed permanently is
 fetched again on each retry, so a large one is downloaded again. An error the job does not
 recognise as one of these (out of memory, a local disk fault) fails the step as a whole, so
