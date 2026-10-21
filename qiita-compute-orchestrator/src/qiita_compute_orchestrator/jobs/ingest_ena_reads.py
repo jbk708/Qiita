@@ -49,6 +49,7 @@ import duckdb
 from pydantic import BaseModel
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
+from qiita_common.http_status import is_transient_http_status
 from qiita_common.models import FailureType, WorkTicketFailureStage
 from qiita_common.models.ena_import import FailedRunOutcome
 from qiita_common.parquet import validate_parquet_path
@@ -61,7 +62,7 @@ from ..miint import (
     open_miint_conn,
 )
 from ..read_staging import hardlink, per_slot_caps, read_roster_parquet, write_sorted_reads
-from ..sequence_range_retry import is_transient_http_status, mint_or_reuse_sequence_range
+from ..sequence_range_retry import mint_or_reuse_sequence_range
 
 # Hard-coded (not derived from the YAML) so a rename diverging from the
 # `- step: ingest_ena_reads` entry fails loudly at BackendFailure attribution.

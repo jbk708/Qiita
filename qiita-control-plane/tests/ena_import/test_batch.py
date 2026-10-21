@@ -10,6 +10,7 @@ import asyncio
 import json
 import uuid
 
+import duckdb
 import httpx
 import pytest
 import pytest_asyncio
@@ -27,6 +28,7 @@ from qiita_control_plane.dispatch import build_dispatch_semaphore
 from qiita_control_plane.ena_import import (
     DOWNLOAD_ENA_STUDY_ACTION_ID,
     DOWNLOAD_ENA_STUDY_ACTION_VERSION,
+    miint_resolver,
 )
 from qiita_control_plane.ena_import.availability import EnaAvailabilityClient
 from qiita_control_plane.ena_import.batch import (
@@ -673,6 +675,148 @@ async def test_run_batch_isolates_per_study_failure(
     assert "simulated resolver failure" in bad_row["failure_reason"]
 
     await _cleanup_study(postgres_pool, ok_accession)
+
+
+# ---------------------------------------------------------------------------
+# Transient ENA HTTP statuses at resolve
+# ---------------------------------------------------------------------------
+
+
+def _http_error(status: int) -> duckdb.HTTPException:
+    """As httpfs and miint raise it, with the response status on `status_code`."""
+    error = duckdb.HTTPException(f"HTTP {status} from ENA")
+    error.status_code = status
+    return error
+
+
+def _fail_on_calls(monkeypatch, seam: str, status: int, *, on_call: int | None = 1):
+    """Make the `seam` resolver query raise HTTP `status` on its `on_call`-th call
+    (every call when None); returns the list of calls seen."""
+    real = getattr(miint_resolver, seam)
+    calls: list = []
+
+    def _query(accession):
+        calls.append(accession)
+        if on_call is None or len(calls) == on_call:
+            raise _http_error(status)
+        return real(accession)
+
+    monkeypatch.setattr(miint_resolver, seam, _query)
+    return calls
+
+
+@pytest.fixture
+def no_resolve_backoff(monkeypatch):
+    monkeypatch.setattr(miint_resolver, "_RESOLVE_BACKOFF_BASE_S", 0)
+
+
+@pytest.mark.parametrize(
+    "seam", ["_query_ena_study_header", "_query_ena_runs", "_query_ena_sample_attributes"]
+)
+async def test_whole_study_item_proceeds_after_a_transient_resolve_failure(
+    batch_app,
+    postgres_pool,
+    admin_principal,
+    download_ena_study_action,
+    batch_cleanup,
+    monkeypatch,
+    no_resolve_backoff,
+    seam,
+):
+    """The item reaches `downloading` with its ticket, the precondition for `done`."""
+    accession = unique_ena_accession("PRJNA")
+    calls = _fail_on_calls(monkeypatch, seam, 500)
+
+    batch_idx, _ = await _drive_one_study(batch_app, postgres_pool, admin_principal, accession)
+    batch_cleanup.append(batch_idx)
+
+    assert len(calls) == 2
+    (row,) = await _batch_items(postgres_pool, batch_idx)
+    assert row["state"] == BatchItemState.DOWNLOADING.value, row["failure_reason"]
+    assert len(row["download_work_ticket_idxs"]) == 1
+
+    await _cleanup_study(postgres_pool, accession)
+
+
+@pytest.mark.parametrize(
+    ("seam", "on_call"),
+    [
+        ("_query_ena_runs", 1),
+        ("_query_ena_runs", 2),
+        ("_query_ena_sample_attributes", 1),
+    ],
+    ids=["expansion-runs", "child-runs", "child-attributes"],
+)
+async def test_run_list_item_proceeds_after_a_transient_resolve_failure(
+    batch_app,
+    postgres_pool,
+    admin_principal,
+    download_ena_study_action,
+    batch_cleanup,
+    monkeypatch,
+    no_resolve_backoff,
+    seam,
+    on_call,
+):
+    study = unique_ena_accession("PRJEB")
+    all_runs = _runs(5)
+    _EnaWorld(monkeypatch, {study: all_runs})
+    calls = _fail_on_calls(monkeypatch, seam, 503, on_call=on_call)
+
+    batch_idx, _ = await _drive_accessions(
+        batch_app, postgres_pool, admin_principal, batch_cleanup, all_runs[:3]
+    )
+
+    assert len(calls) >= on_call + 1
+    (row,) = await _batch_items(postgres_pool, batch_idx)
+    assert row["state"] == BatchItemState.DOWNLOADING.value, row["failure_reason"]
+    assert len(row["download_work_ticket_idxs"]) == 1
+
+    await _cleanup_study(postgres_pool, study)
+
+
+async def test_resolve_failing_past_the_deadline_fails_the_item_naming_the_outage(
+    batch_app,
+    postgres_pool,
+    admin_principal,
+    download_ena_study_action,
+    batch_cleanup,
+    monkeypatch,
+    no_resolve_backoff,
+):
+    monkeypatch.setattr(miint_resolver, "_RESOLVE_DEADLINE_S", 0)
+    accession = unique_ena_accession("PRJNA")
+    calls = _fail_on_calls(monkeypatch, "_query_ena_study_header", 500, on_call=None)
+
+    batch_idx, _ = await _drive_one_study(batch_app, postgres_pool, admin_principal, accession)
+    batch_cleanup.append(batch_idx)
+
+    assert len(calls) == 1
+    (row,) = await _batch_items(postgres_pool, batch_idx)
+    assert row["state"] == BatchItemState.FAILED.value
+    for expected in ("ENA", "unavailable", "HTTP 500"):
+        assert expected in row["failure_reason"]
+
+
+async def test_a_permanent_resolve_status_fails_the_item_on_the_first_attempt(
+    batch_app,
+    postgres_pool,
+    admin_principal,
+    download_ena_study_action,
+    batch_cleanup,
+    monkeypatch,
+    no_resolve_backoff,
+):
+    accession = unique_ena_accession("PRJNA")
+    calls = _fail_on_calls(monkeypatch, "_query_ena_study_header", 404, on_call=None)
+
+    batch_idx, _ = await _drive_one_study(batch_app, postgres_pool, admin_principal, accession)
+    batch_cleanup.append(batch_idx)
+
+    assert len(calls) == 1
+    (row,) = await _batch_items(postgres_pool, batch_idx)
+    assert row["state"] == BatchItemState.FAILED.value
+    assert "HTTP 404" in row["failure_reason"]
 
 
 # ---------------------------------------------------------------------------

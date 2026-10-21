@@ -6,6 +6,7 @@ fully-qualified name; the attribute query runs its own SQL on plain DuckDB behin
 `read_ena_attributes` stand-in. Fixtures under `fixtures/` are real rows from public
 study PRJNA48739 and BioSample SAMN45806981."""
 
+import asyncio
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import duckdb
 import pytest
 from pydantic import ValidationError
+from qiita_common.ena_accession import InvalidEnaAccessionError
 from qiita_common.models.ena import EnaRunRecord, EnaSampleAttributes, EnaStatus, EnaStudyHeader
 
 from qiita_control_plane.ena_import import miint_resolver
@@ -502,3 +504,95 @@ def test_resolve_sample_attributes_for_samples_rejects_a_non_sample_accession(mo
 
     with pytest.raises(InvalidEnaAccessionError):
         MiintEnaResolver().resolve_sample_attributes_for_samples(["SAMN1", "SRR1"])
+
+
+# ---------------------------------------------------------------------------
+# call_with_ena_retry
+# ---------------------------------------------------------------------------
+
+
+def _http_error(status: int) -> duckdb.HTTPException:
+    """As httpfs and miint raise it: the response status rides on `status_code`, which a
+    constructed exception lacks."""
+    error = duckdb.HTTPException(f"HTTP {status} from ENA")
+    error.status_code = status
+    return error
+
+
+class _Flaky:
+    """Raises each exception in `failures` in turn, then returns `"ok"`."""
+
+    def __init__(self, *failures: Exception):
+        self.failures = list(failures)
+        self.calls = 0
+
+    def __call__(self, arg):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return "ok"
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    monkeypatch.setattr(miint_resolver, "_RESOLVE_BACKOFF_BASE_S", 0)
+
+
+@pytest.mark.parametrize("status", [500, 503, 408, 429])
+async def test_call_with_ena_retry_recovers_from_a_transient_status(no_backoff, status):
+    flaky = _Flaky(_http_error(status))
+
+    assert await miint_resolver.call_with_ena_retry(flaky, "PRJNA1") == "ok"
+    assert flaky.calls == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        _http_error(400),
+        _http_error(401),
+        _http_error(404),
+        duckdb.IOException("connection reset"),
+        EnaAccessionNotFoundError("none"),
+        InvalidEnaAccessionError("bad"),
+    ],
+)
+async def test_call_with_ena_retry_raises_anything_else_on_the_first_attempt(no_backoff, error):
+    flaky = _Flaky(error)
+
+    with pytest.raises(type(error)) as raised:
+        await miint_resolver.call_with_ena_retry(flaky, "PRJNA1")
+
+    assert raised.value is error
+    assert flaky.calls == 1
+
+
+async def test_call_with_ena_retry_gives_up_at_the_deadline_naming_the_outage(
+    no_backoff, monkeypatch
+):
+    deadline = miint_resolver._RESOLVE_DEADLINE_S
+    ticks = iter([0, 0, deadline])
+    monkeypatch.setattr(miint_resolver, "monotonic", lambda: next(ticks))
+    last = _http_error(503)
+    flaky = _Flaky(_http_error(500), last)
+
+    with pytest.raises(RuntimeError, match=r"ENA .*unavailable.*HTTP 503") as raised:
+        await miint_resolver.call_with_ena_retry(flaky, "PRJNA1")
+
+    assert flaky.calls == 2
+    assert raised.value.__cause__ is last
+
+
+async def test_call_with_ena_retry_is_cancellable_while_backing_off(monkeypatch):
+    monkeypatch.setattr(miint_resolver, "_RESOLVE_BACKOFF_BASE_S", 3600)
+    flaky = _Flaky(*[_http_error(500)] * 5)
+    task = asyncio.create_task(miint_resolver.call_with_ena_retry(flaky, "PRJNA1"))
+    while flaky.calls == 0:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert flaky.calls == 1

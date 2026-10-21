@@ -38,6 +38,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 from qiita_common.backend_failure import BackendFailure, FailureKind
+from qiita_common.http_status import is_transient_http_status
 from qiita_common.models import (
     NON_TERMINAL_WORK_TICKET_STATES,
     REDRIVABLE_WORK_TICKET_STATES,
@@ -67,14 +68,6 @@ CP_RETRY_BACKOFF_BASE_S = 0.5
 # denylist ("everything except completed") would let a work_ticket_state added later
 # fall through to the permissive path by default, so the default is refusal.
 _REUSABLE_MINTER_STATES: frozenset[str] = frozenset(NON_TERMINAL_WORK_TICKET_STATES)
-
-
-def is_transient_http_status(status: int) -> bool:
-    """True for an HTTP status a retry can self-heal: any 5xx (a proxy or
-    connection blip, a server restart, or a statement timeout surfacing as a
-    500), plus 408 (request timeout) and 429 (rate limit). 401/403 and any other
-    4xx are permanent client-side conditions → False."""
-    return status >= 500 or status in (408, 429)
 
 
 def is_transient_cp_error(exc: httpx.HTTPStatusError | httpx.TransportError) -> bool:

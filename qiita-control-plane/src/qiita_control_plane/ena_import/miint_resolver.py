@@ -12,12 +12,19 @@ DuckDB+miint session (mirrors `runner._stream_masked_reads_to_fastq`)."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from collections.abc import Callable
+from time import monotonic
+
+import duckdb
 from qiita_common.ena_accession import (
     EnaAccessionKind,
     InvalidEnaAccessionError,
     detect_accession_kind,
     validate_study_accession,
 )
+from qiita_common.http_status import is_transient_http_status
 from qiita_common.models.ena import EnaRunRecord, EnaSampleAttributes, EnaStudyHeader
 
 from qiita_control_plane.miint import connect_with_miint_staged
@@ -27,6 +34,43 @@ from .resolver import EnaAccessionNotFoundError
 # Requested fields mirror the model exactly, so a field added to one is added to both.
 _RUN_FIELDS = ",".join(EnaRunRecord.model_fields)
 _STUDY_FIELDS = ",".join(EnaStudyHeader.model_fields)
+
+_log = logging.getLogger(__name__)
+
+# Sized to outlast a multi-hour ENA Portal outage; the deadline is per call, not per item.
+_RESOLVE_DEADLINE_S = 6 * 3600
+_RESOLVE_BACKOFF_BASE_S = 30.0
+_RESOLVE_BACKOFF_CAP_S = 300.0
+
+
+async def call_with_ena_retry[T](resolve: Callable[..., T], *args: object) -> T:
+    """Run the blocking `resolve(*args)` in a thread, retrying a transient HTTP status with
+    capped backoff until the deadline, then raising `RuntimeError`. Anything else propagates."""
+    start = monotonic()
+    delay = _RESOLVE_BACKOFF_BASE_S
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return await asyncio.to_thread(resolve, *args)
+        except duckdb.HTTPException as exc:
+            status = getattr(exc, "status_code", None)
+            if status is None or not is_transient_http_status(status):
+                raise
+            elapsed = monotonic() - start
+            if elapsed >= _RESOLVE_DEADLINE_S:
+                raise RuntimeError(
+                    f"ENA unavailable: HTTP {status} for {elapsed:.0f}s, giving up: {exc}"
+                ) from exc
+            _log.warning(
+                "ENA answered HTTP %s to %s (attempt %d, %.0fs elapsed); retrying",
+                status,
+                getattr(resolve, "__name__", "resolve"),
+                attempt,
+                elapsed,
+            )
+            await asyncio.sleep(delay)
+            delay = min(_RESOLVE_BACKOFF_CAP_S, delay * 2)
 
 
 def _query_ena_study_header(accession: str) -> tuple[list[str], list[tuple]]:
