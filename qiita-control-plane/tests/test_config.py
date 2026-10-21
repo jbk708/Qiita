@@ -445,16 +445,3 @@ def test_settings_rejects_bad_ena_download_run_concurrency(monkeypatch, bad_valu
 
     with pytest.raises(RuntimeError, match="ENA_DOWNLOAD_RUN_CONCURRENCY"):
         Settings.from_env()
-
-
-def test_ena_download_run_concurrency_bound_matches_workflow_schema():
-    from pathlib import Path
-
-    import yaml
-
-    from qiita_control_plane.config import MAX_ENA_DOWNLOAD_RUN_CONCURRENCY
-
-    spec_path = Path(__file__).resolve().parents[2] / "workflows/download-ena-study/1.0.0.yaml"
-    spec = yaml.safe_load(spec_path.read_text())
-    prop = spec["context_schema"]["properties"]["run_concurrency"]
-    assert prop["maximum"] == MAX_ENA_DOWNLOAD_RUN_CONCURRENCY

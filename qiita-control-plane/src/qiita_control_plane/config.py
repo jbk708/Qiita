@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from qiita_common.config import require_env
+from qiita_common.models.ena_import import MAX_ENA_DOWNLOAD_RUN_CONCURRENCY
 
 from .fanout_dispatch import DEFAULT_FANOUT_MAX_INFLIGHT
 from .workspace import WORK_TICKET_SUBDIR
@@ -57,8 +58,6 @@ _DEFAULT_CP_TO_CO_TOKEN_PATH = Path("/etc/qiita/cp-to-co.token")
 # nothing above `dispatch._DISPATCH_CONCURRENCY` (8): its children dispatch
 # through the same shared process-wide slots, so they queue instead.
 _DEFAULT_FANOUT_MAX_INFLIGHT = DEFAULT_FANOUT_MAX_INFLIGHT
-# Matches `maximum` of `run_concurrency` in workflows/download-ena-study/1.0.0.yaml.
-MAX_ENA_DOWNLOAD_RUN_CONCURRENCY = 8
 
 
 # Email-notification defaults. SMTP_HOST is deliberately unset by default so a

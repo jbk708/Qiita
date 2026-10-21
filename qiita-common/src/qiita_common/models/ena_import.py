@@ -17,6 +17,8 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from qiita_common.models.work_ticket import FailureType
+# Upper bound of `run_concurrency` on `download-ena-study`; its YAML `maximum` must match.
+MAX_ENA_DOWNLOAD_RUN_CONCURRENCY = 8
 
 
 class BatchItemState(StrEnum):

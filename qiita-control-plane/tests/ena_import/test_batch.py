@@ -21,7 +21,7 @@ from qiita_common.models import (
     WorkTicketFailureStage,
     WorkTicketState,
 )
-from qiita_common.models.ena_import import BatchItemState
+from qiita_common.models.ena_import import MAX_ENA_DOWNLOAD_RUN_CONCURRENCY, BatchItemState
 
 from qiita_control_plane.auth.principal import HumanUser
 from qiita_control_plane.dispatch import build_dispatch_semaphore
@@ -223,7 +223,11 @@ async def download_ena_study_action(postgres_pool):
                 "properties": {
                     "ena_study_accession": {"type": "string", "minLength": 1},
                     "download_method": {"type": "string", "enum": ["http"]},
-                    "run_concurrency": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "run_concurrency": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_ENA_DOWNLOAD_RUN_CONCURRENCY,
+                    },
                 },
             }
         ),

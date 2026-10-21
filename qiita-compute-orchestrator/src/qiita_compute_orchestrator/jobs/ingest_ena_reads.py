@@ -51,7 +51,7 @@ from pydantic import BaseModel, Field
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
 from qiita_common.models import FailureType, WorkTicketFailureStage
-from qiita_common.models.ena_import import FailedRunOutcome
+from qiita_common.models.ena_import import MAX_ENA_DOWNLOAD_RUN_CONCURRENCY, FailedRunOutcome
 from qiita_common.parquet import validate_parquet_path
 
 from ..cp_client import make_cp_client
@@ -73,11 +73,10 @@ YAML_STEP_NAME = "ingest_ena_reads"
 RUN_OUTCOMES_FILENAME = "run_outcomes.json"
 
 # Default per-run fan-out (network-bound); `Inputs.run_concurrency` overrides it.
-# The cap keeps one slot per worker of asyncio's default executor (>= 12 threads).
+# The cap keeps one slot per worker of asyncio's default executor at the baseline 8 CPUs.
 # Per-slot DuckDB caps come from `per_slot_caps`; the two _DUCKDB_* values are
 # the off-SLURM (test/local) per-slot fallback.
 _CONCURRENCY = 4
-_MAX_RUN_CONCURRENCY = 8
 _DUCKDB_MEMORY_GB = 7
 _DUCKDB_THREADS = 2
 
@@ -140,7 +139,7 @@ class Inputs(BaseModel):
     ena_run_map: Path
     reads_staging_root: Path
     download_method: str = "http"
-    run_concurrency: int = Field(_CONCURRENCY, ge=1, le=_MAX_RUN_CONCURRENCY)
+    run_concurrency: int = Field(_CONCURRENCY, ge=1, le=MAX_ENA_DOWNLOAD_RUN_CONCURRENCY)
     sequenced_pool_idx: int
     sequencing_run_idx: int
     work_ticket_idx: int

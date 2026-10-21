@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
 from qiita_common.models import FailureType, WorkTicketFailureStage
+from qiita_common.models.ena_import import MAX_ENA_DOWNLOAD_RUN_CONCURRENCY
 
 import qiita_compute_orchestrator.jobs.ingest_ena_reads as ingest_module
 import qiita_compute_orchestrator.sequence_range_retry as retry_module
@@ -199,7 +200,7 @@ def test_concurrent_pool_ingests_every_run_above_cap(fake_mint, monkeypatch, tmp
 
 @pytest.mark.parametrize("k", [1, 4, 8])
 def test_run_concurrency_bounds_runs_in_flight(fake_mint, monkeypatch, tmp_path, k):
-    """At most `run_concurrency` runs are fetched at once, and the bound is reached."""
+    """Runs in flight reach `run_concurrency`, limited by the default executor's workers."""
     n = 2 * k + 1
     lock = threading.Lock()
     state = {"now": 0, "peak": 0}
@@ -220,7 +221,8 @@ def test_run_concurrency_bounds_runs_in_flight(fake_mint, monkeypatch, tmp_path,
 
     _run(inputs, tmp_path / "ws")
 
-    assert state["peak"] == k
+    executor_workers = min(32, (os.process_cpu_count() or 1) + 4)
+    assert state["peak"] == min(k, executor_workers)
     assert len(fake_mint) == n
 
 
@@ -228,9 +230,9 @@ def test_run_concurrency_defaults_to_four(tmp_path):
     assert _inputs(tmp_path, [(1, "ERR001")]).run_concurrency == ingest_module._CONCURRENCY == 4
 
 
-@pytest.mark.parametrize("bad", [0, -1, ingest_module._MAX_RUN_CONCURRENCY + 1])
+@pytest.mark.parametrize("bad", [0, -1, MAX_ENA_DOWNLOAD_RUN_CONCURRENCY + 1])
 def test_run_concurrency_out_of_range_is_rejected(tmp_path, bad):
-    """0 would hang the semaphore; above the cap would outrun the executor."""
+    """0 would hang the semaphore; above the cap outruns the executor at 8 CPUs."""
     with pytest.raises(ValidationError):
         Inputs(
             ena_run_map=tmp_path / "m.parquet",
@@ -264,7 +266,7 @@ def test_run_concurrency_bound_matches_workflow_schema():
     """The job's cap and the workflow's context_schema maximum cannot drift."""
     spec_path = Path(__file__).resolve().parents[2] / "workflows/download-ena-study/1.0.0.yaml"
     prop = yaml.safe_load(spec_path.read_text())["context_schema"]["properties"]["run_concurrency"]
-    assert prop["maximum"] == ingest_module._MAX_RUN_CONCURRENCY
+    assert prop["maximum"] == MAX_ENA_DOWNLOAD_RUN_CONCURRENCY
 
 
 # ---------------------------------------------------------------------------

@@ -58,7 +58,7 @@ context_schema:
     download_method:
       type: string
       enum: [http]
-    # Runs fetched at once per ticket; omitted -> the job's default (4).
+    # Runs fetched at once per ticket; omitted -> the job's default.
     run_concurrency:
       type: integer
       minimum: 1
