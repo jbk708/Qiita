@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
+import pyarrow
+import pyarrow.flight
 from qiita_common.actions import (
     ALIGNMENT_IDX_BINDING,
     PROCESSING_IDX_BINDING,
@@ -19,6 +21,11 @@ from qiita_common.api_paths import (
 )
 from qiita_common.backend_failure import BackendFailure, FailureKind
 from qiita_common.compute_backend_client import ComputeBackendClient
+from qiita_common.data_plane_errors import (
+    is_data_plane_busy,
+    is_data_plane_ticket_expired,
+    is_data_plane_transient,
+)
 from qiita_common.models import (
     TERMINAL_STEP_PROGRESS_STATES,
     ComputeTarget,
@@ -251,6 +258,24 @@ async def _reconstruct_plan_shards_outputs(
     return {ROUTER_PENDING_BINDING: True, SHARD_MAPPING_BINDING: mapping_path}
 
 
+def _action_failure_is_retriable(entry_name: str, exc: BaseException) -> bool:
+    """True if an `action:` entry's failure is a data-plane one the next attempt can
+    clear, so the retry loop re-runs the entry.
+
+    Gated on the pyarrow types, as the orchestrator's dispatcher is, so a primitive's
+    own Postgres error cannot match by text. `register-files` is narrower: the data
+    plane moves the staged files before its catalog transaction, so a re-run after a
+    failure partway through would register only what is left in staging. It is re-run
+    only on busy (refused at connection checkout) and an expired token (refused at
+    verification). Unavailable is not among them even when it comes before the move,
+    because by its text a refusal cannot be told from a connection that dropped mid-move."""
+    if not isinstance(exc, (pyarrow.ArrowException, pyarrow.flight.FlightError)):
+        return False
+    if entry_name == LibraryPrimitive.REGISTER_FILES:
+        return is_data_plane_busy(exc) or is_data_plane_ticket_expired(exc)
+    return is_data_plane_transient(exc)
+
+
 async def _dispatch_action(
     pool: asyncpg.Pool,
     entry: WorkflowAction,
@@ -277,9 +302,10 @@ async def _dispatch_action(
 
     A primitive raising (plain Python or BackendFailure) marks this attempt's
     progress row failed before the exception propagates to the retry / outer
-    handler — which owns the work_ticket-level FAILED transition. The
-    exception is re-raised unchanged so the outer handler classifies it
-    exactly as before."""
+    handler — which owns the work_ticket-level FAILED transition. A data-plane
+    failure `is_data_plane_transient` recognises is raised as a transient
+    `DATA_PLANE_TRANSIENT` BackendFailure, so the retry loop re-runs the entry;
+    any other exception is re-raised unchanged."""
     await step_progress.record_submitting(
         pool,
         work_ticket_idx=work_ticket_idx,
@@ -312,9 +338,26 @@ async def _dispatch_action(
         )
         raise
     except Exception as exc:
-        # Plain Python from a LIBRARY primitive (untyped failure / bug). The
-        # outer run_workflow handler classifies it UNKNOWN_PERMANENT; record
-        # the same on the progress row, then re-raise unchanged.
+        if _action_failure_is_retriable(entry.name, exc):
+            failure = BackendFailure(
+                kind=FailureKind.DATA_PLANE_TRANSIENT,
+                stage=WorkTicketFailureStage.STEP_RUN,
+                step_name=entry.name,
+                reason=f"{type(exc).__name__}: {exc!s}"[:2000],
+            )
+            await _best_effort_record_failed(
+                pool,
+                work_ticket_idx=work_ticket_idx,
+                step_index=step_index,
+                attempt=attempt,
+                failure_kind=failure.kind.value,
+                failure_reason=failure.reason,
+            )
+            raise failure from exc
+        # Plain Python from a LIBRARY primitive (untyped failure / bug), or a
+        # data-plane failure this entry is not re-run on. The outer run_workflow
+        # handler classifies it UNKNOWN_PERMANENT; record the same on the progress
+        # row, then re-raise unchanged.
         await _best_effort_record_failed(
             pool,
             work_ticket_idx=work_ticket_idx,
@@ -491,8 +534,14 @@ async def _run_action_primitive(
                     rel = part.relative_to(staging_dir).as_posix()
                     files[rel] = entry_path.name
         if not files:
+            # The data plane moves the staged files out before its catalog
+            # transaction, so an empty directory on a re-run means an earlier
+            # attempt got that far.
             raise RuntimeError(
-                f"register-files: staging_dir {staging_dir} contains no Parquet files"
+                f"register-files: staging_dir {staging_dir} contains no Parquet files; "
+                "if an earlier attempt of this entry reached the data plane, it moved "
+                "them into the lake and its registration may have committed — check "
+                "whether the files are registered (`make lake-shell`) before re-running"
             )
         await LIBRARY[LibraryPrimitive.REGISTER_FILES](
             staging_dir=str(staging_dir),
