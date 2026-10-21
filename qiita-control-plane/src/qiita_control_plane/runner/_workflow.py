@@ -115,11 +115,13 @@ from ._read_ingest import (
     _workflow_needs_staged_reads,
 )
 from ._reconstruct import (
+    QC_PRODUCER_BINDING,
     _attempt_is_terminal,
     _attempt_is_unowned,
     _completed_progress_row,
     _dispatch_action,
     _reconstruct_completed_outputs,
+    _workflow_qc_producer,
 )
 from ._reference import (
     QC_ADAPTER_BINDING,
@@ -332,6 +334,8 @@ async def run_workflow(
         # unbuilt router / per-shard index) lands in the outer FAILED handler
         # instead of leaving the ticket stuck in PROCESSING. None of these keys are
         # `*_upload_idx`, so the upload walker left them untouched.
+        bound[QC_PRODUCER_BINDING] = _workflow_qc_producer(action.steps)
+
         if _workflow_needs_sharded_align_indexes(action.steps):
             bound.update(await _resolve_sharded_align_index_bindings(pool, action_context=bound))
 

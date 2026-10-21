@@ -5,9 +5,15 @@ import secrets
 
 import pytest
 import pytest_asyncio
-from qiita_common.models import QcCheck, QcCheckState, QcSeverity, WorkTicketState
+from qiita_common.models import (
+    QcCheck,
+    QcCheckState,
+    QcSeverity,
+    ScopeTargetKind,
+    WorkTicketState,
+)
 
-from qiita_control_plane.actions.library import persist_qc_checks
+from qiita_control_plane.actions.library import QcProducer, persist_qc_checks
 from qiita_control_plane.repositories.prep_sample_qc_check import (
     fetch_qc_checks_by_prep_sample_idx,
     fetch_qc_verdict_by_prep_sample_idx,
@@ -110,11 +116,12 @@ async def _ticket(s, *, mask_idx: int | None = None, alignment_idx: int | None =
         "INSERT INTO qiita.work_ticket ("
         "  action_id, action_version, originator_principal_idx,"
         "  scope_target_kind, prep_sample_idx, action_context, state, mask_idx, alignment_idx"
-        ") VALUES ($1, $2, $3, 'prep_sample', $4, '{}'::jsonb, $5, $6, $7)"
+        ") VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, $6, $7, $8)"
         " RETURNING work_ticket_idx",
         _ACTION_ID,
         s["version"],
         s["principal_idx"],
+        ScopeTargetKind.PREP_SAMPLE,
         s["prep_sample_idx"],
         WorkTicketState.COMPLETED,
         mask_idx,
@@ -131,7 +138,9 @@ def _entry(s, check=QcCheck.DATA_TYPE, severity=QcSeverity.INFO, **extra) -> dic
     }
 
 
-async def _persist(s, tmp_path, ticket_idx: int, entries) -> int:
+async def _persist(
+    s, tmp_path, ticket_idx: int, entries, producer: QcProducer = QcProducer.NONE
+) -> int:
     path = tmp_path / "qc_checks.json"
     path.write_text(entries if isinstance(entries, str) else json.dumps(entries))
     return await persist_qc_checks(
@@ -139,6 +148,7 @@ async def _persist(s, tmp_path, ticket_idx: int, entries) -> int:
         work_ticket_idx=ticket_idx,
         prep_sample_idx=s["prep_sample_idx"],
         qc_checks_path=path,
+        expected_producer=producer,
     )
 
 
@@ -171,7 +181,7 @@ async def test_first_write_without_producer(seeded, tmp_path):
 async def test_first_write_under_a_mask_carries_mask_idx(seeded, tmp_path):
     mask_idx = await _seed_mask(seeded)
     ticket = await _ticket(seeded, mask_idx=mask_idx)
-    await _persist(seeded, tmp_path, ticket, [_entry(seeded)])
+    await _persist(seeded, tmp_path, ticket, [_entry(seeded)], QcProducer.MASK)
     (row,) = await _rows(seeded)
     assert (row["mask_idx"], row["alignment_idx"]) == (mask_idx, None)
 
@@ -179,7 +189,7 @@ async def test_first_write_under_a_mask_carries_mask_idx(seeded, tmp_path):
 async def test_ticket_with_both_producers_stamps_alignment_only(seeded, tmp_path):
     mask_idx, alignment_idx = await _seed_mask(seeded), await _seed_alignment(seeded)
     ticket = await _ticket(seeded, mask_idx=mask_idx, alignment_idx=alignment_idx)
-    await _persist(seeded, tmp_path, ticket, [_entry(seeded)])
+    await _persist(seeded, tmp_path, ticket, [_entry(seeded)], QcProducer.ALIGNMENT)
     (row,) = await _rows(seeded)
     assert (row["mask_idx"], row["alignment_idx"]) == (None, alignment_idx)
 
@@ -191,8 +201,9 @@ async def test_rerun_overwrites_its_row(seeded, tmp_path, producer):
         kwargs["mask_idx"] = await _seed_mask(seeded)
     elif producer == "alignment":
         kwargs["alignment_idx"] = await _seed_alignment(seeded)
+    kind = QcProducer(producer)
     first, second = await _ticket(seeded, **kwargs), await _ticket(seeded, **kwargs)
-    await _persist(seeded, tmp_path, first, [_entry(seeded, severity=QcSeverity.INFO)])
+    await _persist(seeded, tmp_path, first, [_entry(seeded, severity=QcSeverity.INFO)], kind)
     (before,) = await _rows(seeded)
     idx = await seeded["pool"].fetchval(
         "SELECT idx FROM qiita.prep_sample_qc_check WHERE prep_sample_idx = $1",
@@ -203,6 +214,7 @@ async def test_rerun_overwrites_its_row(seeded, tmp_path, producer):
         tmp_path,
         second,
         [_entry(seeded, severity=QcSeverity.WARNING, reason=None, measured_value=1.5)],
+        kind,
     )
     (after,) = await _rows(seeded)
     assert (
@@ -222,10 +234,11 @@ async def test_rerun_returns_an_invalidated_row_to_current(seeded, tmp_path):
     ticket = await _ticket(seeded)
     await _persist(seeded, tmp_path, ticket, [_entry(seeded, severity=QcSeverity.FAIL)])
     await seeded["pool"].execute(
-        "UPDATE qiita.prep_sample_qc_check SET state = 'invalidated', invalidated_at = now(),"
+        "UPDATE qiita.prep_sample_qc_check SET state = $3, invalidated_at = now(),"
         " invalidated_by_idx = $1, invalidation_reason = 'test' WHERE prep_sample_idx = $2",
         seeded["principal_idx"],
         seeded["prep_sample_idx"],
+        QcCheckState.INVALIDATED,
     )
     await _persist(seeded, tmp_path, await _ticket(seeded), [_entry(seeded)])
     (row,) = await _rows(seeded)
@@ -242,8 +255,9 @@ async def test_rerun_returns_an_invalidated_row_to_current(seeded, tmp_path):
 
 async def test_a_new_mask_adds_a_row(seeded, tmp_path):
     first_mask, second_mask = await _seed_mask(seeded), await _seed_mask(seeded)
-    await _persist(seeded, tmp_path, await _ticket(seeded, mask_idx=first_mask), [_entry(seeded)])
-    await _persist(seeded, tmp_path, await _ticket(seeded, mask_idx=second_mask), [_entry(seeded)])
+    for mask in (first_mask, second_mask):
+        ticket = await _ticket(seeded, mask_idx=mask)
+        await _persist(seeded, tmp_path, ticket, [_entry(seeded)], QcProducer.MASK)
     rows = await _rows(seeded)
     assert sorted(r["mask_idx"] for r in rows) == sorted([first_mask, second_mask])
 
@@ -304,7 +318,7 @@ async def test_empty_array_rejected_and_existing_row_left_alone(seeded, tmp_path
     assert row["severity"] == QcSeverity.INFO
 
 
-async def test_entry_for_another_sample_rejected(seeded, tmp_path):
+async def test_entry_for_another_prep_sample_rejected(seeded, tmp_path):
     entry = _entry(seeded) | {"prep_sample_idx": seeded["prep_sample_idx"] + 10_000_000}
     with pytest.raises(ValueError, match="prep_sample_idx"):
         await _persist(seeded, tmp_path, await _ticket(seeded), [_entry(seeded), entry])
@@ -344,11 +358,11 @@ async def test_one_bad_entry_voids_the_good_ones(seeded, tmp_path):
 
 
 async def test_problem_list_is_capped(seeded, tmp_path):
-    entries = [_entry(seeded)] * 14
+    entries = [_entry(seeded)] * 25
     with pytest.raises(ValueError) as exc:
         await _persist(seeded, tmp_path, await _ticket(seeded), entries)
-    assert exc.value.args[0].count("duplicate") == 10
-    assert "3 more" in exc.value.args[0]
+    assert exc.value.args[0].count("duplicate") == 20
+    assert "4 more" in exc.value.args[0]
 
 
 async def test_missing_file_raises(seeded, tmp_path):
@@ -358,6 +372,7 @@ async def test_missing_file_raises(seeded, tmp_path):
             work_ticket_idx=await _ticket(seeded),
             prep_sample_idx=seeded["prep_sample_idx"],
             qc_checks_path=tmp_path / "absent.json",
+            expected_producer=QcProducer.NONE,
         )
 
 
@@ -375,3 +390,34 @@ async def test_missing_ticket_row_rejected(seeded, tmp_path):
     with pytest.raises(RuntimeError, match="work_ticket"):
         await _persist(seeded, tmp_path, 2_000_000_000, [_entry(seeded)])
     assert await _count(seeded) == 0
+
+
+async def test_producerless_run_ignores_the_ticket_producer(seeded, tmp_path):
+    ticket = await _ticket(seeded, mask_idx=await _seed_mask(seeded))
+    await _persist(seeded, tmp_path, ticket, [_entry(seeded)], QcProducer.NONE)
+    (row,) = await _rows(seeded)
+    assert (row["mask_idx"], row["alignment_idx"]) == (None, None)
+
+
+@pytest.mark.parametrize("producer", [QcProducer.MASK, QcProducer.ALIGNMENT])
+async def test_detached_producer_rejected_and_nothing_written(seeded, tmp_path, producer):
+    if producer is QcProducer.MASK:
+        idx = await _seed_mask(seeded)
+        ticket = await _ticket(seeded, mask_idx=idx)
+        await seeded["pool"].execute("DELETE FROM qiita.mask_definition WHERE mask_idx = $1", idx)
+    else:
+        idx = await _seed_alignment(seeded)
+        ticket = await _ticket(seeded, alignment_idx=idx)
+        await seeded["pool"].execute(
+            "DELETE FROM qiita.alignment_definition WHERE alignment_idx = $1", idx
+        )
+    with pytest.raises(RuntimeError, match=f"{producer.value}_idx"):
+        await _persist(seeded, tmp_path, ticket, [_entry(seeded)], producer)
+    assert await _count(seeded) == 0
+
+
+async def test_missing_expected_producer_column_rejected(seeded, tmp_path):
+    with pytest.raises(RuntimeError, match="alignment_idx"):
+        await _persist(
+            seeded, tmp_path, await _ticket(seeded), [_entry(seeded)], QcProducer.ALIGNMENT
+        )

@@ -2380,15 +2380,20 @@ async def test_run_action_primitive_persist_qc_checks_dispatches(monkeypatch, tm
     from qiita_common.api_paths import LibraryPrimitive
 
     from qiita_control_plane.actions import library
+    from qiita_control_plane.actions.library import QcProducer
     from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.runner._reconstruct import QC_PRODUCER_BINDING
 
     recorded: dict = {}
 
-    async def fake_persist(pool, *, work_ticket_idx, prep_sample_idx, qc_checks_path):
+    async def fake_persist(
+        pool, *, work_ticket_idx, prep_sample_idx, qc_checks_path, expected_producer
+    ):
         recorded.update(
             work_ticket_idx=work_ticket_idx,
             prep_sample_idx=prep_sample_idx,
             qc_checks_path=qc_checks_path,
+            expected_producer=expected_producer,
         )
         return 3
 
@@ -2401,7 +2406,7 @@ async def test_run_action_primitive_persist_qc_checks_dispatches(monkeypatch, tm
     out = await _run_action_primitive(
         None,
         entry,
-        {"qc_checks": str(sidecar)},
+        {"qc_checks": str(sidecar), QC_PRODUCER_BINDING: QcProducer.ALIGNMENT},
         tmp_path,
         {"kind": "prep_sample", "prep_sample_idx": 5},
         work_ticket_idx=9,
@@ -2413,6 +2418,7 @@ async def test_run_action_primitive_persist_qc_checks_dispatches(monkeypatch, tm
         "work_ticket_idx": 9,
         "prep_sample_idx": 5,
         "qc_checks_path": Path(sidecar),
+        "expected_producer": QcProducer.ALIGNMENT,
     }
 
 
@@ -2435,7 +2441,7 @@ async def test_run_action_primitive_persist_qc_checks_rejects_a_bad_entry(
         await _run_action_primitive(
             None,
             entry,
-            {"qc_checks": "x", "alignment": "x"},
+            {"qc_checks": "x", "alignment": "x", "qc_producer": "none"},
             tmp_path,
             scope,
             work_ticket_idx=1,
@@ -6826,3 +6832,41 @@ async def test_masked_reads_workflow_rejects_a_mask_that_does_not_exist(
         assert "does not exist" in row["failure_reason"]
     finally:
         await teardown()
+
+
+async def test_run_action_primitive_persist_qc_checks_requires_a_runner_set_producer(tmp_path):
+    from qiita_common.actions import WorkflowAction
+
+    from qiita_control_plane.runner import _run_action_primitive
+
+    entry = WorkflowAction(
+        kind="action", name="persist-qc-checks", inputs=["qc_checks"], outputs=[]
+    )
+    with pytest.raises(RuntimeError, match="qc_producer"):
+        await _run_action_primitive(
+            None,
+            entry,
+            {"qc_checks": "x"},
+            tmp_path,
+            {"kind": "prep_sample", "prep_sample_idx": 5},
+            work_ticket_idx=1,
+            signing_key=b"x",
+            data_plane_url="grpc://x",
+        )
+
+
+@pytest.mark.parametrize(
+    ("steps", "expected"),
+    [
+        (["finalize-alignment-sample", "finalize-mask-sample"], "alignment"),
+        (["finalize-mask-sample"], "mask"),
+        ([], "none"),
+    ],
+)
+def test_qc_producer_follows_the_workflow_gates(steps, expected):
+    from qiita_common.actions import WorkflowAction
+
+    from qiita_control_plane.runner._reconstruct import _workflow_qc_producer
+
+    entries = [WorkflowAction(kind="action", name=n, inputs=[], outputs=[]) for n in steps]
+    assert _workflow_qc_producer(entries) == expected

@@ -23,6 +23,7 @@ import itertools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -2258,7 +2259,12 @@ async def persist_qc_report(
     return ss_idx
 
 
-_MAX_QC_PROBLEMS = 10
+class QcProducer(StrEnum):
+    """Which gate a workflow's QC check rows are counted under."""
+
+    NONE = "none"
+    MASK = "mask"
+    ALIGNMENT = "alignment"
 
 
 async def persist_qc_checks(
@@ -2267,9 +2273,11 @@ async def persist_qc_checks(
     work_ticket_idx: int,
     prep_sample_idx: int,
     qc_checks_path: Path,
+    expected_producer: QcProducer,
 ) -> int:
-    """Upsert the checks in `qc_checks_path` for `prep_sample_idx` under the ticket's
-    producer (alignment, else mask, else none); nothing is written if any entry is bad."""
+    """Upsert the checks in `qc_checks_path` for `prep_sample_idx` under the producer the
+    workflow declares, taken from the ticket; nothing is written if any entry is bad
+    or the ticket lost its producer."""
     if not qc_checks_path.exists():
         raise FileNotFoundError(f"qc_checks file not found: {qc_checks_path}")
     checks = TypeAdapter(list[QcCheckResult]).validate_json(qc_checks_path.read_bytes())
@@ -2287,8 +2295,8 @@ async def persist_qc_checks(
         if c.reason is not None and c.reason not in allowed[c.check]:
             problems.append(f"{c.check}: reason {c.reason!r} is not listed in qc_reasons.yml")
     if problems:
-        shown = "; ".join(problems[:_MAX_QC_PROBLEMS])
-        rest = len(problems) - _MAX_QC_PROBLEMS
+        shown = "; ".join(problems[:_MAX_REPORTED])
+        rest = len(problems) - _MAX_REPORTED
         raise ValueError(f"invalid qc_checks: {shown}" + (f"; and {rest} more" if rest > 0 else ""))
     async with pool.acquire() as conn, conn.transaction():
         ticket = await conn.fetchrow(
@@ -2297,16 +2305,24 @@ async def persist_qc_checks(
         )
         if ticket is None:
             raise RuntimeError(f"no work_ticket row for work_ticket_idx={work_ticket_idx}")
+        # Checks exist only for a sequenced prep_sample (ordering invariant, as persist_qc_report).
         if not await conn.fetchval(
             "SELECT idx FROM qiita.sequenced_sample WHERE prep_sample_idx = $1", prep_sample_idx
         ):
             raise RuntimeError(f"no sequenced_sample row for prep_sample_idx={prep_sample_idx}")
-        alignment_idx = ticket["alignment_idx"]
+        producer = {"mask_idx": None, "alignment_idx": None}
+        if expected_producer is not QcProducer.NONE:
+            column = f"{expected_producer}_idx"
+            if ticket[column] is None:
+                raise RuntimeError(
+                    f"persist-qc-checks requires work_ticket {work_ticket_idx} to carry a "
+                    f"{column}; the column is NULL (the definition was deleted mid-flight)"
+                )
+            producer[column] = ticket[column]
         return await upsert_qc_checks(
             conn,
             work_ticket_idx=work_ticket_idx,
-            mask_idx=None if alignment_idx is not None else ticket["mask_idx"],
-            alignment_idx=alignment_idx,
+            **producer,
             checks=checks,
         )
 

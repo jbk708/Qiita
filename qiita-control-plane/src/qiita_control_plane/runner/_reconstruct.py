@@ -35,6 +35,7 @@ from ..actions.library import (
     LIBRARY,
     MINT_ANNOTATION_MAP_OUTPUT_BASENAME,
     MINT_FEATURES_OUTPUT_BASENAME,
+    QcProducer,
 )
 from ..fanout_dispatch import DEFAULT_FANOUT_MAX_INFLIGHT
 from ..repositories.assembly import AssemblySampleInvalidated
@@ -328,6 +329,23 @@ async def _dispatch_action(
         pool, work_ticket_idx=work_ticket_idx, step_index=step_index, attempt=attempt
     )
     return outputs
+
+
+QC_PRODUCER_BINDING = "qc_producer"
+
+
+def _workflow_qc_producer(steps: list[Any]) -> QcProducer:
+    """The gate the workflow's rows are counted under: alignment, else mask, else none.
+
+    Read from the declared finalize actions so a producer detached from the ticket
+    mid-flight is an error, not a silent fall-through to another producer.
+    """
+    names = {e.name for e in steps if isinstance(e, WorkflowAction)}
+    if LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE in names:
+        return QcProducer.ALIGNMENT
+    if LibraryPrimitive.FINALIZE_MASK_SAMPLE in names:
+        return QcProducer.MASK
+    return QcProducer.NONE
 
 
 async def _ticket_alignment_idx(
@@ -756,11 +774,14 @@ async def _run_action_primitive(
                 "persist-qc-checks requires a prep_sample-scoped ticket; "
                 f"got {scope_target['kind']!r}"
             )
+        if QC_PRODUCER_BINDING not in bound:
+            raise RuntimeError(f"persist-qc-checks needs the runner-set {QC_PRODUCER_BINDING!r}")
         await LIBRARY[LibraryPrimitive.PERSIST_QC_CHECKS](
             pool,
             work_ticket_idx=work_ticket_idx,
             prep_sample_idx=scope_target["prep_sample_idx"],
             qc_checks_path=Path(bound["qc_checks"]),
+            expected_producer=QcProducer(bound[QC_PRODUCER_BINDING]),
         )
         return {}
 

@@ -1,4 +1,4 @@
-"""Repository reads for qiita.prep_sample_qc_check and the qiita.qc_verdict view."""
+"""Repository reads and writes for qiita.prep_sample_qc_check and the qiita.qc_verdict view."""
 
 import asyncpg
 from qiita_common.models import QcCheckResult
@@ -52,7 +52,7 @@ async def upsert_qc_checks(
         "  severity = EXCLUDED.severity, reason = EXCLUDED.reason,"
         "  measured_value = EXCLUDED.measured_value, threshold = EXCLUDED.threshold,"
         "  work_ticket_idx = EXCLUDED.work_ticket_idx, created_at = now(),"
-        "  state = 'current', invalidated_at = NULL, invalidated_by_idx = NULL,"
+        "  state = DEFAULT, invalidated_at = NULL, invalidated_by_idx = NULL,"
         "  invalidation_reason = NULL",
         [c.prep_sample_idx for c in checks],
         [str(c.check) for c in checks],
