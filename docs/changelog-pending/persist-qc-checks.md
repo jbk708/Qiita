@@ -2,5 +2,7 @@
 
 - **A step's QC check results can be persisted.** The `persist-qc-checks` action primitive
   reads a step's `qc_checks.json` and upserts its `qiita.prep_sample_qc_check` rows under
-  the running ticket's producer. A re-run under the same producer replaces its row and
-  returns an invalidated one to `current`. No workflow wires it yet.
+  the producer taken from the gate the workflow finalizes (alignment, mask, or none). A re-run
+  under the same producer replaces its row and returns an invalidated one to `current`. A run
+  whose mask or alignment definition was deleted mid-flight fails and writes nothing. No
+  workflow wires it yet.

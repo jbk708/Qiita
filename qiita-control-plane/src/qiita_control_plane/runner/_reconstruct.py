@@ -48,6 +48,7 @@ from ..shard_orchestration import (
     plan_and_submit_shards,
 )
 from ..workspace import step_attempt_dir, step_logs_dir, step_output_dir
+from ._alignment import _workflow_writes_alignment_gate
 from ._dispatch import _best_effort_record_failed, _result_with_infra_retry
 from ._mask import MASK_IDX_BINDING
 from ._read_ingest import (
@@ -334,15 +335,17 @@ async def _dispatch_action(
 QC_PRODUCER_BINDING = "qc_producer"
 
 
-def _workflow_qc_producer(steps: list[Any]) -> QcProducer:
-    """The gate the workflow's rows are counted under: alignment, else mask, else none.
+def _workflow_qc_producer(steps: list[Any]) -> QcProducer | None:
+    """The gate the workflow's QC rows are counted under: alignment, else mask, else none.
 
-    Read from the declared finalize actions so a producer detached from the ticket
-    mid-flight is an error, not a silent fall-through to another producer.
+    None when it finalizes a gate with no QC producer (assembly); the persist arm refuses
+    that rather than write rows `qc_verdict` would count ungated.
     """
-    names = {e.name for e in steps if isinstance(e, WorkflowAction)}
-    if LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE in names:
+    if _workflow_writes_alignment_gate(steps):
         return QcProducer.ALIGNMENT
+    names = {e.name for e in steps if isinstance(e, WorkflowAction)}
+    if LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE in names:
+        return None
     if LibraryPrimitive.FINALIZE_MASK_SAMPLE in names:
         return QcProducer.MASK
     return QcProducer.NONE
@@ -774,8 +777,11 @@ async def _run_action_primitive(
                 "persist-qc-checks requires a prep_sample-scoped ticket; "
                 f"got {scope_target['kind']!r}"
             )
-        if QC_PRODUCER_BINDING not in bound:
-            raise RuntimeError(f"persist-qc-checks needs the runner-set {QC_PRODUCER_BINDING!r}")
+        if bound.get(QC_PRODUCER_BINDING) is None:
+            raise RuntimeError(
+                "persist-qc-checks: no QC producer for this workflow; it finalizes a gate "
+                "QC checks cannot be counted under"
+            )
         await LIBRARY[LibraryPrimitive.PERSIST_QC_CHECKS](
             pool,
             work_ticket_idx=work_ticket_idx,

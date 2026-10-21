@@ -326,6 +326,8 @@ async def run_workflow(
         if _lima is not None:
             bound[LIMA_ARGS_BINDING] = _lima["args"]
 
+        bound[QC_PRODUCER_BINDING] = _workflow_qc_producer(action.steps)
+
         # Sharded-aligner index resolution (the `align` workflow): when a step
         # lists router_index_path/shard_directory as inputs, resolve them from
         # action_context (align_reference_idx + aligner) before the loop — the
@@ -334,8 +336,6 @@ async def run_workflow(
         # unbuilt router / per-shard index) lands in the outer FAILED handler
         # instead of leaving the ticket stuck in PROCESSING. None of these keys are
         # `*_upload_idx`, so the upload walker left them untouched.
-        bound[QC_PRODUCER_BINDING] = _workflow_qc_producer(action.steps)
-
         if _workflow_needs_sharded_align_indexes(action.steps):
             bound.update(await _resolve_sharded_align_index_bindings(pool, action_context=bound))
 

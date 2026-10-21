@@ -25,6 +25,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 from qiita_common.actions import LONG_READ_ASSEMBLY_ACTION_ID
+from qiita_common.api_paths import LibraryPrimitive
 from qiita_common.backend_failure import BackendFailure, FailureKind, StepNoData
 from qiita_common.models import (
     ComputeTarget,
@@ -2434,14 +2435,16 @@ async def test_run_action_primitive_persist_qc_checks_rejects_a_bad_entry(
 ):
     from qiita_common.actions import WorkflowAction
 
+    from qiita_control_plane.actions.library import QcProducer
     from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.runner._reconstruct import QC_PRODUCER_BINDING
 
     entry = WorkflowAction(kind="action", name="persist-qc-checks", inputs=inputs, outputs=[])
     with pytest.raises(RuntimeError, match=match):
         await _run_action_primitive(
             None,
             entry,
-            {"qc_checks": "x", "alignment": "x", "qc_producer": "none"},
+            {"qc_checks": "x", "alignment": "x", QC_PRODUCER_BINDING: QcProducer.NONE},
             tmp_path,
             scope,
             work_ticket_idx=1,
@@ -6834,19 +6837,24 @@ async def test_masked_reads_workflow_rejects_a_mask_that_does_not_exist(
         await teardown()
 
 
-async def test_run_action_primitive_persist_qc_checks_requires_a_runner_set_producer(tmp_path):
+@pytest.mark.parametrize("bind_none", [False, True])
+async def test_run_action_primitive_persist_qc_checks_refuses_an_unresolved_producer(
+    tmp_path, bind_none
+):
     from qiita_common.actions import WorkflowAction
+    from qiita_common.api_paths import LibraryPrimitive
 
     from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.runner._reconstruct import QC_PRODUCER_BINDING
 
     entry = WorkflowAction(
-        kind="action", name="persist-qc-checks", inputs=["qc_checks"], outputs=[]
+        kind="action", name=LibraryPrimitive.PERSIST_QC_CHECKS, inputs=["qc_checks"], outputs=[]
     )
-    with pytest.raises(RuntimeError, match="qc_producer"):
+    with pytest.raises(RuntimeError, match="no QC producer"):
         await _run_action_primitive(
             None,
             entry,
-            {"qc_checks": "x"},
+            {"qc_checks": "x", **({QC_PRODUCER_BINDING: None} if bind_none else {})},
             tmp_path,
             {"kind": "prep_sample", "prep_sample_idx": 5},
             work_ticket_idx=1,
@@ -6858,8 +6866,17 @@ async def test_run_action_primitive_persist_qc_checks_requires_a_runner_set_prod
 @pytest.mark.parametrize(
     ("steps", "expected"),
     [
-        (["finalize-alignment-sample", "finalize-mask-sample"], "alignment"),
-        (["finalize-mask-sample"], "mask"),
+        (
+            [LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, LibraryPrimitive.FINALIZE_MASK_SAMPLE],
+            "alignment",
+        ),
+        (
+            [LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE],
+            "alignment",
+        ),
+        ([LibraryPrimitive.FINALIZE_MASK_SAMPLE], "mask"),
+        ([LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE], None),
+        ([LibraryPrimitive.FINALIZE_MASK_SAMPLE, LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE], None),
         ([], "none"),
     ],
 )
