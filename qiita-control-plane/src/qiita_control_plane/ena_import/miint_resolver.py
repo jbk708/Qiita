@@ -65,7 +65,7 @@ async def call_with_ena_retry[T](resolve: Callable[..., T], *args: object) -> T:
             _log.warning(
                 "ENA answered HTTP %s to %s (attempt %d, %.0fs elapsed); retrying",
                 status,
-                getattr(resolve, "__name__", "resolve"),
+                resolve.__name__,
                 attempt,
                 elapsed,
             )

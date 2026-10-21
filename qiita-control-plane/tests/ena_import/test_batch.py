@@ -10,7 +10,6 @@ import asyncio
 import json
 import uuid
 
-import duckdb
 import httpx
 import pytest
 import pytest_asyncio
@@ -56,6 +55,8 @@ from qiita_control_plane.testing.unique_names import (
     unique_accession,
     unique_ena_accession,
 )
+
+from .conftest import _http_error
 
 pytestmark = pytest.mark.db
 
@@ -682,13 +683,6 @@ async def test_run_batch_isolates_per_study_failure(
 # ---------------------------------------------------------------------------
 
 
-def _http_error(status: int) -> duckdb.HTTPException:
-    """As httpfs and miint raise it, with the response status on `status_code`."""
-    error = duckdb.HTTPException(f"HTTP {status} from ENA")
-    error.status_code = status
-    return error
-
-
 def _fail_on_calls(monkeypatch, seam: str, status: int, *, on_call: int | None = 1):
     """Make the `seam` resolver query raise HTTP `status` on its `on_call`-th call
     (every call when None); returns the list of calls seen."""
@@ -705,11 +699,6 @@ def _fail_on_calls(monkeypatch, seam: str, status: int, *, on_call: int | None =
     return calls
 
 
-@pytest.fixture
-def no_resolve_backoff(monkeypatch):
-    monkeypatch.setattr(miint_resolver, "_RESOLVE_BACKOFF_BASE_S", 0)
-
-
 @pytest.mark.parametrize(
     "seam", ["_query_ena_study_header", "_query_ena_runs", "_query_ena_sample_attributes"]
 )
@@ -720,10 +709,9 @@ async def test_whole_study_item_proceeds_after_a_transient_resolve_failure(
     download_ena_study_action,
     batch_cleanup,
     monkeypatch,
-    no_resolve_backoff,
+    no_backoff,
     seam,
 ):
-    """The item reaches `downloading` with its ticket, the precondition for `done`."""
     accession = unique_ena_accession("PRJNA")
     calls = _fail_on_calls(monkeypatch, seam, 500)
 
@@ -754,7 +742,7 @@ async def test_run_list_item_proceeds_after_a_transient_resolve_failure(
     download_ena_study_action,
     batch_cleanup,
     monkeypatch,
-    no_resolve_backoff,
+    no_backoff,
     seam,
     on_call,
 ):
@@ -782,7 +770,7 @@ async def test_resolve_failing_past_the_deadline_fails_the_item_naming_the_outag
     download_ena_study_action,
     batch_cleanup,
     monkeypatch,
-    no_resolve_backoff,
+    no_backoff,
 ):
     monkeypatch.setattr(miint_resolver, "_RESOLVE_DEADLINE_S", 0)
     accession = unique_ena_accession("PRJNA")
@@ -805,7 +793,7 @@ async def test_a_permanent_resolve_status_fails_the_item_on_the_first_attempt(
     download_ena_study_action,
     batch_cleanup,
     monkeypatch,
-    no_resolve_backoff,
+    no_backoff,
 ):
     accession = unique_ena_accession("PRJNA")
     calls = _fail_on_calls(monkeypatch, "_query_ena_study_header", 404, on_call=None)

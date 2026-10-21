@@ -20,6 +20,8 @@ from qiita_common.models.ena import EnaRunRecord, EnaSampleAttributes, EnaStatus
 from qiita_control_plane.ena_import import miint_resolver
 from qiita_control_plane.ena_import.resolver import EnaAccessionNotFoundError
 
+from .conftest import _http_error
+
 FIXTURES = Path(__file__).parent / "fixtures"
 
 _QUERY_STUDY = "qiita_control_plane.ena_import.miint_resolver._query_ena_study_header"
@@ -511,16 +513,10 @@ def test_resolve_sample_attributes_for_samples_rejects_a_non_sample_accession(mo
 # ---------------------------------------------------------------------------
 
 
-def _http_error(status: int) -> duckdb.HTTPException:
-    """As httpfs and miint raise it: the response status rides on `status_code`, which a
-    constructed exception lacks."""
-    error = duckdb.HTTPException(f"HTTP {status} from ENA")
-    error.status_code = status
-    return error
-
-
 class _Flaky:
     """Raises each exception in `failures` in turn, then returns `"ok"`."""
+
+    __name__ = "flaky"
 
     def __init__(self, *failures: Exception):
         self.failures = list(failures)
@@ -531,11 +527,6 @@ class _Flaky:
         if self.failures:
             raise self.failures.pop(0)
         return "ok"
-
-
-@pytest.fixture
-def no_backoff(monkeypatch):
-    monkeypatch.setattr(miint_resolver, "_RESOLVE_BACKOFF_BASE_S", 0)
 
 
 @pytest.mark.parametrize("status", [500, 503, 408, 429])
