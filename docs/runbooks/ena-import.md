@@ -409,10 +409,13 @@ warning fails permanently.
 A run that fails in a way a retry cannot clear (a format error, a run with no sequence
 data, a 404 from duckdb-miint#312 on) does not fail its pool when another run was
 stored: the other runs load, the ticket completes, and the failed run is recorded with its
-reason and `permanent` failure type (the item reads `completed_partial`). A partially
-landed ticket sends no email; read the batch status. If a run failed in a way a retry
+reason and `permanent` failure type (the item reads `completed_partial`). The ticket is
+COMPLETED, so an opted-in submitter gets the usual completion email with no
+`failure_reason`; read the batch status for the failed runs. If a run failed in a way a retry
 could clear, the step still fails and retries first, and a run that failed permanently is
-fetched again on each retry, so a large one is downloaded again.
+fetched again on each retry, so a large one is downloaded again. An error the job does not
+recognise as one of these (out of memory, a local disk fault) fails the step as a whole, so
+the ticket is FAILED and can be redriven.
 
 When the retries run out, or at once when no run was stored and none of the failures is one
 a retry could clear (a 404 from duckdb-miint#312 on), the ticket is FAILED `permanent` and

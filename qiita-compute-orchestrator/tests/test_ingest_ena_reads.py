@@ -486,6 +486,17 @@ def _http_error(status: int, message: str) -> duckdb.HTTPException:
             "HTTP Error: Request returned HTTP 408 for HTTP HEAD to "
             "'https://ftp.sra.ebi.ac.uk/vol1/fastq/ERR001/ERR001.fastq.gz'",
         ),
+        # httpfs reports a 502 from a proxy as status 0
+        _http_error(
+            0,
+            "HTTP Error: Unable to connect to URL "
+            "'https://ftp.sra.ebi.ac.uk/vol1/fastq/ERR001/ERR001.fastq.gz': "
+            "(HTTP 0 Internal Server Error)",
+        ),
+        duckdb.IOException(
+            "IO Error: Could not connect to server error for HTTP HEAD to "
+            "'https://ftp.sra.ebi.ac.uk/vol1/fastq/ERR001/ERR001.fastq.gz'"
+        ),
         # ENA's "Not all results may have been written" answer, which miint
         # quotes from duckdb-miint#310 on, after its own retries
         duckdb.IOException(
@@ -723,6 +734,33 @@ def test_permanently_failed_run_does_not_block_the_good_runs(
     assert failed["ena_run_accession"] == "ERR001"
     assert failed["failure_type"] == FailureType.PERMANENT.value
     assert "ERR001" in failed["failure_reason"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        duckdb.OutOfMemoryException(
+            "Out of Memory Error: failed to allocate data of size 16.0 MiB (1.0 GiB/1.0 GiB used)"
+        ),
+        duckdb.IOException("IO Error: No space left on device writing the intermediate Parquet"),
+        _http_error(403, "HTTP Error: HTTP GET error on 'https://ftp.example/x' (HTTP 403)"),
+    ],
+    ids=["oom", "local-io", "http-403"],
+)
+def test_unrecognised_error_fails_the_step_beside_a_good_run(
+    fake_mint, monkeypatch, tmp_path, failure
+):
+    """Only a recognised bad run lands partial. Anything else (OOM, a local
+    staging fault) fails the step so the ticket is FAILED and redrivable."""
+    monkeypatch.setattr(
+        ingest_module, "_stage_run_reads", _fake_with_failing_run("ERR001", failure)
+    )
+    inputs = _inputs(tmp_path, [(10, "ERR001"), (11, "ERR002")])
+
+    with pytest.raises(BackendFailure) as exc:
+        _run(inputs, tmp_path / "ws")
+    assert exc.value.kind == FailureKind.BAD_INPUT
+    assert not (tmp_path / "ws" / ingest_module.RUN_OUTCOMES_FILENAME).exists()
 
 
 def test_run_outcomes_is_a_top_level_json_file(fake_mint, monkeypatch, tmp_path):

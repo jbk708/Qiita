@@ -8,10 +8,11 @@ For every `(prep_sample_idx, ena_run_accession)` in the runner-staged
 the same mint-then-sort-and-assign pipeline as `ingest_reads` (`..read_staging`).
 Two-write-target and idempotent/re-runnable semantics are identical too.
 
-A run whose fetch fails permanently does not fail the pool when another run was
-stored: it is listed in the `run_outcomes` JSON for `persist-ena-run-outcomes`
-and the rest land. Any transient fetch failure, any non-fetch failure, or no run
-stored fails the step.
+A run whose fetch fails permanently (a 404, a format error, no sequence data, zero
+reads) does not fail the pool when another run was stored: it is listed in the
+`run_outcomes` JSON for `persist-ena-run-outcomes` and the rest land. Any
+transient failure, any unrecognised error (OOM, local staging), or no run stored
+fails the step.
 
 Gotchas specific to the ENA source:
 - md5 verification is miint's, not this job's: `read_ena_sequences`'s
@@ -105,7 +106,11 @@ _TRANSIENT_ERROR_MARKERS = (
     "unreachable",
     "temporarily",
     "curl",
+    "could not connect",
 )
+# A raised duckdb.Error with one of these is a bad run, not a fault in the step:
+# only these (and a 404) land the pool partial. Anything else fails the step.
+_PERMANENT_ERROR_MARKERS = ("malformed", "invalid fastq", "no sequence data")
 # ENA's own words when it answers a search with HTTP 200 but stops writing the
 # results; with duckdb-miint#310, miint quotes them when the answer survives its
 # retries.
@@ -215,11 +220,12 @@ def _classify_ena_fetch_error(
                 f"{_MID_STREAM_RERUN_HINT} ({type(exc).__name__}): {exc}"
             ),
         )
-    # httpfs and miint's ENA client raise duckdb.HTTPException with the status.
+    # httpfs and miint's ENA client raise duckdb.HTTPException with the status;
+    # httpfs reports a 502 from a proxy as status 0.
     status = getattr(exc, "status_code", None)
     unavailable = (
         any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
-        or (status is not None and is_transient_http_status(status))
+        or (status is not None and (status == 0 or is_transient_http_status(status)))
         or _ENA_INCOMPLETE_ANSWER_MARKER in text
     )
     if unavailable:
@@ -253,6 +259,15 @@ def _classify_ena_fetch_error(
         stage=WorkTicketFailureStage.STEP_RUN,
         step_name=step_name,
         reason=f"ENA run {run_accession}: fetch failed ({type(exc).__name__}): {exc}",
+    )
+
+
+def _is_permanent_fetch_error(exc: duckdb.Error) -> bool:
+    """True for a raised error naming a bad run (a 404 or a format error), the
+    only kind that lands the pool partial; an unrecognised one fails the step."""
+    text = str(exc).lower()
+    return getattr(exc, "status_code", None) == 404 or any(
+        marker in text for marker in _PERMANENT_ERROR_MARKERS
     )
 
 
@@ -323,9 +338,12 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                         threads,
                     )
                 except duckdb.Error as exc:
-                    raise _RunFetchFailure(
-                        _classify_ena_fetch_error(run_accession, exc, step_name=YAML_STEP_NAME)
-                    ) from exc
+                    failure = _classify_ena_fetch_error(
+                        run_accession, exc, step_name=YAML_STEP_NAME
+                    )
+                    if failure.transient or _is_permanent_fetch_error(exc):
+                        raise _RunFetchFailure(failure) from exc
+                    raise failure from exc
 
                 # Only a build that skips instead of raising reports a failed run
                 # here (module docstring). This branch retries a 404 on open;
