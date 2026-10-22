@@ -280,6 +280,27 @@ async def fetch_failed_downloads(
     return {f.ena_run_accession: f for f in failed}
 
 
+async def fetch_partial_download_counts(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, *, ticket_idxs: list[int]
+) -> dict[int, tuple[int, int | None]]:
+    """`ticket_idx -> (failed runs, newest batch_idx or None)` for the completed
+    tickets among `ticket_idxs` whose pool has runs that failed with no stored reads."""
+    rows = await pool_or_conn.fetch(
+        "SELECT wt.work_ticket_idx, count(*) AS failed_runs,"
+        "       (SELECT max(bi.batch_idx) FROM qiita.ena_import_batch_item bi"
+        "         WHERE wt.work_ticket_idx = ANY(bi.download_work_ticket_idxs)) AS batch_idx"
+        " FROM qiita.work_ticket wt"
+        " JOIN qiita.sequenced_sample ss ON ss.sequenced_pool_idx = wt.sequenced_pool_idx"
+        " WHERE wt.work_ticket_idx = ANY($1::bigint[])"
+        "   AND wt.state = 'completed'"
+        "   AND ss.download_failure_type IS NOT NULL"
+        f"   AND {_NO_STORED_READS}"
+        " GROUP BY wt.work_ticket_idx",
+        ticket_idxs,
+    )
+    return {r["work_ticket_idx"]: (r["failed_runs"], r["batch_idx"]) for r in rows}
+
+
 async def fetch_pool_latest_download_ticket(
     pool_or_conn: asyncpg.Pool | asyncpg.Connection,
     *,
