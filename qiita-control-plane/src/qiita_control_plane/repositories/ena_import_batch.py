@@ -248,10 +248,11 @@ async def fetch_sequenced_samples_missed_by_completed_download(
         "   AND (SELECT wt.state FROM qiita.work_ticket wt"
         "        WHERE wt.action_id = $2 AND wt.action_version = $3"
         "          AND wt.sequenced_pool_idx = ss.sequenced_pool_idx"
-        "        ORDER BY wt.work_ticket_idx DESC LIMIT 1) = 'completed'",
+        "        ORDER BY wt.work_ticket_idx DESC LIMIT 1) = $4::qiita.work_ticket_state",
         sequenced_sample_idxs,
         action_id,
         action_version,
+        WorkTicketState.COMPLETED.value,
     )
     return {r["idx"] for r in rows}
 
