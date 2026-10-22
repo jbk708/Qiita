@@ -23,6 +23,7 @@ import itertools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -46,6 +47,7 @@ from qiita_common.models import (
     INDEX_TYPE_RYPE_ROUTER,
     FeatureHashEntry,
     GenomeSource,
+    QcCheckResult,
     ReadMaskBucket,
     ReadMaskReason,
     ReferenceStatus,
@@ -59,6 +61,7 @@ from qiita_common.parquet import (
     ROW_GROUP_SIZE_BYTES,
     validate_parquet_path,
 )
+from qiita_common.qc_reasons import load_qc_reasons
 from qiita_common.taxonomy import TAXONOMY_SOURCE_TABLE, genome_lineage_select_sql
 
 from ..auth.tickets import run_signed_flight_call, sign_action, sign_ticket
@@ -86,6 +89,7 @@ from ..repositories.block import (
     set_block_state,
     upsert_mask_sample_completed,
 )
+from ..repositories.prep_sample_qc_check import upsert_qc_checks
 from ..repositories.reference_exclusion import resolve_excluded_features
 from ..repositories.reference_membership import (
     GENOME_MAP_PAIRS_SQL,
@@ -2296,6 +2300,74 @@ async def persist_qc_report(
     return ss_idx
 
 
+class QcProducer(StrEnum):
+    """Which gate a workflow's QC check rows are counted under."""
+
+    NONE = "none"
+    MASK = "mask"
+    ALIGNMENT = "alignment"
+
+
+async def persist_qc_checks(
+    pool: asyncpg.Pool,
+    *,
+    work_ticket_idx: int,
+    prep_sample_idx: int,
+    qc_checks_path: Path,
+    expected_producer: QcProducer,
+) -> int:
+    """Upsert the checks in `qc_checks_path` for `prep_sample_idx` under the producer the
+    workflow declares, taken from the ticket; nothing is written if any entry is bad
+    or the ticket lost its producer."""
+    if not qc_checks_path.exists():
+        raise FileNotFoundError(f"qc_checks file not found: {qc_checks_path}")
+    checks = TypeAdapter(list[QcCheckResult]).validate_json(qc_checks_path.read_bytes())
+    allowed = load_qc_reasons()
+    problems = [] if checks else ["qc_checks is empty"]
+    seen: set[str] = set()
+    for c in checks:
+        if c.prep_sample_idx != prep_sample_idx:
+            problems.append(
+                f"{c.check}: prep_sample_idx {c.prep_sample_idx}, expected {prep_sample_idx}"
+            )
+        if c.check in seen:
+            problems.append(f"{c.check}: duplicate check")
+        seen.add(c.check)
+        if c.reason is not None and c.reason not in allowed[c.check]:
+            problems.append(f"{c.check}: reason {c.reason!r} is not listed in qc_reasons.yml")
+    if problems:
+        shown = "; ".join(problems[:_MAX_REPORTED])
+        rest = len(problems) - _MAX_REPORTED
+        raise ValueError(f"invalid qc_checks: {shown}" + (f"; and {rest} more" if rest > 0 else ""))
+    async with pool.acquire() as conn, conn.transaction():
+        ticket = await conn.fetchrow(
+            "SELECT mask_idx, alignment_idx FROM qiita.work_ticket WHERE work_ticket_idx = $1",
+            work_ticket_idx,
+        )
+        if ticket is None:
+            raise RuntimeError(f"no work_ticket row for work_ticket_idx={work_ticket_idx}")
+        # Checks exist only for a sequenced prep_sample (ordering invariant, as persist_qc_report).
+        if not await conn.fetchval(
+            "SELECT idx FROM qiita.sequenced_sample WHERE prep_sample_idx = $1", prep_sample_idx
+        ):
+            raise RuntimeError(f"no sequenced_sample row for prep_sample_idx={prep_sample_idx}")
+        producer = {"mask_idx": None, "alignment_idx": None}
+        if expected_producer is not QcProducer.NONE:
+            column = f"{expected_producer}_idx"
+            if ticket[column] is None:
+                raise RuntimeError(
+                    f"persist-qc-checks requires work_ticket {work_ticket_idx} to carry a "
+                    f"{column}; the column is NULL (the definition was deleted mid-flight)"
+                )
+            producer[column] = ticket[column]
+        return await upsert_qc_checks(
+            conn,
+            work_ticket_idx=work_ticket_idx,
+            **producer,
+            checks=checks,
+        )
+
+
 async def register_files(
     *,
     staging_dir: str,
@@ -3285,6 +3357,7 @@ LIBRARY: dict[str, Callable[..., Awaitable[Any]]] = {
     LibraryPrimitive.PERSIST_ENA_RUN_OUTCOMES: persist_ena_run_outcomes,
     LibraryPrimitive.PERSIST_SYNDNA_READ_COUNT: persist_syndna_read_count,
     LibraryPrimitive.PERSIST_QC_REPORT: persist_qc_report,
+    LibraryPrimitive.PERSIST_QC_CHECKS: persist_qc_checks,
     LibraryPrimitive.DELETE_READ_MASK_BLOCK: delete_read_mask_block,
     LibraryPrimitive.RECONCILE_BLOCK: reconcile_block,
     LibraryPrimitive.FINALIZE_MASK_SAMPLE: finalize_mask_sample_gate,

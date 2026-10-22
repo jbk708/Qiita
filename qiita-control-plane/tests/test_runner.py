@@ -25,6 +25,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 from qiita_common.actions import LONG_READ_ASSEMBLY_ACTION_ID
+from qiita_common.api_paths import LibraryPrimitive
 from qiita_common.backend_failure import BackendFailure, FailureKind, StepNoData
 from qiita_common.models import (
     ComputeTarget,
@@ -40,6 +41,7 @@ from qiita_common.models import (
 from qiita_common.testing.containers import REFERENCE_HASH_CONTAINER, REFERENCE_LOAD_CONTAINER
 
 from qiita_control_plane import step_progress
+from qiita_control_plane.actions.library import QcProducer
 from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
 
 pytestmark = pytest.mark.db
@@ -2363,6 +2365,87 @@ async def test_run_action_primitive_persist_syndna_read_count_rejects_a_bad_entr
             None,
             entry,
             {"mask_idx": 1, "alignment": "x", "read_mask": "x"},
+            tmp_path,
+            scope,
+            work_ticket_idx=1,
+            signing_key=b"x",
+            data_plane_url="grpc://x",
+        )
+
+
+async def test_run_action_primitive_persist_qc_checks_dispatches(monkeypatch, tmp_path):
+    """The persist-qc-checks arm passes the ticket idx, the scope target's prep_sample_idx
+    and the `qc_checks` binding's path."""
+    from pathlib import Path
+
+    from qiita_common.actions import WorkflowAction
+    from qiita_common.api_paths import LibraryPrimitive
+
+    from qiita_control_plane.actions import library
+    from qiita_control_plane.actions.library import QcProducer
+    from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.runner._reconstruct import QC_PRODUCER_BINDING
+
+    recorded: dict = {}
+
+    async def fake_persist(
+        pool, *, work_ticket_idx, prep_sample_idx, qc_checks_path, expected_producer
+    ):
+        recorded.update(
+            work_ticket_idx=work_ticket_idx,
+            prep_sample_idx=prep_sample_idx,
+            qc_checks_path=qc_checks_path,
+            expected_producer=expected_producer,
+        )
+        return 3
+
+    monkeypatch.setitem(library.LIBRARY, LibraryPrimitive.PERSIST_QC_CHECKS, fake_persist)
+
+    entry = WorkflowAction(
+        kind="action", name="persist-qc-checks", inputs=["qc_checks"], outputs=[]
+    )
+    sidecar = tmp_path / "qc_checks.json"
+    out = await _run_action_primitive(
+        None,
+        entry,
+        {"qc_checks": str(sidecar), QC_PRODUCER_BINDING: QcProducer.ALIGNMENT},
+        tmp_path,
+        {"kind": "prep_sample", "prep_sample_idx": 5},
+        work_ticket_idx=9,
+        signing_key=b"sekret",
+        data_plane_url="grpc://dp:50051",
+    )
+    assert out == {}
+    assert recorded == {
+        "work_ticket_idx": 9,
+        "prep_sample_idx": 5,
+        "qc_checks_path": Path(sidecar),
+        "expected_producer": QcProducer.ALIGNMENT,
+    }
+
+
+@pytest.mark.parametrize(
+    ("inputs", "scope", "match"),
+    [
+        (["alignment"], {"kind": "prep_sample", "prep_sample_idx": 5}, "expects inputs"),
+        (["qc_checks"], {"kind": "block", "block_idx": 42}, "prep_sample-scoped"),
+    ],
+)
+async def test_run_action_primitive_persist_qc_checks_rejects_a_bad_entry(
+    tmp_path, inputs, scope, match
+):
+    from qiita_common.actions import WorkflowAction
+
+    from qiita_control_plane.actions.library import QcProducer
+    from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.runner._reconstruct import QC_PRODUCER_BINDING
+
+    entry = WorkflowAction(kind="action", name="persist-qc-checks", inputs=inputs, outputs=[])
+    with pytest.raises(RuntimeError, match=match):
+        await _run_action_primitive(
+            None,
+            entry,
+            {"qc_checks": "x", "alignment": "x", QC_PRODUCER_BINDING: QcProducer.NONE},
             tmp_path,
             scope,
             work_ticket_idx=1,
@@ -6753,3 +6836,67 @@ async def test_masked_reads_workflow_rejects_a_mask_that_does_not_exist(
         assert "does not exist" in row["failure_reason"]
     finally:
         await teardown()
+
+
+@pytest.mark.parametrize("bind_none", [False, True])
+async def test_run_action_primitive_persist_qc_checks_refuses_an_unresolved_producer(
+    tmp_path, bind_none
+):
+    from qiita_common.actions import WorkflowAction
+    from qiita_common.api_paths import LibraryPrimitive
+
+    from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.runner._reconstruct import QC_PRODUCER_BINDING
+
+    entry = WorkflowAction(
+        kind="action", name=LibraryPrimitive.PERSIST_QC_CHECKS, inputs=["qc_checks"], outputs=[]
+    )
+    match = "cannot be counted" if bind_none else "did not bind"
+    with pytest.raises(RuntimeError, match=match):
+        await _run_action_primitive(
+            None,
+            entry,
+            {"qc_checks": "x", **({QC_PRODUCER_BINDING: None} if bind_none else {})},
+            tmp_path,
+            {"kind": "prep_sample", "prep_sample_idx": 5},
+            work_ticket_idx=1,
+            signing_key=b"x",
+            data_plane_url="grpc://x",
+        )
+
+
+@pytest.mark.parametrize(
+    ("steps", "expected"),
+    [
+        (
+            [LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, LibraryPrimitive.FINALIZE_MASK_SAMPLE],
+            QcProducer.ALIGNMENT,
+        ),
+        (
+            [LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE],
+            QcProducer.ALIGNMENT,
+        ),
+        ([LibraryPrimitive.FINALIZE_MASK_SAMPLE], QcProducer.MASK),
+        ([LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE], None),
+        ([LibraryPrimitive.FINALIZE_MASK_SAMPLE, LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE], None),
+        ([], QcProducer.NONE),
+    ],
+)
+def test_qc_producer_follows_the_workflow_gates(steps, expected):
+    from qiita_common.actions import WorkflowAction
+
+    from qiita_control_plane.runner._reconstruct import _workflow_qc_producer
+
+    entries = [WorkflowAction(kind="action", name=n, inputs=[], outputs=[]) for n in steps]
+    assert _workflow_qc_producer(entries) == expected
+
+
+def test_qc_producer_covers_every_per_sample_gate():
+    """A new finalize-*-sample gate must be mapped in `_workflow_qc_producer` before it
+    can fall through to an ungated `QcProducer.NONE`."""
+    gates = {p for p in LibraryPrimitive if p.startswith("finalize-") and p.endswith("-sample")}
+    assert gates == {
+        LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE,
+        LibraryPrimitive.FINALIZE_MASK_SAMPLE,
+        LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE,
+    }

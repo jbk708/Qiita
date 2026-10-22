@@ -115,11 +115,13 @@ from ._read_ingest import (
     _workflow_needs_staged_reads,
 )
 from ._reconstruct import (
+    QC_PRODUCER_BINDING,
     _attempt_is_terminal,
     _attempt_is_unowned,
     _completed_progress_row,
     _dispatch_action,
     _reconstruct_completed_outputs,
+    _workflow_qc_producer,
 )
 from ._reference import (
     QC_ADAPTER_BINDING,
@@ -323,6 +325,8 @@ async def run_workflow(
         _lima = _resolved_lima(bound)
         if _lima is not None:
             bound[LIMA_ARGS_BINDING] = _lima["args"]
+
+        bound[QC_PRODUCER_BINDING] = _workflow_qc_producer(action.steps)
 
         # Sharded-aligner index resolution (the `align` workflow): when a step
         # lists router_index_path/shard_directory as inputs, resolve them from

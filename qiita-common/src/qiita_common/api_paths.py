@@ -175,6 +175,7 @@ class LibraryPrimitive(StrEnum):
     # qiita_control_plane.actions.library.persist_syndna_read_count.
     PERSIST_SYNDNA_READ_COUNT = "persist-syndna-read-count"
     PERSIST_QC_REPORT = "persist-qc-report"
+    PERSIST_QC_CHECKS = "persist-qc-checks"
     # Block-compute: idempotent block replace. Runs immediately BEFORE
     # register-files in the bulk-block read-mask workflow — deletes this block's
     # exact read_mask footprint (its member sub-ranges under the ticket's

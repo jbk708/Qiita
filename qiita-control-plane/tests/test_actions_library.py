@@ -45,6 +45,7 @@ def test_library_re_exports_match_module_callables():
     assert LIBRARY[LibraryPrimitive.REGISTER_INDEX] is lib.register_index
     assert LIBRARY[LibraryPrimitive.PERSIST_READ_METRICS] is lib.persist_read_metrics
     assert LIBRARY[LibraryPrimitive.PERSIST_QC_REPORT] is lib.persist_qc_report
+    assert LIBRARY[LibraryPrimitive.PERSIST_QC_CHECKS] is lib.persist_qc_checks
     assert LIBRARY[LibraryPrimitive.DELETE_READ_MASK_BLOCK] is lib.delete_read_mask_block
     assert LIBRARY[LibraryPrimitive.RECONCILE_BLOCK] is lib.reconcile_block
     assert LIBRARY[LibraryPrimitive.FINALIZE_MASK_SAMPLE] is lib.finalize_mask_sample_gate

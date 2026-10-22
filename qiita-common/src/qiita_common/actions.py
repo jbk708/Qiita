@@ -687,6 +687,29 @@ class ActionDefinition(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _qc_checks_persist_after_their_gate(self) -> ActionDefinition:
+        """Checks describe the gated output, so they persist after its gate's finalize. The gate
+        follows `_workflow_qc_producer`'s precedence: alignment, refuse assembly, mask."""
+        names = [e.name for e in self.steps if isinstance(e, WorkflowAction)]
+        if LibraryPrimitive.PERSIST_QC_CHECKS not in names:
+            return self
+        if LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE in names:
+            gate = LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE
+        elif LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE in names:
+            raise ValueError(
+                f"{LibraryPrimitive.PERSIST_QC_CHECKS} cannot run in a workflow that "
+                f"declares {LibraryPrimitive.FINALIZE_ASSEMBLY_SAMPLE}: QC checks have no "
+                "assembly producer"
+            )
+        elif LibraryPrimitive.FINALIZE_MASK_SAMPLE in names:
+            gate = LibraryPrimitive.FINALIZE_MASK_SAMPLE
+        else:
+            return self
+        if names.index(LibraryPrimitive.PERSIST_QC_CHECKS) < names.index(gate):
+            raise ValueError(f"{LibraryPrimitive.PERSIST_QC_CHECKS} must come after {gate}")
+        return self
+
     def _labelled_baselines(self) -> list[tuple[str, FlatBaselineResources]]:
         """Every step's baseline flattened to (label, resources) pairs.
 

@@ -42,6 +42,7 @@ from ..actions.library import (
     LIBRARY,
     MINT_ANNOTATION_MAP_OUTPUT_BASENAME,
     MINT_FEATURES_OUTPUT_BASENAME,
+    QcProducer,
 )
 from ..fanout_dispatch import DEFAULT_FANOUT_MAX_INFLIGHT
 from ..repositories.assembly import AssemblySampleInvalidated
@@ -54,8 +55,10 @@ from ..shard_orchestration import (
     plan_and_submit_shards,
 )
 from ..workspace import step_attempt_dir, step_logs_dir, step_output_dir
+from ._alignment import _workflow_writes_alignment_gate
 from ._dispatch import _best_effort_record_failed, _result_with_infra_retry
 from ._mask import MASK_IDX_BINDING
+from ._processing import _workflow_writes_assembly_gate
 from ._read_ingest import (
     ROUTER_PENDING_BINDING,
     SHARD_MAPPING_BINDING,
@@ -371,6 +374,26 @@ async def _dispatch_action(
         pool, work_ticket_idx=work_ticket_idx, step_index=step_index, attempt=attempt
     )
     return outputs
+
+
+QC_PRODUCER_BINDING = "qc_producer"
+
+
+def _workflow_qc_producer(steps: list[Any]) -> QcProducer | None:
+    """The gate the workflow's QC rows are counted under: alignment, else mask, else
+    `QcProducer.NONE`. Python `None` (refused by the persist arm) when it finalizes a gate
+    with no QC producer (assembly), so `qc_verdict` never counts such rows ungated. Mirrored
+    at load by `ActionDefinition._qc_checks_persist_after_their_gate`."""
+    if _workflow_writes_alignment_gate(steps):
+        return QcProducer.ALIGNMENT
+    if _workflow_writes_assembly_gate(steps):
+        return None
+    if any(
+        isinstance(e, WorkflowAction) and e.name == LibraryPrimitive.FINALIZE_MASK_SAMPLE
+        for e in steps
+    ):
+        return QcProducer.MASK
+    return QcProducer.NONE
 
 
 async def _ticket_alignment_idx(
@@ -809,6 +832,32 @@ async def _run_action_primitive(
             pool,
             alignment_idx=alignment_idx,
             prep_sample_idx=scope_target["prep_sample_idx"],
+        )
+        return {}
+
+    if entry.name == LibraryPrimitive.PERSIST_QC_CHECKS:
+        if entry.inputs != ["qc_checks"]:
+            raise RuntimeError(
+                f"persist-qc-checks expects inputs [qc_checks]; got {entry.inputs!r}"
+            )
+        if scope_target["kind"] != ScopeTargetKind.PREP_SAMPLE.value:
+            raise RuntimeError(
+                "persist-qc-checks requires a prep_sample-scoped ticket; "
+                f"got {scope_target['kind']!r}"
+            )
+        if QC_PRODUCER_BINDING not in bound:
+            raise RuntimeError(f"persist-qc-checks: the runner did not bind {QC_PRODUCER_BINDING}")
+        if bound[QC_PRODUCER_BINDING] is None:
+            raise RuntimeError(
+                "persist-qc-checks: this workflow finalizes a gate QC checks cannot be "
+                "counted under (assembly)"
+            )
+        await LIBRARY[LibraryPrimitive.PERSIST_QC_CHECKS](
+            pool,
+            work_ticket_idx=work_ticket_idx,
+            prep_sample_idx=scope_target["prep_sample_idx"],
+            qc_checks_path=Path(bound["qc_checks"]),
+            expected_producer=QcProducer(bound[QC_PRODUCER_BINDING]),
         )
         return {}
 

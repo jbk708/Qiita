@@ -3,7 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, FiniteFloat
 
 
 class QcCheck(StrEnum):
@@ -39,6 +39,19 @@ class QcVerdict(BaseModel):
 
     severity: QcSeverity
     check: QcCheck
+
+
+class QcCheckResult(BaseModel):
+    """One entry of a step's `qc_checks.json`; the producer comes from the ticket."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    prep_sample_idx: int
+    check: QcCheck
+    severity: QcSeverity
+    reason: str | None = None
+    measured_value: FiniteFloat | None = None
+    threshold: FiniteFloat | None = None
 
 
 class PrepSampleQcCheck(BaseModel):
