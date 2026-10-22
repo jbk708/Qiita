@@ -13,6 +13,7 @@ import secrets
 import asyncpg
 import pytest
 import pytest_asyncio
+from qiita_common.models import FailureType
 from qiita_common.models.ena_import import BatchItemState
 
 from qiita_control_plane.repositories.ena_import_batch import (
@@ -473,9 +474,10 @@ async def _add_run(ctx, graphs, *, stored: bool = False, failed: bool = False) -
     if failed:
         await pool.execute(
             "UPDATE qiita.sequenced_sample"
-            " SET download_failure_reason = 'no sequence data', download_failure_type = 'permanent'"
+            " SET download_failure_reason = 'no sequence data', download_failure_type = $2"
             " WHERE prep_sample_idx = $1",
             prep_sample_idx,
+            FailureType.PERMANENT.value,
         )
 
 

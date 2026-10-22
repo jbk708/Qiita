@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import asyncpg
 import pytest
+from qiita_common.models import FailureType
 
 from qiita_control_plane.ena_import.submit import (
     DOWNLOAD_ENA_STUDY_ACTION_ID,
@@ -666,8 +667,9 @@ async def test_digest_flags_a_partially_landed_download_ticket(env):
             else:
                 await pool.execute(
                     "UPDATE qiita.sequenced_sample SET download_failure_reason = 'no data',"
-                    " download_failure_type = 'permanent' WHERE prep_sample_idx = $1",
+                    " download_failure_type = $2 WHERE prep_sample_idx = $1",
                     prep_sample_idx,
+                    FailureType.PERMANENT.value,
                 )
         wt = await pool.fetchval(
             "INSERT INTO qiita.work_ticket"

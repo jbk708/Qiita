@@ -13,7 +13,7 @@ from typing import Any
 
 import asyncpg
 from pydantic import BaseModel
-from qiita_common.models import FailureType
+from qiita_common.models import FailureType, WorkTicketState
 from qiita_common.models.ena_import import BatchItemState
 
 from . import require_transaction
@@ -292,11 +292,12 @@ async def fetch_partial_download_counts(
         " FROM qiita.work_ticket wt"
         " JOIN qiita.sequenced_sample ss ON ss.sequenced_pool_idx = wt.sequenced_pool_idx"
         " WHERE wt.work_ticket_idx = ANY($1::bigint[])"
-        "   AND wt.state = 'completed'"
+        "   AND wt.state = $2::qiita.work_ticket_state"
         "   AND ss.download_failure_type IS NOT NULL"
         f"   AND {_NO_STORED_READS}"
         " GROUP BY wt.work_ticket_idx",
         ticket_idxs,
+        WorkTicketState.COMPLETED.value,
     )
     return {r["work_ticket_idx"]: (r["failed_runs"], r["batch_idx"]) for r in rows}
 

@@ -318,7 +318,11 @@ async def _process_group(
         for r in fresh
     ]
     download_idxs = [t["idx"] for t in tickets if t["action_id"] == DOWNLOAD_ENA_STUDY_ACTION_ID]
-    partial = await fetch_partial_download_counts(conn, ticket_idxs=download_idxs)
+    partial = (
+        await fetch_partial_download_counts(conn, ticket_idxs=download_idxs)
+        if download_idxs
+        else {}
+    )
     for t in tickets:
         if t["idx"] in partial:
             t["failed_runs"], t["batch_idx"] = partial[t["idx"]]
