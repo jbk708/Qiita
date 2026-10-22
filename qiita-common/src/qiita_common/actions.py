@@ -689,7 +689,8 @@ class ActionDefinition(BaseModel):
 
     @model_validator(mode="after")
     def _qc_checks_persist_after_their_gate(self) -> ActionDefinition:
-        """Mirrors the runner's QC producer precedence: alignment, refuse assembly, mask."""
+        """Checks describe the gated output, so they persist after its gate's finalize. The gate
+        follows `_workflow_qc_producer`'s precedence: alignment, refuse assembly, mask."""
         names = [e.name for e in self.steps if isinstance(e, WorkflowAction)]
         if LibraryPrimitive.PERSIST_QC_CHECKS not in names:
             return self

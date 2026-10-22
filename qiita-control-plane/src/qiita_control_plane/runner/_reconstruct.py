@@ -339,7 +339,8 @@ QC_PRODUCER_BINDING = "qc_producer"
 def _workflow_qc_producer(steps: list[Any]) -> QcProducer | None:
     """The gate the workflow's QC rows are counted under: alignment, else mask, else
     `QcProducer.NONE`. Python `None` (refused by the persist arm) when it finalizes a gate
-    with no QC producer (assembly), so `qc_verdict` never counts such rows ungated."""
+    with no QC producer (assembly), so `qc_verdict` never counts such rows ungated. Mirrored
+    at load by `ActionDefinition._qc_checks_persist_after_their_gate`."""
     if _workflow_writes_alignment_gate(steps):
         return QcProducer.ALIGNMENT
     if _workflow_writes_assembly_gate(steps):

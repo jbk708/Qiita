@@ -216,6 +216,10 @@ def _qc_workflow(*names: str) -> list[dict]:
     [
         (("assemble", "finalize-assembly-sample", "persist-qc-checks"), "assembly"),
         (
+            ("assemble", "finalize-mask-sample", "finalize-assembly-sample", "persist-qc-checks"),
+            "assembly",
+        ),
+        (
             ("align", "persist-qc-checks", "finalize-alignment-sample"),
             "finalize-alignment-sample",
         ),
