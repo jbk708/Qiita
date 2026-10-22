@@ -60,7 +60,10 @@ weighed against.
 A download ticket fetches **4** runs at once by default. `ENA_DOWNLOAD_RUN_CONCURRENCY`
 (1-8, control-plane env, restart to change) sets it for every ticket an import batch
 submits; a manually submitted `download-ena-study` ticket can carry `run_concurrency` in
-its `action_context` instead; the job's start-up log line shows the value in effect. The
+its `action_context` instead; the job's start-up line on stderr shows the value in effect.
+The batch stores the value in the ticket's `action_context`, so a changed value reaches
+only tickets built after the restart: a `/run` redrive, an automatic retry, and a batch
+reusing a pool's existing ticket keep the stored one. The
 step's memory is a fixed allocation divided across the slots, so more concurrency means
 less memory per run, and scratch disk grows with it:
 

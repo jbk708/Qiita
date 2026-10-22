@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import sys
 from pathlib import Path
 
 import duckdb
@@ -63,8 +63,6 @@ from ..miint import (
 )
 from ..read_staging import hardlink, per_slot_caps, read_roster_parquet, write_sorted_reads
 from ..sequence_range_retry import is_transient_http_status, mint_or_reuse_sequence_range
-
-_LOG = logging.getLogger(__name__)
 
 # Hard-coded (not derived from the YAML) so a rename diverging from the
 # `- step: ingest_ena_reads` entry fails loudly at BackendFailure attribution.
@@ -305,12 +303,10 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
     memory_gb, threads = per_slot_caps(
         inputs.run_concurrency, threads=_DUCKDB_THREADS, fallback_memory_gb=_DUCKDB_MEMORY_GB
     )
-    _LOG.info(
-        "ingest_ena_reads: %d runs, run_concurrency=%d (%d GB, %d threads per slot)",
-        len(roster),
-        inputs.run_concurrency,
-        memory_gb,
-        threads,
+    print(
+        f"ingest_ena_reads: {len(roster)} runs, run_concurrency={inputs.run_concurrency} "
+        f"({memory_gb} GB, {threads} threads per slot)",
+        file=sys.stderr,
     )
     sem = asyncio.Semaphore(inputs.run_concurrency)
 
