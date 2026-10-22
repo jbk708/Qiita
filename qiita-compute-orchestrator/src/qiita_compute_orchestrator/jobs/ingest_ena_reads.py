@@ -49,7 +49,7 @@ import duckdb
 from pydantic import BaseModel
 from qiita_common.api_paths import compute_reads_staging_path
 from qiita_common.backend_failure import BackendFailure, FailureKind
-from qiita_common.http_status import is_transient_http_status
+from qiita_common.http_status import is_transient_error_text, is_transient_http_status
 from qiita_common.models import FailureType, WorkTicketFailureStage
 from qiita_common.models.ena_import import FailedRunOutcome
 from qiita_common.parquet import validate_parquet_path
@@ -95,20 +95,6 @@ _MID_STREAM_WARNING_MARKER = "mid-stream"
 # Prefix of the transient-fetch reason; the live e2e test keys its skip on it.
 TRANSIENT_FETCH_ERROR_TEXT = "transient fetch error"
 
-# Substrings marking a raised duckdb.Error as transport/network-shaped (vs.
-# format/parse) — see `_classify_ena_fetch_error`.
-_TRANSIENT_ERROR_MARKERS = (
-    "connection",
-    "timed out",
-    "timeout",
-    "network",
-    "reset",
-    "refused",
-    "unreachable",
-    "temporarily",
-    "curl",
-    "could not connect",
-)
 _PERMANENT_ERROR_MARKERS = ("malformed", "invalid fastq", "no sequence data")
 # ENA's own words when it answers a search with HTTP 200 but stops writing the
 # results; with duckdb-miint#310, miint quotes them when the answer survives its
@@ -222,7 +208,7 @@ def _classify_ena_fetch_error(
     # status 0 means no usable HTTP status, so it retries.
     status = getattr(exc, "status_code", None)
     unavailable = (
-        any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)
+        is_transient_error_text(text)
         or (status is not None and (status == 0 or is_transient_http_status(status)))
         or _ENA_INCOMPLETE_ANSWER_MARKER in text
     )

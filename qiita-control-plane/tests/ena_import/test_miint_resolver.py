@@ -529,9 +529,20 @@ class _Flaky:
         return "ok"
 
 
-@pytest.mark.parametrize("status", [500, 503, 408, 429])
-async def test_call_with_ena_retry_recovers_from_a_transient_status(no_backoff, status):
-    flaky = _Flaky(_http_error(status))
+@pytest.mark.parametrize(
+    "error",
+    [
+        _http_error(500),
+        _http_error(503),
+        _http_error(408),
+        _http_error(429),
+        _http_error(0),
+        duckdb.IOException("read_ena failed: Connection reset by peer (URL: https://ena)"),
+        duckdb.IOException("read_ena failed: Connection refused (URL: https://ena)"),
+    ],
+)
+async def test_call_with_ena_retry_recovers_from_an_outage(no_backoff, error):
+    flaky = _Flaky(error)
 
     assert await miint_resolver.call_with_ena_retry(flaky, "PRJNA1") == "ok"
     assert flaky.calls == 2
@@ -543,7 +554,7 @@ async def test_call_with_ena_retry_recovers_from_a_transient_status(no_backoff, 
         _http_error(400),
         _http_error(401),
         _http_error(404),
-        duckdb.IOException("connection reset"),
+        duckdb.IOException("read_ena failed: no sequence data (URL: https://ena)"),
         EnaAccessionNotFoundError("none"),
         InvalidEnaAccessionError("bad"),
     ],
@@ -572,6 +583,30 @@ async def test_call_with_ena_retry_gives_up_at_the_deadline_naming_the_outage(
 
     assert flaky.calls == 2
     assert raised.value.__cause__ is last
+
+
+async def test_call_with_ena_retry_gives_up_naming_a_connection_failure(no_backoff, monkeypatch):
+    ticks = iter([0, miint_resolver._RESOLVE_DEADLINE_S])
+    monkeypatch.setattr(miint_resolver, "monotonic", lambda: next(ticks))
+    flaky = _Flaky(*[duckdb.IOException("read_ena failed: Connection refused")] * 2)
+
+    with pytest.raises(RuntimeError, match=r"ENA unavailable: a connection failure") as raised:
+        await miint_resolver.call_with_ena_retry(flaky, "PRJNA1")
+
+    assert "HTTP" not in str(raised.value)
+
+
+async def test_call_with_ena_retry_backs_off_exponentially_to_the_cap(monkeypatch):
+    sleeps = []
+
+    async def record(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(miint_resolver.asyncio, "sleep", record)
+    flaky = _Flaky(*[_http_error(503)] * 6)
+
+    assert await miint_resolver.call_with_ena_retry(flaky, "PRJNA1") == "ok"
+    assert sleeps == [30, 60, 120, 240, 300, 300]
 
 
 async def test_call_with_ena_retry_is_cancellable_while_backing_off(monkeypatch):
