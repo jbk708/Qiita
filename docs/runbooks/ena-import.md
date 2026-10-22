@@ -63,7 +63,7 @@ submits; a manually submitted `download-ena-study` ticket can carry `run_concurr
 its `action_context` instead; the job's start-up line on stderr shows the value in effect.
 The batch stores the value in the ticket's `action_context`, so a changed value reaches
 only tickets built after the restart: a `/run` redrive, an automatic retry, and a batch
-reusing a pool's existing ticket keep the stored one. The
+reusing a pool's existing ticket keep the value the ticket was built with (4 if none). The
 step's memory is a fixed allocation divided across the slots, so more concurrency means
 less memory per run, and scratch disk grows with it:
 

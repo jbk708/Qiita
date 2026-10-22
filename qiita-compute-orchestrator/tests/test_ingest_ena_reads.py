@@ -246,7 +246,7 @@ def test_run_concurrency_out_of_range_is_rejected(tmp_path, bad):
 
 def test_per_slot_caps_follow_run_concurrency(fake_mint, monkeypatch, tmp_path, capsys):
     """The fixed allocation is split across `run_concurrency` slots, and the split
-    reaches stderr (the SLURM job log) without the launcher configuring logging."""
+    reaches stderr (the SLURM job log)."""
     monkeypatch.setenv("SLURM_MEM_PER_NODE", str(56 * 1024))
     seen = []
 
