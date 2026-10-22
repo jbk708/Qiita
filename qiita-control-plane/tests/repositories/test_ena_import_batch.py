@@ -540,7 +540,7 @@ async def test_fetch_partial_download_counts_has_no_batch_when_no_item_names_the
         )
 
 
-async def test_fetch_partial_download_counts_reports_only_the_pools_newest_ticket(
+async def test_fetch_partial_download_counts_reports_only_the_pools_newest_completed_ticket(
     sequenced_pool_ctx,
 ):
     ctx = sequenced_pool_ctx
@@ -573,8 +573,8 @@ async def test_fetch_partial_download_counts_skips_fully_landed_and_unfinished_t
 ):
     ctx = sequenced_pool_ctx
     graphs: list[tuple[int, int]] = []
-    running_idx = await _seed_work_ticket(ctx, state="pending")
     landed_idx = await _seed_work_ticket(ctx, state="completed")
+    running_idx = await _seed_work_ticket(ctx, state="pending")
     try:
         await _add_run(ctx, graphs, stored=True)
         assert (
