@@ -540,13 +540,41 @@ async def test_fetch_partial_download_counts_has_no_batch_when_no_item_names_the
         )
 
 
+async def test_fetch_partial_download_counts_reports_only_the_pools_newest_ticket(
+    sequenced_pool_ctx,
+):
+    ctx = sequenced_pool_ctx
+    graphs: list[tuple[int, int]] = []
+    older_idx = await _seed_work_ticket(ctx, state="completed")
+    newer_idx = await _seed_work_ticket(ctx, state="completed")
+    try:
+        await _add_run(ctx, graphs, failed=True)
+
+        counts = await fetch_partial_download_counts(
+            ctx["pool"], ticket_idxs=[older_idx, newer_idx]
+        )
+
+        assert counts == {newer_idx: (1, None)}
+    finally:
+        await ctx["pool"].execute(
+            "DELETE FROM qiita.work_ticket WHERE work_ticket_idx = ANY($1::bigint[])",
+            [older_idx, newer_idx],
+        )
+        await teardown_entity_graph(
+            ctx["pool"],
+            study_idxs=[],
+            biosample_idxs=[b for b, _ in graphs],
+            prep_sample_idxs=[p for _, p in graphs],
+        )
+
+
 async def test_fetch_partial_download_counts_skips_fully_landed_and_unfinished_tickets(
     sequenced_pool_ctx,
 ):
     ctx = sequenced_pool_ctx
     graphs: list[tuple[int, int]] = []
-    landed_idx = await _seed_work_ticket(ctx, state="completed")
     running_idx = await _seed_work_ticket(ctx, state="pending")
+    landed_idx = await _seed_work_ticket(ctx, state="completed")
     try:
         await _add_run(ctx, graphs, stored=True)
         assert (
