@@ -57,6 +57,27 @@ ticket until one finishes. Raising the cap is a joint decision with the connecti
 pool and `FANOUT_MAX_INFLIGHT` — the sizing note on the constant says what it is
 weighed against.
 
+A download ticket fetches **4** runs at once by default. `ENA_DOWNLOAD_RUN_CONCURRENCY`
+(1-8, control-plane env, restart to change) sets it for every ticket an import batch
+submits; a manually submitted `download-ena-study` ticket can carry `run_concurrency` in
+its `action_context` instead; the job's start-up line on stderr shows the value in effect.
+The batch stores the value in the ticket's `action_context`, so a changed value reaches
+only tickets built after the restart: a `/run` redrive, an automatic retry, and a batch
+reusing a pool's existing ticket keep the value the ticket was built with (4 if none). The
+step's memory is a fixed allocation divided across the slots, so more concurrency means
+less memory per run, and scratch disk grows with it:
+
+| `run_concurrency` | GB per run at 56 GB | DuckDB threads (total) |
+|---|---|---|
+| 1 | 53 | 2 |
+| 4 (default) | 12 | 8 |
+| 8 (max) | 5 | 16 |
+
+Worst-case connections to ENA are 8 dispatch slots times this value, so raise it by
+measuring. Above 4 the step oversubscribes its 8 CPUs during sorts. Keep production at
+4: 8 concurrent sorts at 5 GB per run is untested on DuckDB 1.5.5.
+On the local backend all tickets share one executor, so the effective total is lower.
+
 A download ticket's roster read also waits at most 90 s
 (`POOL_LOCK_WAIT_TIMEOUT_S`) for an in-flight registration of the same
 sequencing_run to commit, so a study of many hundreds of runs cannot fail the

@@ -669,6 +669,7 @@ async def _process_one_study(
                         sequenced_pool_idx=pool_state["sequenced_pool_idx"],
                         sequencing_run_idx=sequencing_run_idx,
                         ena_study_accession=study_header.study_accession,
+                        run_concurrency=app.state.settings.ena_download_run_concurrency,
                     )
                     try:
                         response = await submit_work_ticket_core(
