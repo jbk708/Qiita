@@ -20,6 +20,10 @@ from qiita_common.models import (
     Tier,
     derive_metadata_field_scope,
 )
+from qiita_common.models.biosample import (
+    BIOSAMPLE_FIELD_GEOGRAPHIC_LOCATION_LATITUDE,
+    BIOSAMPLE_FIELD_GEOGRAPHIC_LOCATION_LONGITUDE,
+)
 
 from . import require_transaction, update_row
 
@@ -97,6 +101,24 @@ class SampleEntityKind(StrEnum):
 
     BIOSAMPLE = "biosample"
     PREP_SAMPLE = "prep_sample"
+
+
+# Decimal-degree bound per coordinate global, keyed by internal_name; a value
+# past it (or non-finite) names no place, so it is a parse error, not a number.
+BIOSAMPLE_COORDINATE_DEGREE_BOUNDS: dict[str, Decimal] = {
+    BIOSAMPLE_FIELD_GEOGRAPHIC_LOCATION_LATITUDE: Decimal(90),
+    BIOSAMPLE_FIELD_GEOGRAPHIC_LOCATION_LONGITUDE: Decimal(180),
+}
+
+
+def coordinate_degree_bound(
+    entity_kind: SampleEntityKind, internal_name: str | None
+) -> Decimal | None:
+    """The degree bound `parse_text_for_data_type` applies to a value written to
+    this global field, or None when the field is not a coordinate."""
+    if entity_kind is not SampleEntityKind.BIOSAMPLE or internal_name is None:
+        return None
+    return BIOSAMPLE_COORDINATE_DEGREE_BOUNDS.get(internal_name)
 
 
 def _study_field_location(study_idx: int, display_name: str) -> str:
@@ -604,6 +626,8 @@ def parse_text_for_data_type(
     field_key: str,
     data_type: FieldDataType,
     text_value: str,
+    *,
+    degree_bound: Decimal | None = None,
 ) -> str | Decimal | date | bool:
     """Coerce a text input into the Python type matching data_type.
 
@@ -614,7 +638,8 @@ def parse_text_for_data_type(
     texts, case-insensitively. TERMINOLOGY has no text coercion — its value is
     a terminology-term lookup — and raises NotImplementedError. Conversion
     failures raise MetadataParseError carrying field_key, data_type, raw text,
-    and reason.
+    and reason. degree_bound (see `coordinate_degree_bound`) additionally turns
+    away a NUMERIC value outside [-degree_bound, degree_bound] or not finite.
     """
     # Normalize once; all parse arms see the stripped value.
     stripped = text_value.strip()
@@ -642,6 +667,15 @@ def parse_text_for_data_type(
         # Adopt the stored representation here, so no later step has to know
         # which of the two forms it is holding.
         stored_form = _pg_numeric_text(parsed_decimal)
+        if degree_bound is not None and not (
+            parsed_decimal.is_finite() and -degree_bound <= parsed_decimal <= degree_bound
+        ):
+            raise MetadataParseError(
+                field_key=field_key,
+                data_type=data_type,
+                text_value=text_value,
+                reason=f"not a coordinate between -{degree_bound} and {degree_bound} degrees",
+            )
         return Decimal(stored_form)
     if data_type is FieldDataType.DATE:
         try:
@@ -2796,6 +2830,7 @@ async def assert_required_global_fields_supplied(
 async def _resolve_and_parse_metadata_values(
     conn: asyncpg.Connection,
     *,
+    entity_kind: SampleEntityKind,
     metadata: Mapping[str, str],
     fields: Mapping[str, ResolvedField],
     reason_lookup: Mapping[str, int],
@@ -2870,7 +2905,10 @@ async def _resolve_and_parse_metadata_values(
             )
             continue
         parsed[caller_key] = parse_text_for_data_type(
-            caller_key, resolved_field.data_type, text_value
+            caller_key,
+            resolved_field.data_type,
+            text_value,
+            degree_bound=coordinate_degree_bound(entity_kind, resolved_field.internal_name),
         )
     return parsed
 
@@ -3063,6 +3101,7 @@ async def preflight_sample_metadata(
 
     parsed_values = await _resolve_and_parse_metadata_values(
         conn,
+        entity_kind=spec.entity_kind,
         metadata=metadata,
         fields=resolved,
         reason_lookup=known_missing_reasons or {},

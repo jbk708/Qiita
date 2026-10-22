@@ -354,6 +354,38 @@ async def test_harmonized_attributes_land_on_global_fields_and_checklist(reg):
     }
 
 
+async def test_out_of_range_longitude_fails_the_run_with_the_range_reason(reg):
+    # A longitude past +/-180 names no place, so the run fails rather than storing a
+    # number every reader would have to range-check -- with the bound in the reason.
+    study_accession = unique_ena_accession("PRJNA")
+    sample_accession = unique_accession("SAMN")
+    run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=sample_accession,
+        study_accession=study_accession,
+    )
+    attrs = _mixs_sample_attributes(sample_accession, **{"geographic location (longitude)": "200"})
+
+    result = await _register(
+        reg,
+        study_header=_study_header(study_accession=study_accession),
+        ena_runs=[run],
+        sample_attributes=[attrs],
+    )
+
+    outcome = result.ena_runs[0]
+    assert outcome.status == EnaRunRegistrationStatus.FAILED
+    assert outcome.failure_reason is not None
+    assert "-180 and 180 degrees" in outcome.failure_reason
+
+    # The failed run leaves no biosample behind -- its per-run transaction rolled back.
+    biosample_count = await reg["pool"].fetchval(
+        "SELECT count(*) FROM qiita.biosample WHERE ena_sample_accession = $1", sample_accession
+    )
+    assert biosample_count == 0
+
+
 async def test_shared_biosample_harmonizes_once_across_two_studies(reg):
     shared_sample_accession = unique_accession("SAMN")
     attrs = _mixs_sample_attributes(shared_sample_accession)

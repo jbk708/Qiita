@@ -315,7 +315,11 @@ harmonization error (an unparseable value, or a cross-study metadata slot collis
 fails the run, surfacing as that run's `status: failed` + `failure_reason`, isolated
 per-run exactly like an unmappable platform or a suppressed run (see *Non-public
 studies and runs* above). A checklist-required field ENA did not supply is not itself
-an error — the checklist binding, not enforcement, is what harmonization records.
+an error — the checklist binding, not enforcement, is what harmonization records. A
+coordinate past its bound — latitude beyond ±90, or longitude beyond ±180 — is one such
+unparseable value: every run referencing that sample fails until the coordinate is
+corrected at ENA, so a study submitted on a 0–360 longitude convention, where every
+sample is off, fails every run.
 
 **A sample with zero ENA attributes is a legitimate, common result, not an import
 failure.** Real ENA/DDBJ samples sometimes carry no `<SAMPLE_ATTRIBUTE>` elements at
@@ -332,7 +336,10 @@ display-name twins. `geo_loc_name`'s `country:region:locality` value contributes
 its country/sea part; `lat_lon`'s combined `"<lat> <N|S> <lon> <E|W>"` value splits
 into the separate latitude/longitude fields (negated for S/W), or is left as raw local
 metadata if it doesn't parse (including an INSDC missing-value marker like
-`"missing"`, which real DDBJ submissions do use for `lat_lon`). The three
+`"missing"`, which real DDBJ submissions do use for `lat_lon`). The split checks
+shape only: a latitude past ±90 or a longitude past ±180 (or a non-finite value),
+from `lat_lon` or either coordinate tag, is a metadata parse error on every biosample
+write, so the run fails to register with that error as its `failure_reason`. The three
 environmental-context tags (`env_broad_scale`/`env_local_scale`/`env_medium`, and
 their GSC-MIxS display-name twins) stay unmapped in either vocabulary — see
 "No ENVO harmonization or free-text host matching" below.

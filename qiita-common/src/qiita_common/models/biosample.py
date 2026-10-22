@@ -289,6 +289,10 @@ BIOSAMPLE_FIELD_TAXON_ID = "taxon_id"
 BIOSAMPLE_FIELD_HOST_TAXON_ID = "host_taxon_id"
 BIOSAMPLE_FIELD_QIITA_SAMPLE_TYPE = "qiita_sample_type"
 
+# `biosample_global_field.internal_name` values of the two coordinate fields.
+BIOSAMPLE_FIELD_GEOGRAPHIC_LOCATION_LATITUDE = "geographic_location_latitude"
+BIOSAMPLE_FIELD_GEOGRAPHIC_LOCATION_LONGITUDE = "geographic_location_longitude"
+
 # Seeded `biosample_global_field.display_name` values -- NOT the `internal_name`s above.
 BIOSAMPLE_DISPLAY_COLLECTION_DATE = "collection date"
 BIOSAMPLE_DISPLAY_GEOGRAPHIC_LOCATION_COUNTRY_OR_SEA = "geographic location (country and/or sea)"
