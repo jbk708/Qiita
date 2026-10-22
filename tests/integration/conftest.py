@@ -228,7 +228,9 @@ async def cleanup_ena_study(pool, study_accession: str) -> None:
     under; nothing happens when no study carries it.
     """
     study_idxs = await resolve_ena_study_idxs(pool, [study_accession])
-    await teardown_ena_study_graph(pool, study_idxs=study_idxs, run_accessions=[study_accession])
+    await teardown_ena_study_graph(
+        pool, study_idxs=study_idxs, run_accessions=[study_accession]
+    )
 
 
 @pytest.fixture(scope="module")
@@ -291,6 +293,9 @@ def data_plane(signing_key, tmp_path_factory):
         "DUCKLAKE_CATALOG_CONNSTR": DUCKLAKE_CATALOG_CONNSTR,
         "PATH_PERSISTENT": str(persistent_base),
         "PATH_SCRATCH": str(scratch_base),
+        # Pinned so the data plane's boot does not depend on the memory of the
+        # machine running the suite.
+        "DUCKDB_MEMORY_LIMIT": "1GiB",
         LIB_PATH_ENV: lib_path,
     }
 

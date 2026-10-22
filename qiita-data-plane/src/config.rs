@@ -57,7 +57,7 @@ pub struct Settings {
 /// draws on as well. Eight leaves that budget room for other data-plane
 /// processes and for the control plane; raise it with `DUCKLAKE_POOL_SIZE` where
 /// the budget allows, counting every process on every host against the same 97.
-const DEFAULT_POOL_SIZE: usize = 8;
+pub(crate) const DEFAULT_POOL_SIZE: usize = 8;
 
 /// The pool divides half the detected ceiling, not all of it. Half is a choice;
 /// what is measured is that it has to be less than all of it, because
@@ -88,6 +88,12 @@ pub(crate) const CEILING_DIVISOR: u64 = 2;
 /// `size × this` from a ceiling smaller than that. Boot fails instead, naming
 /// both ways out.
 pub(crate) const MIN_MEMORY_LIMIT_MIB: u64 = 512;
+
+/// The `memory_limit`, in MiB, that each of `size` connections gets from a
+/// detected ceiling of `ceiling_bytes` when none is configured.
+pub(crate) fn derived_share_mib(ceiling_bytes: u64, size: usize) -> u64 {
+    ceiling_bytes / CEILING_DIVISOR / size as u64 / (1024 * 1024)
+}
 
 /// Per-connection ceiling on spill. DuckDB's own default is 90% of the
 /// filesystem holding `temp_directory` — which every connection would claim in
@@ -216,8 +222,7 @@ impl Settings {
         let memory_limit = match env_value("DUCKDB_MEMORY_LIMIT") {
             Some(raw) => raw,
             None => {
-                let share_mib =
-                    memory_ceiling.bytes / CEILING_DIVISOR / size as u64 / (1024 * 1024);
+                let share_mib = derived_share_mib(memory_ceiling.bytes, size);
                 if share_mib < MIN_MEMORY_LIMIT_MIB {
                     return Err(format!(
                         concat!(
