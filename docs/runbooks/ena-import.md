@@ -24,6 +24,11 @@ then each study's runs queue again behind anything already waiting.
 1. **Resolve** — the study's header, run list, and per-sample attributes are pulled
    from ENA (via the `duckdb-miint` `read_ena` / `read_ena_attributes` table
    functions).
+   An ENA 5xx, 408 or 429, or a connection failure, is retried with backoff while the
+   item stays `resolving`; after six hours of continuous outage on one ENA call the item
+   fails naming the outage.
+   A control-plane stop during an outage waits for the batch drain, up to 60 s; the item
+   is then cancelled, stays `resolving`, and is re-driven when the control plane restarts.
 2. **Register** — the resolved metadata is turned into Qiita rows: one `study`, one
    `biosample` per distinct ENA sample accession (de-duplicated **across studies** —
    two studies that share a sample converge on the same biosample row, never a

@@ -76,7 +76,7 @@ from ..repositories.study import (
     get_or_create_study_by_ena_accessions,
 )
 from .availability import EnaAvailabilityClient
-from .miint_resolver import MiintEnaResolver
+from .miint_resolver import MiintEnaResolver, call_with_ena_retry
 from .registration import (
     EnaRunRegistrationOutcome,
     EnaRunRegistrationStatus,
@@ -470,7 +470,7 @@ async def _process_one_study(
         await _set_item_state(pool, item.idx, BatchItemState.RESOLVING)
         resolver = MiintEnaResolver()
         try:
-            study_header = await asyncio.to_thread(
+            study_header = await call_with_ena_retry(
                 resolver.resolve_study_header, item.ena_study_accession
             )
         except EnaAccessionNotFoundError as exc:
@@ -481,13 +481,13 @@ async def _process_one_study(
         requested = item.requested_run_accessions
         try:
             if requested is None:
-                ena_runs = await asyncio.to_thread(
+                ena_runs = await call_with_ena_retry(
                     resolver.resolve_ena_runs, item.ena_study_accession
                 )
             else:
                 # Re-resolved rather than handed down from expansion: a restart re-drives
                 # a split item from its row alone.
-                ena_runs = await asyncio.to_thread(resolver.resolve_runs, requested)
+                ena_runs = await call_with_ena_retry(resolver.resolve_runs, requested)
             no_runs_reason = None
         except EnaAccessionNotFoundError as exc:
             ena_runs, no_runs_reason = [], str(exc)
@@ -523,11 +523,11 @@ async def _process_one_study(
             )
             return
         if requested is None:
-            sample_attributes = await asyncio.to_thread(
+            sample_attributes = await call_with_ena_retry(
                 resolver.resolve_sample_attributes, item.ena_study_accession
             )
         else:
-            sample_attributes = await asyncio.to_thread(
+            sample_attributes = await call_with_ena_retry(
                 resolver.resolve_sample_attributes_for_samples,
                 sorted({run.sample_accession for run in ena_runs}),
             )
@@ -725,7 +725,7 @@ async def _expand_run_list_item(
     try:
         await _set_item_state(pool, item.idx, BatchItemState.RESOLVING)
         try:
-            ena_runs = await asyncio.to_thread(MiintEnaResolver().resolve_runs, requested)
+            ena_runs = await call_with_ena_retry(MiintEnaResolver().resolve_runs, requested)
         except EnaAccessionNotFoundError:
             ena_runs = []
         study_by_run = {
