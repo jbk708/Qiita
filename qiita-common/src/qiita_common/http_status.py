@@ -1,7 +1,7 @@
-"""HTTP status classification shared across components."""
+"""HTTP status and transport-error classification shared across components."""
 
 # Substrings marking an error as transport/network-shaped (vs. format/parse).
-TRANSIENT_ERROR_MARKERS = (
+_TRANSIENT_ERROR_MARKERS = (
     "connection",
     "timed out",
     "timeout",
@@ -23,4 +23,4 @@ def is_transient_http_status(status: int) -> bool:
 def is_transient_error_text(text: str) -> bool:
     """True when an error's message names a transport failure a retry can self-heal."""
     text = text.lower()
-    return any(marker in text for marker in TRANSIENT_ERROR_MARKERS)
+    return any(marker in text for marker in _TRANSIENT_ERROR_MARKERS)

@@ -554,7 +554,7 @@ async def test_call_with_ena_retry_recovers_from_an_outage(no_backoff, error):
         _http_error(400),
         _http_error(401),
         _http_error(404),
-        duckdb.IOException("read_ena failed: no sequence data (URL: https://ena)"),
+        duckdb.IOException("read_ena: could not resolve 'SRR1' to a study accession"),
         EnaAccessionNotFoundError("none"),
         InvalidEnaAccessionError("bad"),
     ],
