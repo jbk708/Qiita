@@ -203,7 +203,14 @@ async def test_rerun_overwrites_its_row(seeded, tmp_path, producer):
         kwargs["alignment_idx"] = await _seed_alignment(seeded)
     kind = QcProducer(producer)
     first, second = await _ticket(seeded, **kwargs), await _ticket(seeded, **kwargs)
-    await _persist(seeded, tmp_path, first, [_entry(seeded, severity=QcSeverity.INFO)], kind)
+    full = _entry(
+        seeded,
+        severity=QcSeverity.FAIL,
+        reason="data_type_mismatch",
+        measured_value=0.25,
+        threshold=0.5,
+    )
+    await _persist(seeded, tmp_path, first, [full], kind)
     (before,) = await _rows(seeded)
     idx = await seeded["pool"].fetchval(
         "SELECT idx FROM qiita.prep_sample_qc_check WHERE prep_sample_idx = $1",
@@ -213,7 +220,7 @@ async def test_rerun_overwrites_its_row(seeded, tmp_path, producer):
         seeded,
         tmp_path,
         second,
-        [_entry(seeded, severity=QcSeverity.WARNING, reason=None, measured_value=1.5)],
+        [_entry(seeded, severity=QcSeverity.WARNING)],
         kind,
     )
     (after,) = await _rows(seeded)
@@ -225,7 +232,7 @@ async def test_rerun_overwrites_its_row(seeded, tmp_path, producer):
         == idx
     )
     assert after["severity"] == QcSeverity.WARNING
-    assert after["measured_value"] == 1.5
+    assert (after["reason"], after["measured_value"], after["threshold"]) == (None, None, None)
     assert after["work_ticket_idx"] == second
     assert after["created_at"] > before["created_at"]
 
@@ -334,6 +341,10 @@ async def test_entry_for_another_prep_sample_rejected(seeded, tmp_path):
         ([{"check": "data_type", "severity": "info", "mask_idx": 1}], "mask_idx"),
         ([{"check": "data_type", "severity": "info", "measured_value": float("nan")}], "finite"),
         ([{"check": "data_type", "severity": "info", "threshold": float("inf")}], "finite"),
+        ([{"check": "data_type", "severity": "info", "prep_sample_idx": True}], "integer"),
+        ([{"check": "data_type", "severity": "info", "prep_sample_idx": "7"}], "integer"),
+        ([{"check": "data_type", "severity": "info", "measured_value": True}], "number"),
+        ([{"check": "data_type", "severity": "info", "threshold": "1.5"}], "number"),
         (
             [
                 {"check": "data_type", "severity": "info"},

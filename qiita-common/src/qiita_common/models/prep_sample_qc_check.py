@@ -44,7 +44,7 @@ class QcVerdict(BaseModel):
 class QcCheckResult(BaseModel):
     """One entry of a step's `qc_checks.json`; the producer comes from the ticket."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     prep_sample_idx: int
     check: QcCheck
