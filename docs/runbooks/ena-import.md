@@ -459,12 +459,12 @@ data, a 404 from duckdb-miint#312 on, zero reads) does not fail its pool when an
 was stored: the other runs load, the ticket completes, and the failed run is recorded with
 its reason and `permanent` failure type (the item reads `completed_partial`). The ticket
 is COMPLETED, so the submitter gets the work-ticket digest unless they opted out of
-processing emails, and it carries no `failure_reason`; read the batch status for the
-failed runs. If a run failed in a way a retry could clear, the step still fails and
-retries first, and a run that failed permanently is fetched again on each retry, so a
-large one is downloaded again. Any other error fails the step as a whole: out of memory
-retries with more memory, and anything else (a local disk fault) leaves the ticket FAILED
-and redrivable.
+processing emails; the digest row reads `partial: N runs failed` with a pointer to the
+batch status, which lists the failed runs, and the ticket carries no `failure_reason`. If
+a run failed in a way a retry could clear, the step still fails and retries first, and a
+run that failed permanently is fetched again on each retry, so a large one is downloaded
+again. Any other error fails the step as a whole: out of memory retries with more memory,
+and anything else (a local disk fault) leaves the ticket FAILED and redrivable.
 
 When the retries run out, or at once when no run was stored and none of the failures is one
 a retry could clear (a 404 from duckdb-miint#312 on), the ticket is FAILED `permanent` and
