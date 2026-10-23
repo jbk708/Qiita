@@ -102,6 +102,12 @@ Everything merged but not yet deployed, folded in by each PR as it merges. Run b
 - (#751) `download-ena-study` 1.0.0 gains an optional `run_concurrency`. The optional control-plane `ENA_DOWNLOAD_RUN_CONCURRENCY` (1-8, default 4) stays at 4 in production (see `docs/runbooks/ena-import.md`).
 - (#761) `POST …/block-mask-plan` returns two new counts, `samples_completed_empty` and `samples_skipped_invalidated`, and `samples_skipped_no_reads` now counts only prep_samples with no reads that no ingest shows empty (they have none, or their newest did not end that way). It also answers 409 when a prep_sample gains a range or has a newer ingest submitted while the plan runs; planning again tiles new reads, and counts a prep_sample whose newer ingest has not finished in `samples_skipped_no_reads`. A prep_sample that ingest found empty is now recorded as masked, so the pool masking rollup counts it `completed` rather than `no_data`, and the read-metrics rollup counts it in `samples_zero_reads`. Minting a sequence_range for it later removes that record; a newer ingest that fails or has not finished does not, so the export serves it empty until reads are stored. The block plan now resolves host filtering for such a prep_sample too, so one with unresolvable host metadata refuses the plan, as it already did for `submit-host-filter-pool`.
 - (#764) The `long-read-assembly-binning-1.0.0.sif` auto-rebuilds on deploy to pick up `binning.sh`'s minimum-contig-length check; long-read-assembly 1.0.0 and 1.0.1 both run that image, so both get it. Its `%test` now also runs `binning-min-contig-check.sh`, which runs metaWRAP twice on a small fixture; a build failure naming that script means the re-solved binners changed the behaviour the check rests on, and its stderr says which. The deploy then stops before any restart (`build-sifs.sh`), so services stay on the old build; the fix is a change to `binning.def` or `binning.sh`, not a host step.
+- (#686) **golay-demux tickets that failed at `bcl_convert` must be resubmitted, not
+  resumed.** bcl-convert 4.5.4 refused the amplicon dummy sample sheet on every run.
+  `qiita ticket run <idx>` would skip the completed `bcl_convert_prep` and reuse its
+  old sheet, so submit the pool again with `qiita submit-golay-demux`, passing the
+  same `--instrument-run-id`, `--preflight-blob` and `--prep-protocol-idx` (the run,
+  pool and roster are then reused).
 
 ## Deployed history
 
