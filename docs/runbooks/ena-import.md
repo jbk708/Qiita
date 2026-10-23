@@ -386,9 +386,11 @@ Either path takes one biosample per call and needs ADMIN on the study or `wet_la
 
 ENA's `neg_cont_type` and `pos_cont_type` tags (also spelled `negative control type` and
 `positive control type`) are kept as study-local text and never make a biosample a control,
-because submitters commonly record the study's control on every sample, host-associated
-ones included. To mark a real control, set its `qiita sample type` to a `control_*` term
-with the same PATCH route or `qiita biosample patch-metadata-by-unique-field`, passing
+because submitters commonly record the study's control on every BioSample, host-associated
+ones included. To mark a real control, set its `qiita sample type` to a control term (the
+`negative` and `positive` lists in `qiita-common/.../data/control_types.yml`, such as
+`control_blank`) with the same PATCH route and body `{"qiita sample type": "control_blank"}`,
+or with `qiita biosample patch-metadata-by-unique-field` and
 `--metadata "qiita sample type=control_blank"`.
 
 ## Scope and limits

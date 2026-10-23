@@ -150,16 +150,23 @@ def test_absent_tax_id_is_reported_without_printing_none():
     assert not any("None" in w for w in warnings)
 
 
-def test_control_type_attributes_never_set_qiita_sample_type():
+@pytest.mark.parametrize(
+    ("neg_tag", "pos_tag"),
+    [("neg_cont_type", "pos_cont_type"), ("negative control type", "positive control type")],
+)
+@pytest.mark.parametrize(
+    ("neg_value", "pos_value"),
+    [("DNA-free PCR mix", "Escherichia coli"), ("extraction blank", "control_spike_in")],
+)
+def test_control_type_attributes_never_set_qiita_sample_type(
+    neg_tag, pos_tag, neg_value, pos_value
+):
     global_metadata, local_metadata, _ = _build(
-        _HUMAN_GUT, {"neg_cont_type": ["DNA-free PCR mix"], "pos_cont_type": ["Escherichia coli"]}
+        _HUMAN_GUT, {neg_tag: [neg_value], pos_tag: [pos_value]}
     )
 
     assert "qiita sample type" not in global_metadata
-    assert local_metadata == {
-        "neg_cont_type": "DNA-free PCR mix",
-        "pos_cont_type": "Escherichia coli",
-    }
+    assert local_metadata == {neg_tag: neg_value, pos_tag: pos_value}
     assert global_metadata["host taxon id"] == "9606"
 
 
