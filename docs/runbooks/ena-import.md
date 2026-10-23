@@ -388,7 +388,7 @@ ENA's `neg_cont_type` and `pos_cont_type` tags (also spelled `negative control t
 `positive control type`) are kept as study-local text and never make a biosample a control,
 because submitters commonly record the study's control on every BioSample, host-associated
 ones included. To mark a real control, set its `qiita sample type` to a control term (the
-`negative` and `positive` lists in `qiita-common/.../data/control_types.yml`, such as
+`negative` and `positive` lists in `qiita_common/data/control_types.yml`, such as
 `control_blank`) with the same PATCH route and body `{"qiita sample type": "control_blank"}`,
 or with `qiita biosample patch-metadata-by-unique-field` and
 `--metadata "qiita sample type=control_blank"`.
