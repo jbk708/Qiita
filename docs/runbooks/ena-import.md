@@ -405,6 +405,19 @@ gaps expected to close soon (except where noted):
   platform string can fail platform mapping for that run alone (isolated, per the
   per-run failure model above) rather than importing correctly. Filling out DDBJ
   coverage is deferred to the backlog.
+- **A non-amplicon run deposited with `library_selection` PCR is refused.** PCR selection
+  marks an amplicon library, so a run whose `library_strategy` is anything but `AMPLICON`
+  (including `RNA-Seq`/transcriptomic) contradicts it. That run fails alone with a
+  `failure_reason` naming the selection; its siblings import. Deposited metadata is not
+  rewritten and the import has no override. Once the depositor corrects the ENA record,
+  a re-import picks the run up. An operator who knows the run is amplicon can instead
+  register it by hand: a biosample carrying the run's `ena_sample_accession` (the import
+  rolled its own back; a later re-import reuses one with that accession), then
+  `POST .../sequenced-sample` with `short_read_amplicon` or `long_read_amplicon` as its
+  `prep_protocol_idx` and the run's `ena_run_accession`, in a new `sequenced_pool` with its
+  own `download-ena-study` ticket, as under "Re-importing" above. #383 tracks inferring the
+  protocol from the reads instead. `RANDOM PCR` and `RT-PCR` are different selections and
+  are not refused.
 - **No ENVO harmonization or free-text host matching.** Free-text environment and host
   fields ENA supplies are kept as study-local text as given; only ENA's numeric
   `tax_id` and `host_tax_id` are cross-referenced to NCBI Taxonomy. Also deferred to the
