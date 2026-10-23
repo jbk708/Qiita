@@ -2387,6 +2387,12 @@ async def test_run_action_primitive_persist_syndna_read_count_rejects_a_bad_entr
         ("delete-alignment-block", [], "block"),
         ("reconcile-alignment-block", [], "block"),
         ("finalize-alignment-sample", [], "prep_sample"),
+        ("delete-alignment-sample", [], "prep_sample"),
+        ("finalize-mask-sample", [], "prep_sample"),
+        ("finalize-assembly-sample", [], "prep_sample"),
+        ("persist-qc-checks", ["qc_checks"], "prep_sample"),
+        ("reconcile-block", [], "block"),
+        ("delete-block-mask", [], "block"),
     ],
 )
 async def test_run_action_primitive_refuses_a_wrongly_scoped_ticket(
