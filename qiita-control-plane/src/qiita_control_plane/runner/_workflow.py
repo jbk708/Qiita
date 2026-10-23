@@ -275,6 +275,16 @@ async def run_workflow(
         # resume (or a /run redrive) it carries the COMPLETED rows the loop
         # fast-forwards. Loaded once — this run's own writes don't feed back in.
         progress = await step_progress.load_step_progress(pool, work_ticket_idx)
+        try:
+            step_progress.check_step_progress(
+                work_ticket_idx, action.action_id, progress, action.steps
+            )
+        except step_progress.StepProgressMismatch as exc:
+            raise BackendFailure(
+                kind=FailureKind.CONTRACT_VIOLATION,
+                stage=WorkTicketFailureStage.SUBMISSION,
+                reason=str(exc),
+            ) from exc
 
         # Per-step resource floors a PRIOR run's retry ladder escalated to and
         # persisted. Empty on a first dispatch. This is what makes the ladder
