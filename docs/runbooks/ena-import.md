@@ -384,6 +384,13 @@ qiita biosample patch-metadata-by-unique-field --study-idx S \
 The value is a loaded NCBI Taxonomy id or a missing-value reason such as `not applicable`.
 Either path takes one biosample per call and needs ADMIN on the study or `wet_lab_admin`.
 
+ENA's `neg_cont_type` and `pos_cont_type` tags (also spelled `negative control type` and
+`positive control type`) are kept as study-local text and never make a biosample a control,
+because submitters commonly record the study's control on every sample, host-associated
+ones included. To mark a real control, set its `qiita sample type` to a `control_*` term
+with the same PATCH route or `qiita biosample patch-metadata-by-unique-field`, passing
+`--metadata "qiita sample type=control_blank"`.
+
 ## Scope and limits
 
 These are **hard limits** of the current import surface, not partial-implementation
