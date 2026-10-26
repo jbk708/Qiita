@@ -269,7 +269,7 @@ def test_per_slot_caps_follow_run_concurrency(fake_mint, monkeypatch, tmp_path, 
 
 def test_pre_sort_line_names_the_run_and_slot(fake_mint, monkeypatch, tmp_path, capsys):
     """The line before each sort names the run, its read count and its memory and
-    thread budget, so a crash among several slots can be tied to its input."""
+    thread budget, so a crash narrows to the runs whose sort had started."""
     monkeypatch.setenv("SLURM_MEM_PER_NODE", str(56 * 1024))
 
     def _fake(run_accession, download_method, intermediate_path, duckdb_tmp, memory_gb, threads):
