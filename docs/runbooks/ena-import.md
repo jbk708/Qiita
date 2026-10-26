@@ -500,7 +500,8 @@ if the run is gone or its digest is wrong at ENA, re-import once ENA is correcte
 retry resubmits the whole `ingest_ena_reads` step (resources: `baseline_resources` in
 `workflows/download-ena-study/1.0.0.yaml`), the requeue follows the failure with no
 delay or backoff, and `max_retries` is the ticket's one budget, shared with the OOM and
-timeout retries of that step.
+timeout retries of that step and with the retry of a step killed by a segfault (SLURM
+exit 139; the Python stack is in `qiita ticket logs`).
 
 **Network access.** The control-plane host resolves metadata from `www.ebi.ac.uk`, and
 the SLURM compute nodes running `ingest_ena_reads` reach both `www.ebi.ac.uk` and

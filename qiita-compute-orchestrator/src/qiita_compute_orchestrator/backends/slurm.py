@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import signal
 from datetime import timedelta
 from pathlib import Path
 
@@ -94,6 +95,9 @@ _STATE_TO_FAILURE_KIND: dict[TerminalSlurmState, FailureKind] = {
 _OOM_UPGRADABLE_KINDS: frozenset[FailureKind] = frozenset(
     {FailureKind.EXIT_NONZERO, FailureKind.UNKNOWN_PERMANENT}
 )
+
+# Shell exit status of a process killed by SIGSEGV, as srun reports it.
+_SEGFAULT_EXIT_CODE = 128 + signal.SIGSEGV
 
 # Bounds for the stderr tail folded into `failure_reason` on a state-based
 # (no launcher-line) failure. Deliberately small — `failure_reason` is
@@ -664,7 +668,12 @@ class SlurmBackend(ComputeBackend):
             max_lines=_FAILURE_REASON_TAIL_LINES,
             max_bytes=_FAILURE_REASON_TAIL_BYTES,
         )
-        if kind in _OOM_UPGRADABLE_KINDS and contains_oom_signature(stderr_tail):
+        if (
+            status.raw_state == TerminalSlurmState.FAILED
+            and status.exit_code == _SEGFAULT_EXIT_CODE
+        ):
+            kind = FailureKind.SEGFAULT
+        elif kind in _OOM_UPGRADABLE_KINDS and contains_oom_signature(stderr_tail):
             kind = FailureKind.OOM_KILLED
         reason = f"{state_reason}; stderr tail: {stderr_tail}" if stderr_tail else state_reason
         raise BackendFailure(

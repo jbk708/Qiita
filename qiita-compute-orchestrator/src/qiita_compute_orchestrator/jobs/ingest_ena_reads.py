@@ -379,6 +379,11 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
                     work_ticket_idx=inputs.work_ticket_idx,
                     step_name=YAML_STEP_NAME,
                 )
+                print(
+                    f"ingest_ena_reads: sorting {run_accession} (prep_sample {prep_sample_idx}): "
+                    f"{count} reads ({memory_gb} GB, {threads} threads)",
+                    file=sys.stderr,
+                )
                 await asyncio.to_thread(
                     write_sorted_reads,
                     intermediate,
