@@ -301,7 +301,7 @@ def build_job_submit_payload(
         # orchestrator's installed Python env on the compute node,
         # reading/writing host paths directly via QIITA_*_PATH.
         script = _build_native_script(module=module, python=native_python)
-        # A container's --containall scrubs the env, so this only reaches native jobs.
+        # Set before the interpreter starts, so a crash while importing duckdb dumps too.
         env["PYTHONFAULTHANDLER"] = "1"
     else:
         # Container: bind mounts let apptainer see input_path /

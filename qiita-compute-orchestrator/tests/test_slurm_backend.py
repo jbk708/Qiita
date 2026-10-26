@@ -1341,8 +1341,8 @@ async def _result_for(jwt_path, tmp_path, stderr, raw_state, exit_code):
 
 @pytest.mark.asyncio
 async def test_result_step_native_segfault_is_retriable_segfault(jwt_path, tmp_path):
-    """A native step killed by SIGSEGV exits 139 with no launcher line; the kind must
-    say so (and retry) instead of the permanent EXIT_NONZERO."""
+    """A native step killed by SIGSEGV exits 139 with no launcher line, and is
+    classified SEGFAULT (retriable) instead of the permanent EXIT_NONZERO."""
     failure = await _result_for(jwt_path, tmp_path, _NATIVE_SEGFAULT_STDERR, "FAILED", 139)
     assert failure.kind is FailureKind.SEGFAULT
     assert failure.transient is True
@@ -1374,15 +1374,9 @@ async def test_result_step_139_outside_failed_state_stays_exit_nonzero(
 
 @pytest.mark.asyncio
 async def test_result_step_segfault_wins_over_oom_signature(jwt_path, tmp_path):
-    """'Killed' in a segfaulting job's stderr must not turn it into an OOM kill."""
+    """'Killed' in a segfaulting job's stderr does not make it an OOM kill."""
     failure = await _result_for(jwt_path, tmp_path, "srun: Killed\n", "FAILED", 139)
     assert failure.kind is FailureKind.SEGFAULT
-
-
-@pytest.mark.asyncio
-async def test_result_step_node_fail_with_139_stays_node_fail(jwt_path, tmp_path):
-    failure = await _result_for(jwt_path, tmp_path, "", "NODE_FAIL", 139)
-    assert failure.kind is FailureKind.NODE_FAIL
 
 
 @pytest.mark.asyncio

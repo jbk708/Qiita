@@ -96,7 +96,7 @@ _OOM_UPGRADABLE_KINDS: frozenset[FailureKind] = frozenset(
     {FailureKind.EXIT_NONZERO, FailureKind.UNKNOWN_PERMANENT}
 )
 
-# Shell exit status of a process killed by SIGSEGV, as srun reports it.
+# The job's exit status when its child process is killed by SIGSEGV.
 _SEGFAULT_EXIT_CODE = 128 + signal.SIGSEGV
 
 # Bounds for the stderr tail folded into `failure_reason` on a state-based
@@ -657,10 +657,10 @@ class SlurmBackend(ComputeBackend):
             )
 
         # No structured launcher line (a container step, or the process was
-        # infra-killed — including by OOM — before it could write one). Read
-        # the stderr tail: a step-level cgroup oom_kill surfaces only as the
-        # coarse FAILED/exit_code=1 above, so the stderr text is the one
-        # in-band signal that an otherwise-opaque failure was a memory kill.
+        # killed — by a segfault, or by infra including OOM — before it could
+        # write one). A segfault is told by its exit code; a step-level cgroup
+        # oom_kill surfaces only as the coarse FAILED/exit_code=1 above, so the
+        # stderr text is the one in-band signal that it was a memory kill.
         # Fold the tail into failure_reason either way so `qiita ticket status`
         # carries the real error without a host shell.
         stderr_tail, _ = read_text_tail(

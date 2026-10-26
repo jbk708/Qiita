@@ -106,7 +106,7 @@ class FailureKind(StrEnum):
     # from a truncated transfer), or a run miint skipped. A format error does
     # NOT belong here (see BAD_INPUT).
     EXTERNAL_FETCH_TRANSIENT = "external_fetch_transient"
-    # A step died on SIGSEGV; a native crash is often a race that a re-run clears.
+    # A step died on SIGSEGV; it is re-run on the same resources.
     SEGFAULT = "segfault"
 
     # ---- Permanent: workflow / input / contract issues -------------------
