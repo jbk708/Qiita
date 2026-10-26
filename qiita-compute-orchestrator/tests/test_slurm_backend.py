@@ -1350,6 +1350,54 @@ async def test_result_step_native_segfault_is_retriable_segfault(jwt_path, tmp_p
     assert "Segmentation fault (core dumped)" in failure.reason
 
 
+# A segfaulted native job as slurmrestd v0.0.40 returns it (Slurm 25.05.7, 2026-10-26).
+_SLURMRESTD_SEGFAULT_JOB = {
+    "job_id": 1,
+    "job_state": ["FAILED"],
+    "state_reason": "NonZeroExitCode",
+    "exit_code": {
+        "status": ["ERROR"],
+        "return_code": {"set": True, "infinite": False, "number": 139},
+        "signal": {"id": {"set": False, "infinite": False, "number": 0}, "name": ""},
+    },
+    "derived_exit_code": {
+        "status": ["SIGNALED"],
+        "return_code": {"set": False, "infinite": False, "number": 0},
+        "signal": {"id": {"set": True, "infinite": False, "number": 11}, "name": "11"},
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_run_step_slurmrestd_segfault_response_is_segfault(jwt_path, baseline, tmp_path):
+    """The job object slurmrestd serves for a segfault reaches SEGFAULT through
+    the client's parse, not only an injected exit code."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"job_id": 1})
+        return httpx.Response(200, json={"jobs": [_SLURMRESTD_SEGFAULT_JOB]})
+
+    backend = _make_backend(httpx.MockTransport(handler), jwt_path)
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "stderr").write_text(_NATIVE_SEGFAULT_STDERR)
+
+    with pytest.raises(BackendFailure) as ei:
+        await _run_step_via_trio(
+            backend,
+            "fastq",
+            {},
+            tmp_path,
+            scope_target={"kind": "reference", "reference_idx": 1},
+            work_ticket_idx=99,
+            module=FASTQ_TO_PARQUET_MODULE,
+            baseline_resources=baseline,
+        )
+
+    assert ei.value.kind is FailureKind.SEGFAULT
+    assert "exit_code=139" in ei.value.reason
+
+
 @pytest.mark.asyncio
 async def test_result_step_segfault_text_with_other_exit_code_stays_exit_nonzero(
     jwt_path, tmp_path
