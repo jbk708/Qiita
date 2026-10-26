@@ -291,7 +291,7 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
         inputs.run_concurrency, threads=_DUCKDB_THREADS, fallback_memory_gb=_DUCKDB_MEMORY_GB
     )
     print(
-        f"ingest_ena_reads: {len(roster)} runs, run_concurrency={inputs.run_concurrency} "
+        f"{YAML_STEP_NAME}: {len(roster)} runs, run_concurrency={inputs.run_concurrency} "
         f"({memory_gb} GB, {threads} threads per slot)",
         file=sys.stderr,
     )

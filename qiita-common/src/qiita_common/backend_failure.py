@@ -70,7 +70,7 @@ class FailureKind(StrEnum):
     retriable, add it to `_RETRIABLE`.
     """
 
-    # ---- Retriable: transient infra / scheduling issues ------------------
+    # ---- Retriable ---------------------------------------------------------
     NODE_FAIL = "node_fail"
     OOM_KILLED = "oom_killed"
     TIMEOUT_BEFORE_START = "timeout_before_start"
