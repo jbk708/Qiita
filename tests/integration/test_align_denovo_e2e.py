@@ -354,6 +354,7 @@ async def _run_tail(denovo, workspace) -> None:
     from qiita_common.actions import WorkflowAction
     from qiita_common.api_paths import LibraryPrimitive
     from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.testing.run_context import run_context
 
     scope_target = {"kind": "prep_sample", "prep_sample_idx": denovo["prep_sample_idx"]}
     url = f"grpc://{LOOPBACK_HOST}:{denovo['data_plane']['port']}"
@@ -363,14 +364,16 @@ async def _run_tail(denovo, workspace) -> None:
         (LibraryPrimitive.FINALIZE_ALIGNMENT_SAMPLE, []),
     ):
         await _run_action_primitive(
-            denovo["pool"],
+            run_context(
+                pool=denovo["pool"],
+                scope_target=scope_target,
+                work_ticket_idx=denovo["work_ticket_idx"],
+                signing_key=denovo["data_plane"]["secret"],
+                data_plane_url=url,
+            ),
             WorkflowAction(kind="action", name=str(name), inputs=inputs, outputs=[]),
             {"alignment_staging_dir": str(workspace)},
             workspace,
-            scope_target,
-            work_ticket_idx=denovo["work_ticket_idx"],
-            signing_key=denovo["data_plane"]["secret"],
-            data_plane_url=url,
         )
 
 

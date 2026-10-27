@@ -226,17 +226,20 @@ async def _run_register_files(
     """Drive the REAL runner adapter for the download-ena-study `register-files`
     entry."""
     from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.testing.run_context import run_context
 
     entry = _entry_by_name("register-files")
     await _run_action_primitive(
-        postgres_pool,
+        run_context(
+            pool=postgres_pool,
+            scope_target={},
+            work_ticket_idx=work_ticket_idx,
+            signing_key=data_plane["secret"],
+            data_plane_url=_data_plane_url(data_plane),
+        ),
         entry,
         {"read_staging_dir": str(staging_dir)},
         staging_dir,
-        {},
-        work_ticket_idx=work_ticket_idx,
-        signing_key=data_plane["secret"],
-        data_plane_url=_data_plane_url(data_plane),
     )
 
 
@@ -619,7 +622,8 @@ async def test_run_list_import_ingests_only_the_listed_runs(
         work_ticket_idx,
     )
     sequencing_run_idx = await postgres_pool.fetchval(
-        "SELECT sequencing_run_idx FROM qiita.sequenced_pool WHERE idx = $1", sequenced_pool_idx
+        "SELECT sequencing_run_idx FROM qiita.sequenced_pool WHERE idx = $1",
+        sequenced_pool_idx,
     )
     roster_rows = await fetch_sequenced_pool_ena_run_roster(
         postgres_pool, sequenced_pool_idx=sequenced_pool_idx
@@ -712,7 +716,8 @@ async def test_pool_with_a_permanently_failed_run_lands_the_rest_and_reads_compl
         work_ticket_idx,
     )
     sequencing_run_idx = await postgres_pool.fetchval(
-        "SELECT sequencing_run_idx FROM qiita.sequenced_pool WHERE idx = $1", sequenced_pool_idx
+        "SELECT sequencing_run_idx FROM qiita.sequenced_pool WHERE idx = $1",
+        sequenced_pool_idx,
     )
     roster_rows = await fetch_sequenced_pool_ena_run_roster(
         postgres_pool, sequenced_pool_idx=sequenced_pool_idx
@@ -770,16 +775,22 @@ async def test_pool_with_a_permanently_failed_run_lands_the_rest_and_reads_compl
         work_ticket_idx=work_ticket_idx,
     )
     from qiita_control_plane.runner import _run_action_primitive
+    from qiita_control_plane.testing.run_context import run_context
 
     await _run_action_primitive(
-        postgres_pool,
+        run_context(
+            pool=postgres_pool,
+            scope_target={
+                "kind": "sequenced_pool",
+                "sequenced_pool_idx": sequenced_pool_idx,
+            },
+            work_ticket_idx=work_ticket_idx,
+            signing_key=data_plane["secret"],
+            data_plane_url=_data_plane_url(data_plane),
+        ),
         _entry_by_name("persist-ena-run-outcomes"),
         {"run_outcomes": str(outputs["run_outcomes"])},
         tmp_path / "ws1",
-        {"kind": "sequenced_pool", "sequenced_pool_idx": sequenced_pool_idx},
-        work_ticket_idx=work_ticket_idx,
-        signing_key=data_plane["secret"],
-        data_plane_url=_data_plane_url(data_plane),
     )
 
     assert _count_read_rows(data_plane, [good_psi]) == len(_RUN1_ROWS)
