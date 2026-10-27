@@ -92,12 +92,14 @@ from .mask import (
 from .masked_export import (
     _READ_MASKED_COLUMNS,
     _SAFE_ACCESSION,
+    DEFAULT_EXPORT_RETRY_SECONDS,
     _commit_partials,
     _count_masked,
     _export_stem,
     _handle_masked_read_export,
     _parquet_row_count,
     _peek_paired,
+    _retry_seconds_arg,
     _write_masked_sample,
 )
 from .owner_id import (
@@ -454,13 +456,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Populate biosample host_taxon_id from the sample's own taxon + control status",
         description=(
             "Backfill the host_taxon_id biosample field, which postdates every sample"
-            " we hold. A control (per the pre-flight's own is_control) gets 'missing:"
-            " control sample'; otherwise the sample's own taxon_id is mapped to a host"
-            " through a small curated table. A sample neither rule settles is REPORTED"
-            " and left unwritten — it stays UNRESOLVED at submit, which aborts rather"
-            " than passing an un-depleted sample through. Idempotent: a biosample that"
-            " already carries the field is skipped, so this can be re-run as curation"
-            " lands. Dry-run by default; pass --execute to write. Needs DATABASE_URL."
+            " we hold. A control (per the pre-flight's own is_control, or negative"
+            " control metadata) gets 'missing: control sample'; otherwise the biosample's"
+            " own taxon_id is mapped to a host through a small curated table. A biosample"
+            " neither rule settles is REPORTED and left unwritten — it stays UNRESOLVED at"
+            " submit, which aborts rather than passing an un-depleted biosample through."
+            " Idempotent: a biosample that already carries the field is skipped, so this"
+            " can be re-run as curation lands. Dry-run by default; pass --execute to write."
+            " Needs DATABASE_URL."
         ),
     )
     p_backfill_host.add_argument(
@@ -684,6 +687,19 @@ def _build_parser() -> argparse.ArgumentParser:
             " fast link (break-even is around 4 Gbit/s), so it is a loss"
             " on-host and a large win over the TLS edge from off-site. Output"
             " files are identical either way."
+        ),
+    )
+    p_export.add_argument(
+        "--retry-seconds",
+        type=_retry_seconds_arg,
+        default=DEFAULT_EXPORT_RETRY_SECONDS,
+        dest="retry_seconds",
+        help=(
+            "How long to keep retrying a prep_sample whose export failed because"
+            " the data plane or the control plane was unreachable (a restart,"
+            " e.g. a deploy), starting from its first failure. The prep_sample is"
+            " exported again from the start; 0 disables the retry."
+            f" Default {DEFAULT_EXPORT_RETRY_SECONDS:g}."
         ),
     )
     p_export.set_defaults(handler=_handle_masked_read_export)
@@ -1440,24 +1456,9 @@ __all__ = [
     "_count_non_failed_missing_mask_idx",
     "_export_stem",
     "_force_fail_ticket",
-    "_handle_actions_sync",
-    "_handle_compute_readiness",
-    "_handle_login",
-    "_handle_mask_delete",
     "_backfill_assembly_genome",
     "_backfill_host_taxon_id",
     "_backfill_mask_adapter_hash",
-    "_handle_backfill_assembly_genome",
-    "_handle_backfill_host_taxon_id",
-    "_handle_backfill_mask_adapter_hash",
-    "_handle_mask_purge_failed",
-    "_handle_masked_read_export",
-    "_handle_owner_biosample_id",
-    "_handle_principal_set_role",
-    "_handle_set_system_role",
-    "_handle_ticket_force_fail",
-    "_handle_token_revoke_all",
-    "_handle_whoami",
     "_mask_delete_via_route",
     "_mask_shared_with_non_failed",
     "_parquet_row_count",

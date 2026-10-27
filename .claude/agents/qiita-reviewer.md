@@ -104,6 +104,7 @@ Only rules whose trigger appears in the diff can fire.
 | A guard shaped as a denylist; a check that shells out and swallows errors; a `skipif` on the assertion a test exists for | R4 |
 | A guard, fallback or presence-probe for a state that may be unreachable, including a missing miint function in a request or job path | R4 |
 | A fix that cleans up bad state after it lands; a dedup, cleanup or GC pass | R4, R9 |
+| A write decided by a row being absent that another path inserts; a query that takes a past ticket's or record's outcome as proof | R4, R9 |
 | A Pydantic `Field(...)` constraint or a validation regex | R5 |
 | Several values stored in one column with a non-empty separator; a hash, UUID or id cast to text | R5 |
 | A filename, digest, or identity input built from an absolute path or another host-specific value | R5 |
@@ -126,6 +127,7 @@ Only rules whose trigger appears in the diff can fire.
 | Any new or changed doc, runbook, docstring or comment | R2 |
 | A user-facing string: a runbook, a workflow `description:`, argparse `help=`, an HTTPException `detail`, a failure reason, or a test assertion on one; a `generated_by` value | R11, R2 |
 | A new file, moved code, a helper in a feature-specific module, feature- or platform-specific naming, a one-shot script | R10 |
+| A private (`_`-prefixed) name imported into, or listed in `__all__` of, a package `__init__.py` | R10 |
 | An external tool's behaviour that correctness depends on | Outside the rule set |
 
 ## PR-level checks
@@ -196,6 +198,7 @@ Safety must not rest on convention or a comment; and a guard must be real, so do
 - **Enforce assumptions.** A migration that assumes "no rows reference this" raises if rows exist; a seed that must match N rows asserts it; an invariant enforced only in the CLI while the server accepts anything is not enforced.
 - **A check must fail loud.** A check that swallows the error, a `skipif` on the assertion the test exists for [soft], and an empty or no-op result read as success are fail-open. An empty result is a trap only if something keys on it: a status flips, an identity is minted, a gate opens. If nothing does, zero rows is a legitimate answer.
 - **Discriminate on the trusted source, and validate before the expensive or irreversible step.**
+- **Proof from history is the newest record's, not any record's.** A query that opens a gate or writes a state because some past ticket ended a certain way must say whether a newer one supersedes it. A later attempt that failed, was cancelled or is still running usually does.
 - **Cause, not aftermath** [soft]. For a fix that removes bad state after it lands, ask whether the state can be refused where it is created.
 - **Mirror — don't over-guard.** A guard for an unreachable state, re-validation of data the system already owns, handling for output a tool does not emit, and a test fixture modelling an input no producer can emit [soft: ask which producer emits it] all mask an upstream bug or pin nothing. For miint specifically: no presence-probe or fallback for a missing function in a request or job path. `CLAUDE.md` ("miint is a core dependency") makes its absence a hard failure and names the boot, deploy and staged-directory checks this does not cover.
 
@@ -262,6 +265,7 @@ When two similar code paths solve the same problem differently, factor out the s
 - **The system owns the lifecycle from what our instruments write.** A workflow for instrument data that starts from a hand-converted input diverges from its siblings. Uploads and public-archive imports legitimately start from FASTQ.
 - **Multi-fetch read consistency**: related reads from two or more sources use one connection or transaction.
 - **A multi-statement mutation: is it one transaction?** [soft] Ask rather than prescribe; snapshot semantics can make a single transaction the wrong answer.
+- **Two paths that check-then-write the same fact share a lock.** One path acts because a row is absent, and another inserts that row or undoes the first path's write. Both must take one lock, held to commit, before the check and before the insert. Under READ COMMITTED neither sees the other's uncommitted rows, so re-checking inside the same transaction does not close the gap, and neither does a lock only one side takes. Take it ahead of any wider lock the insert holds to commit. The test interleaves two connections; it does not stub the check.
 - **Resource requests are sized to the workload** [soft]: a cap targets a stated input size and derives from the enforced limit; a request that looks high gets "what drives it?"; an unmeasured number is labelled a starting point with an issue to measure it.
 - **CLI convention**: diagnostics to stderr, exit through `sys.exit(N)`.
 - **One container image bundling many tool steps couples them** [soft].
@@ -274,6 +278,7 @@ When two similar code paths solve the same problem differently, factor out the s
 - **A method lives in the module whose responsibility it matches.** A non-route helper does not live under `routes/`; a generic runner does not carry one feature's special case.
 - **A one-shot or backfill script is not a permanent module**; ask whether it should be committed at all.
 - **A file covering several concerns becomes a package.**
+- **A package `__init__` does not re-export a submodule's private name.** A caller, a test included, imports it from the module that defines it; the re-export widens the package's surface and hides where the code lives.
 - **Protocol-specific logic is conditional, and a workflow that is not general says so.**
 - **A parameter, column or enum threaded through for a single possible value**: is the other state reachable?
 

@@ -17,9 +17,9 @@ def _failed(accession: str, reason: str | None) -> EnaRunRegistrationOutcome:
 
 
 def test_summarize_run_failures_groups_a_shared_reason():
-    outcomes = [_failed(f"ERR{n}", _STRATEGY) for n in range(882)]
+    outcomes = [_failed(f"ERR{n}", _STRATEGY) for n in range(50)]
 
-    assert _summarize_run_failures(outcomes) == f"882 runs (ERR0, ERR1, ERR2, …): {_STRATEGY}"
+    assert _summarize_run_failures(outcomes) == f"50 runs (ERR0, ERR1, ERR2, …): {_STRATEGY}"
 
 
 def test_summarize_run_failures_keeps_distinct_reasons_in_first_seen_order():
@@ -28,10 +28,19 @@ def test_summarize_run_failures_keeps_distinct_reasons_in_first_seen_order():
         _failed("ERR2", _STRATEGY),
         _failed("ERR3", "platform not mapped"),
         _failed("ERR4", None),
+        _failed("ERR5", ""),
     ]
 
     assert _summarize_run_failures(outcomes) == (
         "2 runs (ERR1, ERR3): platform not mapped; "
         f"1 run (ERR2): {_STRATEGY}; "
-        "1 run (ERR4): no reason recorded"
+        "2 runs (ERR4, ERR5): no reason recorded"
     )
+
+
+def test_summarize_run_failures_names_every_run_up_to_the_cap():
+    at_cap = [_failed(f"ERR{n}", _STRATEGY) for n in range(3)]
+    over_cap = [*at_cap, _failed("ERR3", _STRATEGY)]
+
+    assert _summarize_run_failures(at_cap) == f"3 runs (ERR0, ERR1, ERR2): {_STRATEGY}"
+    assert _summarize_run_failures(over_cap) == f"4 runs (ERR0, ERR1, ERR2, …): {_STRATEGY}"

@@ -89,9 +89,11 @@ from ._mask import (
     MASK_IDX_BINDING,
     _mint_read_mask,
     _persist_mask_idx,
+    _record_mask_gate_empty,
     _resolved_lima,
     _resolved_syndna,
     _workflow_needs_mask,
+    _workflow_writes_mask_gate,
 )
 from ._processing import (
     ASSEMBLER_BINDING,
@@ -123,11 +125,13 @@ from ._read_ingest import (
     _workflow_needs_staged_reads,
 )
 from ._reconstruct import (
+    QC_PRODUCER_BINDING,
     _attempt_is_terminal,
     _attempt_is_unowned,
     _completed_progress_row,
     _dispatch_action,
     _reconstruct_completed_outputs,
+    _workflow_qc_producer,
 )
 from ._reference import (
     QC_ADAPTER_BINDING,
@@ -274,6 +278,10 @@ async def run_workflow(
     # The samples a taxonomic-profile ticket covers, bound before the mint; the
     # StepNoData handler closes exactly these.
     profile_samples: list[int] | None = None
+    # The mask_idx this run minted for a prep_sample-scoped mask, None until the mint
+    # runs; the StepNoData handler's qiita.mask_sample write is keyed on it rather
+    # than on `bound`, for the reason given above.
+    minted_mask_idx: int | None = None
 
     try:
         # Everything from the action fetch through the step loop is INSIDE the
@@ -310,6 +318,16 @@ async def run_workflow(
         # resume (or a /run redrive) it carries the COMPLETED rows the loop
         # fast-forwards. Loaded once — this run's own writes don't feed back in.
         progress = await step_progress.load_step_progress(pool, work_ticket_idx)
+        try:
+            step_progress.check_step_progress(
+                work_ticket_idx, action.action_id, progress, action.steps
+            )
+        except step_progress.StepProgressMismatch as exc:
+            raise BackendFailure(
+                kind=FailureKind.CONTRACT_VIOLATION,
+                stage=WorkTicketFailureStage.SUBMISSION,
+                reason=str(exc),
+            ) from exc
 
         # Per-step resource floors a PRIOR run's retry ladder escalated to and
         # persisted. Empty on a first dispatch. This is what makes the ladder
@@ -366,6 +384,8 @@ async def run_workflow(
         _lima = _resolved_lima(bound)
         if _lima is not None:
             bound[LIMA_ARGS_BINDING] = _lima["args"]
+
+        bound[QC_PRODUCER_BINDING] = _workflow_qc_producer(action.steps)
 
         # Sharded-aligner index resolution (the `align` workflow): when a step
         # lists router_index_path/shard_directory as inputs, resolve them from
@@ -473,6 +493,66 @@ async def run_workflow(
             bound.update(staged_roster)
 
         # amplicon declares no reads input; denoise streams them at runtime.
+
+        # Read-mask identity: when a step threads `mask_idx` through its params
+        # (the host_filter step), bind the mask_idx before the loop. Same
+        # inside-try placement as the resolvers above so a failure lands in the
+        # outer FAILED handler.
+        #   - PREP_SAMPLE: mint the mask for this filtering config (deduped on the
+        #     config hash) and persist it onto the ticket.
+        #   - BLOCK: the mask was resolved AT PLAN TIME (the partition key) and
+        #     stored on `work_ticket.mask_idx`; bind that value directly — never
+        #     re-mint (a block spans many samples, has no single prep_sample the
+        #     mint keys on, and the partition already fixed the identity).
+        # Ahead of the staged-read binding below: that resolver ends a sample whose
+        # ingest stored no reads at NO_DATA, and the StepNoData handler needs this
+        # mask_idx to record the sample as masked (`_record_mask_gate_empty`).
+        if _workflow_needs_mask(action.steps):
+            if scope_target["kind"] == ScopeTargetKind.PREP_SAMPLE.value:
+                adapter_path = bound.get(QC_ADAPTER_BINDING)
+                # Host refs come from the SAME action_context values
+                # `_resolve_host_filter_indexes` consumes for the applied filter,
+                # so the minted mask_idx's params describe the filter that ran.
+                # Absent → None (faithful "no host filtering").
+                bound.update(
+                    await _mint_read_mask(
+                        pool,
+                        action_id=action.action_id,
+                        action_version=action.version,
+                        prep_sample_idx=scope_target["prep_sample_idx"],
+                        originator_principal_idx=work_ticket["originator_principal_idx"],
+                        instrument_model=bound.get("instrument_model"),
+                        adapter_parquet=Path(adapter_path) if adapter_path is not None else None,
+                        default_adapter_reference_idx=default_adapter_reference_idx,
+                        host_rype_reference_idx=bound.get("host_rype_reference_idx"),
+                        host_minimap2_reference_idx=bound.get("host_minimap2_reference_idx"),
+                        # What actually distinguishes the five PacBio protocols:
+                        # prep_protocol_idx is uniform across them. Both are gated
+                        # on their `*_enabled` flag, so a stale key cannot shift
+                        # the hash of a run that did not use the feature.
+                        resolved_lima=_resolved_lima(bound),
+                        resolved_syndna=_resolved_syndna(bound),
+                    )
+                )
+                # Persist the minted mask_idx onto the ticket for durable
+                # traceability (and a cheap shared-mask guard). Idempotent: a
+                # re-mint on resume re-resolves to the same mask_idx via the
+                # config-hash upsert and re-writes the same value here.
+                await _persist_mask_idx(pool, work_ticket_idx, bound[MASK_IDX_BINDING])
+                minted_mask_idx = bound[MASK_IDX_BINDING]
+            elif scope_target["kind"] == ScopeTargetKind.BLOCK.value:
+                block_mask_idx = work_ticket["mask_idx"]
+                if block_mask_idx is None:
+                    raise _submission_bad_input(
+                        "a block-scoped read-mask ticket must carry a pre-resolved "
+                        "mask_idx (set at plan time); found NULL on the work_ticket"
+                    )
+                bound[MASK_IDX_BINDING] = block_mask_idx
+            else:
+                raise _submission_bad_input(
+                    "a workflow that masks reads (threads mask_idx) must be "
+                    f"prep_sample- or block-scoped; got {scope_target['kind']!r}"
+                )
 
         # Staged-read binding (read-mask workflows): `reads` is consumed by qc /
         # host_filter but produced by no step, so bind it from stored reads.
@@ -601,62 +681,6 @@ async def run_workflow(
                     signing_key=signing_key,
                 )
             )
-
-        # Read-mask identity: when a step threads `mask_idx` through its params
-        # (the host_filter step), bind the mask_idx before the loop. Same
-        # inside-try placement as the resolvers above so a failure lands in the
-        # outer FAILED handler.
-        #   - PREP_SAMPLE: mint the mask for this filtering config (deduped on the
-        #     config hash) and persist it onto the ticket.
-        #   - BLOCK: the mask was resolved AT PLAN TIME (the partition key) and
-        #     stored on `work_ticket.mask_idx`; bind that value directly — never
-        #     re-mint (a block spans many samples, has no single prep_sample the
-        #     mint keys on, and the partition already fixed the identity).
-        if _workflow_needs_mask(action.steps):
-            if scope_target["kind"] == ScopeTargetKind.PREP_SAMPLE.value:
-                adapter_path = bound.get(QC_ADAPTER_BINDING)
-                # Host refs come from the SAME action_context values
-                # `_resolve_host_filter_indexes` consumes for the applied filter,
-                # so the minted mask_idx's params describe the filter that ran.
-                # Absent → None (faithful "no host filtering").
-                bound.update(
-                    await _mint_read_mask(
-                        pool,
-                        action_id=action.action_id,
-                        action_version=action.version,
-                        prep_sample_idx=scope_target["prep_sample_idx"],
-                        originator_principal_idx=work_ticket["originator_principal_idx"],
-                        instrument_model=bound.get("instrument_model"),
-                        adapter_parquet=Path(adapter_path) if adapter_path is not None else None,
-                        default_adapter_reference_idx=default_adapter_reference_idx,
-                        host_rype_reference_idx=bound.get("host_rype_reference_idx"),
-                        host_minimap2_reference_idx=bound.get("host_minimap2_reference_idx"),
-                        # What actually distinguishes the five PacBio protocols:
-                        # prep_protocol_idx is uniform across them. Both are gated
-                        # on their `*_enabled` flag, so a stale key cannot shift
-                        # the hash of a run that did not use the feature.
-                        resolved_lima=_resolved_lima(bound),
-                        resolved_syndna=_resolved_syndna(bound),
-                    )
-                )
-                # Persist the minted mask_idx onto the ticket for durable
-                # traceability (and a cheap shared-mask guard). Idempotent: a
-                # re-mint on resume re-resolves to the same mask_idx via the
-                # config-hash upsert and re-writes the same value here.
-                await _persist_mask_idx(pool, work_ticket_idx, bound[MASK_IDX_BINDING])
-            elif scope_target["kind"] == ScopeTargetKind.BLOCK.value:
-                block_mask_idx = work_ticket["mask_idx"]
-                if block_mask_idx is None:
-                    raise _submission_bad_input(
-                        "a block-scoped read-mask ticket must carry a pre-resolved "
-                        "mask_idx (set at plan time); found NULL on the work_ticket"
-                    )
-                bound[MASK_IDX_BINDING] = block_mask_idx
-            else:
-                raise _submission_bad_input(
-                    "a workflow that masks reads (threads mask_idx) must be "
-                    f"prep_sample- or block-scoped; got {scope_target['kind']!r}"
-                )
 
         # Processing identity: when a step threads `processing_idx` (the assembly
         # membership + load steps), mint the run's processing_idx before the loop —
@@ -1031,6 +1055,20 @@ async def run_workflow(
         if profile_samples is not None and minted_processing_idx is not None:
             await _record_taxonomic_profile_gate_no_data(
                 pool, processing_idx=minted_processing_idx, prep_sample_idxs=profile_samples
+            )
+        # The mask_sample gate for a sample ingest found empty, before the
+        # transition for the same reason; a re-drive re-raises StepNoData from the
+        # same empty input.
+        if (
+            action is not None
+            and _workflow_writes_mask_gate(action.steps)
+            and minted_mask_idx is not None
+        ):
+            await _record_mask_gate_empty(
+                pool,
+                mask_idx=minted_mask_idx,
+                prep_sample_idx=scope_target["prep_sample_idx"],
+                work_ticket_idx=work_ticket_idx,
             )
         await _transition_to_no_data(pool, work_ticket_idx)
         return

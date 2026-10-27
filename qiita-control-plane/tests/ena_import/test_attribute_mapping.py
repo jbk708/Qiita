@@ -62,6 +62,21 @@ def test_map_ena_attributes_leaves_taxon_id_tags_unmapped():
     assert unmapped == attributes
 
 
+def test_map_ena_attributes_leaves_control_type_tags_unmapped():
+    """A study-level control description is not a per-sample control marker."""
+    attributes = {
+        "neg_cont_type": "DNA-free PCR mix",
+        "pos_cont_type": "Escherichia coli",
+        "negative control type": "DNA-free PCR mix",
+        "positive control type": "Escherichia coli",
+    }
+
+    mapped, unmapped = map_ena_attributes(attributes)
+
+    assert mapped == {}
+    assert unmapped == attributes
+
+
 def test_map_ena_attributes_leaves_environmental_context_triad_unmapped():
     """The environmental-context triad is ENVO-typed; mapping ENA's free text would
     need an ENVO-CURIE resolution out of scope here, so they stay unmapped (like taxon)."""
@@ -247,7 +262,6 @@ def test_map_ena_attributes_emits_only_biosample_display_names():
 
 
 def test_map_ena_attributes_signs_hemisphere_suffixed_coordinates():
-    # PRJEB12449's samples give latitude as "39N"; the numeric field needs "39".
     mapped, unmapped = map_ena_attributes(
         {"geographic location (latitude)": "39N", "geographic location (longitude)": "12.5 W"}
     )

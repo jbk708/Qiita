@@ -358,6 +358,54 @@ async def test_harmonized_attributes_land_on_global_fields_and_checklist(reg):
     }
 
 
+async def test_out_of_range_longitude_is_kept_as_submitted(reg):
+    # A longitude past +/-180 is unparseable (range, not just type), so the run keeps it
+    # as submitted rather than failing.
+    study_accession = unique_ena_accession("PRJNA")
+    sample_accession = unique_accession("SAMN")
+    run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=sample_accession,
+        study_accession=study_accession,
+    )
+    attrs = _mixs_sample_attributes(sample_accession, **{"geographic location (longitude)": "200"})
+
+    result = await _register(
+        reg,
+        study_header=_study_header(study_accession=study_accession),
+        ena_runs=[run],
+        sample_attributes=[attrs],
+    )
+
+    outcome = result.ena_runs[0]
+    assert outcome.status == EnaRunRegistrationStatus.REGISTERED, outcome.failure_reason
+    assert outcome.harmonization is not None
+    assert any("-180 and 180 degrees" in w for w in outcome.harmonization.warnings)
+
+    biosample_idx = await reg["pool"].fetchval(
+        "SELECT idx FROM qiita.biosample WHERE ena_sample_accession = $1", sample_accession
+    )
+    assert biosample_idx is not None
+
+    # The global longitude field stores `not provided`; the submitted text is kept local.
+    lon_missing_reason = await reg["pool"].fetchval(
+        "SELECT bm.value_missing_reason_idx FROM qiita.biosample_metadata bm"
+        " JOIN qiita.biosample_global_field gf ON gf.idx = bm.global_field_idx"
+        " WHERE bm.biosample_idx = $1 AND gf.display_name = 'geographic location (longitude)'",
+        biosample_idx,
+    )
+    assert lon_missing_reason is not None
+    lon_submitted = await reg["pool"].fetchval(
+        "SELECT bm.value_text FROM qiita.biosample_metadata bm"
+        " JOIN qiita.biosample_study_field bsf ON bsf.idx = bm.biosample_study_field_idx"
+        " WHERE bm.biosample_idx = $1"
+        " AND bsf.display_name = 'geographic location (longitude) (as submitted)'",
+        biosample_idx,
+    )
+    assert lon_submitted == "200"
+
+
 async def test_shared_biosample_harmonizes_once_across_two_studies(reg):
     shared_sample_accession = unique_accession("SAMN")
     attrs = _mixs_sample_attributes(shared_sample_accession)
@@ -1838,6 +1886,40 @@ async def test_partial_failure_run_leaves_no_orphan_rows_and_rerun_completes(reg
     assert final_count == 1
 
 
+async def test_pcr_selection_on_a_non_amplicon_run_fails_only_that_run(reg):
+    study_accession = unique_ena_accession("PRJNA")
+    header = _study_header(study_accession=study_accession)
+    ok_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+    )
+    pcr_run = _run(
+        run_accession=unique_accession("SRR"),
+        experiment_accession=unique_accession("SRX"),
+        sample_accession=unique_accession("SAMN"),
+        study_accession=study_accession,
+        library_strategy="OTHER",
+        library_source="METAGENOMIC",
+        library_selection="PCR",
+    )
+
+    result = await _register(reg, study_header=header, ena_runs=[ok_run, pcr_run])
+
+    by_accession = {o.run_accession: o for o in result.ena_runs}
+    assert by_accession[ok_run.run_accession].status == EnaRunRegistrationStatus.REGISTERED
+    pcr_outcome = by_accession[pcr_run.run_accession]
+    assert pcr_outcome.status == EnaRunRegistrationStatus.FAILED
+    assert pcr_outcome.failure_reason is not None
+    assert "PCR" in pcr_outcome.failure_reason
+    orphan_count = await reg["pool"].fetchval(
+        "SELECT count(*) FROM qiita.sequenced_sample WHERE ena_run_accession = $1",
+        pcr_run.run_accession,
+    )
+    assert orphan_count == 0
+
+
 # ---------------------------------------------------------------------------
 # Unmappable-platform failure isolation -- a bad `instrument_platform` fails only
 # that run, never the whole study import.
@@ -1976,9 +2058,8 @@ async def test_non_public_run_isolated_others_registered(reg):
 
     excluded_outcome = outcomes_by_accession[suppressed_run.run_accession]
     assert excluded_outcome.status == EnaRunRegistrationStatus.EXCLUDED
-    assert excluded_outcome.failure_reason is not None
-    assert suppressed_run.run_accession in excluded_outcome.failure_reason
-    assert "suppressed" in excluded_outcome.failure_reason
+    # the reason leaves the accession to the outcome, so runs sharing a status group
+    assert excluded_outcome.failure_reason == "run is suppressed"
 
     # No orphan rows for the excluded run -- it never reaches a per-run write.
     orphan_sequenced_sample_count = await reg["pool"].fetchval(

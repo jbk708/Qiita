@@ -276,9 +276,8 @@ def test_read_run_reads_rejects_missing_reads(tmp_path):
 
 
 def test_build_amplicon_dummy_sample_sheet_follows_runinfo_read_order():
-    """bcl-convert reads OverrideCycles segments in RunInfo.xml order. A run that
-    lists its index reads first (as MiSeq i100 RunInfo.xml files do) must declare
-    those leading segments as the index, not the first template read."""
+    """Segments follow RunInfo.xml order, so leading index reads become the
+    leading segments rather than the first template read taking their place."""
     reads = (
         IlluminaRead(12, True),
         IlluminaRead(8, True),
@@ -296,10 +295,9 @@ def test_build_amplicon_dummy_sample_sheet_keeps_unequal_template_lengths():
     assert "[Reads]\n151\n101\n" in sheet
 
 
-def test_build_amplicon_dummy_sample_sheet_sends_every_read_to_undetermined():
-    """bcl-convert 4.x refuses CreateFastqForIndexReads without an index, so the
-    sheet declares the Golay read as a 12-cycle index and one placeholder sample
-    that no read is assigned to unless its index is exactly the placeholder."""
+def test_build_amplicon_dummy_sample_sheet_declares_a_placeholder_index():
+    """The Golay read is a 12-cycle index and the one sample carries
+    AMPLICON_PLACEHOLDER_INDEX with no mismatches (see that constant for why)."""
     reads = (IlluminaRead(151, False), IlluminaRead(12, True), IlluminaRead(151, False))
     sheet = build_amplicon_dummy_sample_sheet(reads, "run_SMPL1")
     assert "OverrideCycles,Y151;I12;Y151" in sheet

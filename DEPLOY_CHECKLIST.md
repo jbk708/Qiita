@@ -73,11 +73,13 @@ Everything merged but not yet deployed, folded in by each PR as it merges. Run b
   the samples answer adds `method` and `value_kind`; `ticket` is removed), and
   `qiita feature-table amplicon` is now `qiita feature-table runs`, which reads the routes
   and takes no `--data-plane-url`.
+- `[admin]` (#767) `activate.sh` now waits, before any restart, for the data plane to go idle (no DoGet stream, DoPut or registration in flight), up to 3900 s, printing `waiting for qiita-data-plane@50051 to go idle …` once a minute; it then restarts whether or not it went idle. `QIITA_DP_IDLE_WAIT_S=<s>` in the deploy's environment changes the bound (0 skips it). The deploy stops before any restart if that value is not whole seconds or the wait cannot query the catalog; `QIITA_DP_IDLE_WAIT_S=0` gets past the second. This deploy still stops the old data-plane binary at once on SIGTERM: the drain ships with the new binary, so from the next deploy the data plane's own restart can take up to the unit's `TimeoutStopSec=3900` too.
 
 ### 5. Verify
 
 - **Deployment name served:** `curl -s https://qiita-miint.ucsd.edu/api/v1/deployment` →
   `{"name":"prod"}` (`{"name":null}` if bucket 1's optional var was skipped). (#feat/web-ui)
+- `[admin]` (#767) `systemctl show -p TimeoutStopUSec qiita-data-plane@50051` prints `TimeoutStopUSec=1h 5min`.
 
 ### 6. After the deploy verifies green
 
@@ -94,6 +96,7 @@ _None yet._
 - (#685) Work-ticket responses (`GET /work-ticket/{idx}` and the ticket lists) gain `on_success`, `follow_on_work_ticket_idx` and `follow_on_error` (all null for a ticket with no follow-on); clients validating that shape strictly must accept them.
 - (#707) New optional `FOLLOW_ON_SWEEP_INTERVAL_SECONDS` (default 60) tunes how often the control plane retries a transiently-failed follow-on; no action required.
 - (#711) `POST /study` now answers 422 to a body key it does not define, where it used to drop the key and return 201; a client sending extra keys must stop. It also takes an optional `study_idx` (system_admin only).
+- (#767) A killed DoPut leaves `staging/uploads/<idx>/upload.parquet.partial`, which nothing reclaims, as nothing reclaims finished uploads. `qiita-admin masked-read-export` gains `--retry-seconds` (default 3900, the data-plane unit's stop timeout).
 
 ## Deployed history
 

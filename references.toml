@@ -1,0 +1,107 @@
+# Reference catalog (prototype, not committed).
+#
+# What each environment should hold, where its inputs come from, and which indexes
+# hang off it. A reference is identified by (name, version), the same pair
+# qiita.reference is UNIQUE on, so a sync can diff this file against
+# `GET /reference` and load only what is missing.
+#
+# Paths are barnacle paths. FASTAs stay where they are; only the prepared inputs
+# (manifest, genome map, taxonomy) go under an ingest root.
+
+[site]
+name        = "barnacle"
+prep_script = "scripts/genome-files-reference-inputs.py"
+
+[env.dev]
+base_url    = "https://qiita-dev.knight-lab-dev.org"
+ingest_root = "/ddn_scratch/jokirkland/qiita-dev/scratch/refs"   # under PATH_INGEST_ROOTS
+
+[env.prod]
+base_url    = "https://qiita-miint.ucsd.edu"
+# ingest_root = ?   # operator-only; not loaded from here
+
+
+# --- 16S -------------------------------------------------------------------------
+
+[[reference]]
+name    = "gg-13_8-88otus-sortmerna"
+version = "13_8"
+kind    = "sequence_reference"
+envs    = ["dev"]
+# source = ?   # loaded at stack bootstrap; record the paths when known
+
+
+# --- GTDB ------------------------------------------------------------------------
+
+[[reference]]
+name    = "gtdb"
+version = "r232-reps"
+kind    = "sequence_reference"
+envs    = ["dev"]
+
+  [reference.source]
+  release  = "r232"
+  genomes  = "/ddn_scratch/lpatel/reference/gtdb/r232/genomic_files_reps/gtdb_genomes_reps_r232/database"
+  taxonomy = [
+    "/ddn_scratch/lpatel/reference/gtdb/r232/bac120_taxonomy_r232.tsv",
+    "/ddn_scratch/lpatel/reference/gtdb/r232/ar53_taxonomy_r232.tsv",
+  ]
+
+  [reference.prep]
+  method = "genome-files"          # one FASTA per genome; id = file name minus _genomic.fna.gz
+  files  = "find {genomes} -name '*_genomic.fna.gz'"
+  # limit = 200                    # set for a trial; version gets a -trial suffix
+
+  [reference.expect]
+  # genomes = ?                    # fill from the prep's "wrote N genomes" line
+
+  # [[reference.index]]            # no sylph database for GTDB yet
+  # type  = "sylph"
+  # label = "r232"
+  # path  = ?
+
+
+# --- Web of Life 3 -------------------------------------------------------------
+
+[[reference]]
+name    = "web-of-life"
+version = "3-rc4-ani95"
+kind    = "sequence_reference"
+envs    = []
+
+  [reference.source]
+  build    = "/ddn_scratch/lpatel/projects/2025-01-08_wipe/wol3_ani95/final_wol3"
+  taxonomy = "/ddn_scratch/lpatel/projects/2025-01-08_wipe/wol3_ani95/final_wol3/taxonomy/wol3_rc4_ani95_taxonomy.tsv"
+
+  [reference.prep]
+  method = "genome-files"          # one FASTA per genome, header = G-id
+  files  = "/ddn_scratch/lpatel/projects/2025-01-08_wipe/wol3_ani95/final_wol3/lists/wol3_rc4_ani95_fasta_list.txt"
+
+  [reference.expect]
+  genomes = 95255
+  # Not loaded: its sylph database hangs off the ani99 reference below, whose
+  # genomes are a superset. Kept as the record of what ani95 is.
+
+[[reference]]
+name    = "web-of-life"
+version = "3-rc4-ani99"
+kind    = "sequence_reference"
+envs    = ["dev"]
+
+  [reference.source]
+  build    = "/ddn_scratch/lpatel/projects/2025-01-08_wipe/wol3_ani95/final_wol3"
+  # taxonomy = ?                   # an ani99 taxonomy TSV, or the full WoL3 one
+
+  [reference.prep]
+  method = "genome-files"
+  # files = ?                      # the ani99 genome list your colleague used
+
+  [[reference.index]]                # ani95 genomes must all be ani99 genomes
+  type  = "sylph"
+  label = "ani95"
+  path  = "/ddn_scratch/lpatel/projects/2025-01-08_wipe/wol3_ani95/final_wol3/db/wol3_rc4_ani95.syl2db"
+
+  [[reference.index]]
+  type  = "sylph"
+  label = "ani99"
+  path  = "/ddn_scratch/lpatel/projects/2025-01-08_wipe/wol3_ani95/final_wol3/db/wol3_rc4_ani99.syl2db"

@@ -23,6 +23,7 @@ import itertools
 import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -32,6 +33,7 @@ import duckdb
 import pyarrow as pa
 import pyarrow.flight as _flight
 import pyarrow.parquet as pq
+from pydantic import TypeAdapter
 from qiita_common.api_paths import LibraryPrimitive
 from qiita_common.assembly_constants import (
     CONTIG_ATTRIBUTE_REPRESENTATIVE_SQL,
@@ -40,26 +42,32 @@ from qiita_common.assembly_constants import (
     contig_attribute_projection,
     register_contig_attribute_table,
 )
+from qiita_common.data_plane_errors import is_data_plane_busy
 from qiita_common.models import (
     INDEX_TYPE_RYPE_ROUTER,
     FeatureHashEntry,
     GenomeSource,
+    QcCheckResult,
     ReadMaskBucket,
     ReadMaskReason,
     ReferenceStatus,
     read_mask_reason_sql_list,
 )
+from qiita_common.models.ena_import import FailedRunOutcome
 from qiita_common.parquet import (
     PARQUET_COMPRESSION,
     PARQUET_COMPRESSION_INTERMEDIATE,
-    PARQUET_OPTS,
+    PARQUET_OPTS_TRANSFER,
     ROW_GROUP_SIZE_BYTES,
     validate_parquet_path,
 )
+from qiita_common.qc_reasons import load_qc_reasons
 from qiita_common.taxonomy import TAXONOMY_SOURCE_TABLE, genome_lineage_select_sql
 
 from ..auth.tickets import run_signed_flight_call, sign_action, sign_ticket
 from ..miint import duckdb_connect
+from ..problem_list import capped
+from ..repositories import require_transaction
 from ..repositories.amplicon import close_amplicon_samples
 from ..repositories.assembly import (
     ASSEMBLY_GENOME_MAP_PAIRS_SQL,
@@ -85,11 +93,17 @@ from ..repositories.block import (
     upsert_mask_sample_completed,
 )
 from ..repositories.exported_identifier import mint_processing_exported_identifiers
+from ..repositories.prep_sample_qc_check import upsert_qc_checks
 from ..repositories.reference_exclusion import resolve_excluded_features
 from ..repositories.reference_membership import (
     GENOME_MAP_PAIRS_SQL,
     GENOME_MAP_ROWS_SQL,
     count_reference_shards,
+)
+from ..repositories.sequence_range import lock_prep_sample_range
+from ..repositories.sequenced_sample import (
+    fetch_empty_ingest_tickets,
+    set_sequenced_sample_download_failure,
 )
 from ..repositories.syndna_read_count import (
     fetch_mask_syndna_reference,
@@ -475,12 +489,21 @@ def _do_action(
     `timeout_seconds` bounds the Flight call: a hung-but-reachable data plane
     raises FlightTimedOutError (a FlightError subclass) instead of blocking
     forever. The exclusion sync passes it because it makes the call load-bearing
-    under a global advisory lock — see sync_reference_exclusion_data."""
+    under a global advisory lock — see sync_reference_exclusion_data.
+
+    A busy refusal is re-raised as FlightUnavailableError with its text intact, so
+    the primitives' documented "raises FlightError on data-plane failure" holds for
+    it too; pyarrow raises it as ArrowInvalid (see `qiita_common.data_plane_errors`)."""
     options = (
         _flight.FlightCallOptions(timeout=timeout_seconds) if timeout_seconds is not None else None
     )
-    with _flight.FlightClient(data_plane_url) as client:
-        return list(client.do_action(_flight.Action(action_type, token), options=options))
+    try:
+        with _flight.FlightClient(data_plane_url) as client:
+            return list(client.do_action(_flight.Action(action_type, token), options=options))
+    except pa.ArrowInvalid as exc:
+        if not is_data_plane_busy(exc):
+            raise
+        raise _flight.FlightUnavailableError(str(exc)) from exc
 
 
 # =============================================================================
@@ -548,7 +571,7 @@ async def mint_features(
     read_conn = duckdb_connect()
     write_conn = duckdb_connect()
     try:
-        # ROW_GROUP_SIZE_BYTES in PARQUET_OPTS requires
+        # ROW_GROUP_SIZE_BYTES in PARQUET_OPTS_TRANSFER requires
         # preserve_insertion_order=false (DuckDB errors at bind time
         # otherwise). The COPY's explicit ORDER BY still clusters each row
         # group tightly by feature_idx — which is what row-group pushdown reads.
@@ -589,7 +612,7 @@ async def mint_features(
         await asyncio.to_thread(
             write_conn.execute,
             "COPY (SELECT DISTINCT sequence_hash, feature_idx FROM feature_map "
-            f"      ORDER BY feature_idx) TO '{out}' ({PARQUET_OPTS})",
+            f"      ORDER BY feature_idx) TO '{out}' ({PARQUET_OPTS_TRANSFER})",
         )
     finally:
         read_conn.close()
@@ -713,7 +736,7 @@ async def _write_annotation_claims(
     read_conn = duckdb_connect()
     write_conn = duckdb_connect()
     try:
-        # ROW_GROUP_SIZE_BYTES in PARQUET_OPTS requires preserve_insertion_order=false —
+        # ROW_GROUP_SIZE_BYTES in PARQUET_OPTS_TRANSFER requires preserve_insertion_order=false —
         # DuckDB errors at BIND time otherwise, so this fires on the zero-annotation
         # write too (i.e. on every reference-add, GFF3 or not). Same rule as
         # mint_features' write connection; the COPY's explicit ORDER BY is what actually
@@ -820,7 +843,8 @@ async def _write_annotation_claims(
 def _copy_annotation_map(write_conn: duckdb.DuckDBPyConnection, out_path: Path) -> None:
     out = validate_parquet_path(out_path)
     write_conn.execute(
-        f"COPY (SELECT * FROM annotation_map ORDER BY annotation_idx) TO '{out}' ({PARQUET_OPTS})"
+        f"COPY (SELECT * FROM annotation_map ORDER BY annotation_idx) "
+        f"TO '{out}' ({PARQUET_OPTS_TRANSFER})"
     )
 
 
@@ -2064,21 +2088,27 @@ async def _update_sequenced_sample_read_counts(
     conn: asyncpg.Connection | asyncpg.Pool,
     prep_sample_idx: int,
     *,
-    raw: int,
-    biological: int,
-    quality_filtered: int,
-    spikein: int,
+    raw: int | None,
+    biological: int | None,
+    quality_filtered: int | None,
+    spikein: int | None,
 ) -> int | None:
     """Write the four per-stage both-mates (`*_r1r2`) read counts onto the 1:1
     sequenced_sample row for `prep_sample_idx`; return its idx, or None if no such
-    row exists (the caller raises its own ordering-specific error).
+    row exists. All four None returns the row to "not yet masked"; a mix of set and
+    None is refused, since no masking run leaves a partial set.
 
-    Shared by `persist_read_metrics` (per-sample path, counts from a local
-    parquet) and `_finalize_sample_metrics` (block-compute path, counts from the
-    DuckLake `mask_metrics` aggregate). Idempotent — a retried workflow overwrites
-    with the same counts. Accepts a pool or a connection so it composes standalone
-    or inside a transaction. The DB CHECK (quality_filtered <= biological and
-    biological + spikein <= raw) enforces the bucket invariants at write time."""
+    Idempotent — a retried workflow overwrites with the same counts. Accepts a pool
+    or a connection so it composes standalone or inside a transaction. The DB CHECK
+    (quality_filtered <= biological and biological + spikein <= raw) enforces the
+    bucket invariants at write time."""
+    counts = (raw, biological, quality_filtered, spikein)
+    if any(c is None for c in counts) and not all(c is None for c in counts):
+        raise ValueError(
+            f"read counts for prep_sample_idx={prep_sample_idx} must be all set or all "
+            f"None; got raw={raw}, biological={biological}, "
+            f"quality_filtered={quality_filtered}, spikein={spikein}"
+        )
     return await conn.fetchval(
         "UPDATE qiita.sequenced_sample"
         " SET raw_read_count_r1r2 = $2,"
@@ -2143,6 +2173,35 @@ async def persist_read_metrics(
     return ss_idx
 
 
+async def persist_ena_run_outcomes(
+    pool: asyncpg.Pool, sequenced_pool_idx: int, run_outcomes_path: Path
+) -> int:
+    """Record each run in `run_outcomes_path` as a failed download on its sequenced_sample;
+    raises if one is not in the pool."""
+    if not run_outcomes_path.exists():
+        raise FileNotFoundError(f"run_outcomes file not found: {run_outcomes_path}")
+    failed = TypeAdapter(list[FailedRunOutcome]).validate_json(run_outcomes_path.read_bytes())
+    async with pool.acquire() as conn, conn.transaction():
+        strangers = [
+            f"{f.ena_run_accession} (prep_sample {f.prep_sample_idx})"
+            for f in failed
+            if not await set_sequenced_sample_download_failure(
+                conn,
+                sequenced_pool_idx=sequenced_pool_idx,
+                prep_sample_idx=f.prep_sample_idx,
+                ena_run_accession=f.ena_run_accession,
+                failure_reason=f.failure_reason,
+                failure_type=f.failure_type,
+            )
+        ]
+        if strangers:
+            raise RuntimeError(
+                f"persist-ena-run-outcomes: not runs of sequenced_pool {sequenced_pool_idx}: "
+                + ", ".join(strangers)
+            )
+    return len(failed)
+
+
 def syndna_read_counts(alignment_path: Path, *, prep_sample_idx: int) -> dict[int, int]:
     """Count the reads aligned to each SynDNA insert in the read-mask `syndna` step's
     alignment output: `parent_feature_idx` → number of distinct `sequence_idx`.
@@ -2174,6 +2233,22 @@ def syndna_read_counts(alignment_path: Path, *, prep_sample_idx: int) -> dict[in
     return {int(feature_idx): int(n) for feature_idx, n in rows}
 
 
+async def _mask_syndna_inserts(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection, mask_idx: int
+) -> tuple[int, list[int]] | None:
+    """The mask's SynDNA reference_idx and the feature_idx of each of its inserts, or
+    None when the mask carries no SynDNA reference. Raises when the reference has no
+    members: no count could describe it."""
+    mask = await fetch_mask_syndna_reference(pool_or_conn, mask_idx)
+    if mask is None or mask["reference_idx"] is None:
+        return None
+    reference_idx = mask["reference_idx"]
+    inserts = [r["feature_idx"] for r in await fetch_syndna_inserts(pool_or_conn, reference_idx)]
+    if not inserts:
+        raise ValueError(f"SynDNA reference {reference_idx} has no members")
+    return reference_idx, inserts
+
+
 async def persist_syndna_read_count(
     pool: asyncpg.Pool,
     *,
@@ -2195,13 +2270,10 @@ async def persist_syndna_read_count(
     """
     if not alignment_path.exists():
         raise FileNotFoundError(f"syndna alignment parquet not found: {alignment_path}")
-    mask = await fetch_mask_syndna_reference(pool, mask_idx)
-    if mask is None or mask["reference_idx"] is None:
+    syndna = await _mask_syndna_inserts(pool, mask_idx)
+    if syndna is None:
         raise ValueError(f"mask {mask_idx} has no SynDNA reference; nothing to count against")
-    reference_idx = mask["reference_idx"]
-    inserts = [r["feature_idx"] for r in await fetch_syndna_inserts(pool, reference_idx)]
-    if not inserts:
-        raise ValueError(f"SynDNA reference {reference_idx} has no members")
+    reference_idx, inserts = syndna
     counted = syndna_read_counts(alignment_path, prep_sample_idx=prep_sample_idx)
     outside = sorted(set(counted) - set(inserts))
     if outside:
@@ -2255,6 +2327,72 @@ async def persist_qc_report(
             "(its 1:1 sequenced_sample created) before fastq-to-parquet runs"
         )
     return ss_idx
+
+
+class QcProducer(StrEnum):
+    """Which gate a workflow's QC check rows are counted under."""
+
+    NONE = "none"
+    MASK = "mask"
+    ALIGNMENT = "alignment"
+
+
+async def persist_qc_checks(
+    pool: asyncpg.Pool,
+    *,
+    work_ticket_idx: int,
+    prep_sample_idx: int,
+    qc_checks_path: Path,
+    expected_producer: QcProducer,
+) -> int:
+    """Upsert the checks in `qc_checks_path` for `prep_sample_idx` under the producer the
+    workflow declares, taken from the ticket; nothing is written if any entry is bad
+    or the ticket lost its producer."""
+    if not qc_checks_path.exists():
+        raise FileNotFoundError(f"qc_checks file not found: {qc_checks_path}")
+    checks = TypeAdapter(list[QcCheckResult]).validate_json(qc_checks_path.read_bytes())
+    allowed = load_qc_reasons()
+    problems = [] if checks else ["qc_checks is empty"]
+    seen: set[str] = set()
+    for c in checks:
+        if c.prep_sample_idx != prep_sample_idx:
+            problems.append(
+                f"{c.check}: prep_sample_idx {c.prep_sample_idx}, expected {prep_sample_idx}"
+            )
+        if c.check in seen:
+            problems.append(f"{c.check}: duplicate check")
+        seen.add(c.check)
+        if c.reason is not None and c.reason not in allowed[c.check]:
+            problems.append(f"{c.check}: reason {c.reason!r} is not listed in qc_reasons.yml")
+    if problems:
+        raise ValueError(f"invalid qc_checks: {'; '.join(capped(problems, _MAX_REPORTED))}")
+    async with pool.acquire() as conn, conn.transaction():
+        ticket = await conn.fetchrow(
+            "SELECT mask_idx, alignment_idx FROM qiita.work_ticket WHERE work_ticket_idx = $1",
+            work_ticket_idx,
+        )
+        if ticket is None:
+            raise RuntimeError(f"no work_ticket row for work_ticket_idx={work_ticket_idx}")
+        # Checks exist only for a sequenced prep_sample (ordering invariant, as persist_qc_report).
+        if not await conn.fetchval(
+            "SELECT idx FROM qiita.sequenced_sample WHERE prep_sample_idx = $1", prep_sample_idx
+        ):
+            raise RuntimeError(f"no sequenced_sample row for prep_sample_idx={prep_sample_idx}")
+        producer = {"mask_idx": None, "alignment_idx": None}
+        if expected_producer is not QcProducer.NONE:
+            column = f"{expected_producer}_idx"
+            if ticket[column] is None:
+                raise RuntimeError(
+                    f"persist-qc-checks requires work_ticket {work_ticket_idx} to carry a "
+                    f"{column}; the column is NULL (the definition was deleted mid-flight)"
+                )
+            producer[column] = ticket[column]
+        return await upsert_qc_checks(
+            conn,
+            work_ticket_idx=work_ticket_idx,
+            **producer,
+            checks=checks,
+        )
 
 
 async def register_files(
@@ -2972,7 +3110,21 @@ async def finalize_mask_sample_gate(
     preceding register-files step), so there is no partial state to model — the gate
     goes straight to 'completed' via an idempotent upsert. Runs AFTER register-files
     so the gate never reads 'completed' before the masked reads are in DuckLake. A
-    workflow retried from the start re-runs this and re-affirms 'completed'.
+    workflow retried from the start re-runs this and re-affirms 'completed'. What the
+    write refuses: `_complete_mask_sample_gate`."""
+    async with pool.acquire() as conn, conn.transaction():
+        await _complete_mask_sample_gate(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
+    return {"mask_idx": mask_idx, "prep_sample_idx": prep_sample_idx}
+
+
+async def _complete_mask_sample_gate(
+    conn: asyncpg.Connection,
+    *,
+    mask_idx: int,
+    prep_sample_idx: int,
+) -> None:
+    """Write the `(mask_idx, prep_sample_idx)` gate row to 'completed' on the caller's
+    transaction.
 
     `mask_idx` is a config hash shared with the block path, so a sample can (in the
     pathological cross-path case) be masked by BOTH a per-sample ticket and an
@@ -2990,25 +3142,143 @@ async def finalize_mask_sample_gate(
     it, this path and a block plan could each read "no conflict" before either
     writes, and both would proceed (the cross-path double-mask). With the lock,
     whichever runs second sees the other's committed state and refuses here (or the
-    planner raises `BlockMaskResubmitError`)."""
-    async with pool.acquire() as conn, conn.transaction():
-        # Serialize against the block planner's create_mask_sample_pending for this
-        # footprint (contract: see lock_mask_sample_gate_advisory). Held to commit.
-        await lock_mask_sample_gate_advisory(
-            conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx
+    planner raises `BlockMaskResubmitError`).
+
+    Raises `MaskSampleInvalidated` when the row was withdrawn (see
+    `upsert_mask_sample_completed`)."""
+    # Serialize against the block planner's create_mask_sample_pending for this
+    # footprint (contract: see lock_mask_sample_gate_advisory). Held to commit.
+    await lock_mask_sample_gate_advisory(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
+    if await has_incomplete_covering_block(
+        conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx
+    ):
+        raise RuntimeError(
+            f"refusing to finalize the mask_sample gate for (mask={mask_idx}, "
+            f"prep_sample={prep_sample_idx}): a covering block is still masking the "
+            "same footprint under this mask_idx (cross-path double-mask). The block "
+            "path owns this gate — delete the conflicting block-mask (or the "
+            "per-sample duplicate) before masking the same config twice."
         )
-        if await has_incomplete_covering_block(
-            conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx
-        ):
-            raise RuntimeError(
-                f"refusing to finalize the mask_sample gate for (mask={mask_idx}, "
-                f"prep_sample={prep_sample_idx}): a covering block is still masking the "
-                "same footprint under this mask_idx (cross-path double-mask). The block "
-                "path owns this gate — delete the conflicting block-mask (or the "
-                "per-sample duplicate) before masking the same config twice."
-            )
-        await upsert_mask_sample_completed(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
-    return {"mask_idx": mask_idx, "prep_sample_idx": prep_sample_idx}
+    await upsert_mask_sample_completed(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
+
+
+async def complete_empty_mask_sample_in_tx(
+    conn: asyncpg.Connection,
+    *,
+    mask_idx: int,
+    prep_sample_idx: int,
+    current_work_ticket_idx: int | None,
+) -> int | None:
+    """Record a prep_sample that ingest found empty as masked under `mask_idx`, on the
+    caller's transaction, and return the ingest ticket that shows it was found empty.
+    Write nothing and return None when no ingest shows that: it has none, or its
+    newest did not end that way (`fetch_empty_ingest_tickets`, which defines
+    `current_work_ticket_idx`).
+
+    There are no reads to mask, so the pass-set is empty and complete: the gate goes
+    to 'completed' like any other finished mask, and consumers serve an empty
+    pass-set. The rows a finished mask would leave are written too, so a reader sees
+    the prep_sample like any other: all-zero read counts on its sequenced_sample,
+    and a zero per insert when the mask carries a SynDNA reference (the SynDNA
+    export refuses a completed prep_sample that has no count rows).
+
+    The record is read here, on the write's own transaction and under the
+    prep_sample's range lock (`lock_prep_sample_range`), so no caller writes the gate
+    without it and no range lands between the read and the commit. Raises
+    `MaskSampleInvalidated` when the gate row was withdrawn; the count writes go with
+    the caller's rollback. A prep_sample that later gains reads loses this record
+    (`clear_empty_mask_completions`)."""
+    require_transaction(conn)
+    # The gate lock, then the range lock, before any row write: the order the block
+    # planner takes them in, so the writers of this prep_sample queue rather than
+    # deadlock.
+    await lock_mask_sample_gate_advisory(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
+    await lock_prep_sample_range(conn, prep_sample_idx=prep_sample_idx)
+    proof = (
+        await fetch_empty_ingest_tickets(
+            conn,
+            prep_sample_idxs=[prep_sample_idx],
+            current_work_ticket_idx=current_work_ticket_idx,
+        )
+    ).get(prep_sample_idx)
+    if proof is None:
+        return None
+    ss_idx = await _update_sequenced_sample_read_counts(
+        conn, prep_sample_idx, raw=0, biological=0, quality_filtered=0, spikein=0
+    )
+    if ss_idx is None:
+        raise RuntimeError(
+            f"no sequenced_sample row for prep_sample_idx={prep_sample_idx}; a prep_sample "
+            "recorded as masked must be pooled (its 1:1 sequenced_sample created)"
+        )
+    syndna = await _mask_syndna_inserts(conn, mask_idx)
+    if syndna is not None:
+        _reference_idx, inserts = syndna
+        await replace_syndna_read_counts(
+            conn,
+            mask_idx=mask_idx,
+            prep_sample_idx=prep_sample_idx,
+            counts=dict.fromkeys(inserts, 0),
+        )
+    await _complete_mask_sample_gate(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
+    return proof
+
+
+async def complete_empty_mask_sample(
+    pool: asyncpg.Pool,
+    *,
+    mask_idx: int,
+    prep_sample_idx: int,
+    current_work_ticket_idx: int | None,
+) -> int | None:
+    """`complete_empty_mask_sample_in_tx` in a transaction of its own."""
+    async with pool.acquire() as conn, conn.transaction():
+        return await complete_empty_mask_sample_in_tx(
+            conn,
+            mask_idx=mask_idx,
+            prep_sample_idx=prep_sample_idx,
+            current_work_ticket_idx=current_work_ticket_idx,
+        )
+
+
+async def clear_empty_mask_completions(conn: asyncpg.Connection, *, prep_sample_idx: int) -> int:
+    """Undo `complete_empty_mask_sample_in_tx` for a prep_sample that is gaining reads,
+    on the caller's transaction; return the number of gate rows removed.
+
+    Run where a sequence_range is minted, on the mint's transaction. Until then the
+    prep_sample had no reads, so each 'completed' gate row it holds is an empty
+    completion, and left in place it would keep serving an empty pass-set over reads
+    that now exist. Its SynDNA zeros under those masks go with it, and its read
+    counts return to unset; masking the new reads writes all three again. An
+    'invalidated' row stays: a withdrawal stands until someone restores it.
+
+    Only reads arriving remove the record. A newer ingest that fails or has not yet
+    finished leaves a record written while an older ingest was the newest; the newer
+    ingest removes it here once it mints a range.
+
+    Takes `lock_prep_sample_range`, which says why."""
+    require_transaction(conn)
+    await lock_prep_sample_range(conn, prep_sample_idx=prep_sample_idx)
+    cleared = [
+        r["mask_idx"]
+        for r in await conn.fetch(
+            "DELETE FROM qiita.mask_sample WHERE prep_sample_idx = $1 AND state = $2"
+            " RETURNING mask_idx",
+            prep_sample_idx,
+            MASK_SAMPLE_COMPLETED,
+        )
+    ]
+    if cleared:
+        await conn.execute(
+            "DELETE FROM qiita.syndna_read_count"
+            " WHERE prep_sample_idx = $1 AND mask_idx = ANY($2::bigint[])",
+            prep_sample_idx,
+            cleared,
+        )
+        await _update_sequenced_sample_read_counts(
+            conn, prep_sample_idx, raw=None, biological=None, quality_filtered=None, spikein=None
+        )
+    return len(cleared)
 
 
 async def finalize_assembly_sample_gate(
@@ -3352,8 +3622,10 @@ LIBRARY: dict[str, Callable[..., Awaitable[Any]]] = {
     LibraryPrimitive.PLAN_SHARDS: plan_shards,
     LibraryPrimitive.FINALIZE_SHARD: finalize_shard,
     LibraryPrimitive.PERSIST_READ_METRICS: persist_read_metrics,
+    LibraryPrimitive.PERSIST_ENA_RUN_OUTCOMES: persist_ena_run_outcomes,
     LibraryPrimitive.PERSIST_SYNDNA_READ_COUNT: persist_syndna_read_count,
     LibraryPrimitive.PERSIST_QC_REPORT: persist_qc_report,
+    LibraryPrimitive.PERSIST_QC_CHECKS: persist_qc_checks,
     LibraryPrimitive.DELETE_READ_MASK_BLOCK: delete_read_mask_block,
     LibraryPrimitive.RECONCILE_BLOCK: reconcile_block,
     LibraryPrimitive.FINALIZE_MASK_SAMPLE: finalize_mask_sample_gate,
