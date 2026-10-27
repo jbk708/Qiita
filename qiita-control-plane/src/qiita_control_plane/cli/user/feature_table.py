@@ -52,7 +52,7 @@ from qiita_common.models import (
     ExportedIdentifierRequest,
     ExportedProcessingRequest,
 )
-from qiita_common.parquet import PARQUET_MEDIA_TYPE, PARQUET_OPTS, validate_parquet_path
+from qiita_common.parquet import PARQUET_MEDIA_TYPE, PARQUET_OPTS_TRANSFER, validate_parquet_path
 from qiita_common.taxonomy import TAXONOMY_SOURCE_TABLE
 
 if TYPE_CHECKING:
@@ -749,7 +749,7 @@ def _amplicon_sequences_copy_sql(path: Path, *, clearance: SequencesClearance) -
     return (
         f"COPY (SELECT f.feature AS feature_id, f.sequence, f.length FROM {FEATURE_RELATION} f"
         f" WHERE f.feature IN (SELECT feature_id FROM {ft.LABELLED_RELATION})"
-        f" ORDER BY f.feature) TO '{validate_parquet_path(path)}' ({PARQUET_OPTS})"
+        f" ORDER BY f.feature) TO '{validate_parquet_path(path)}' ({PARQUET_OPTS_TRANSFER})"
     )
 
 

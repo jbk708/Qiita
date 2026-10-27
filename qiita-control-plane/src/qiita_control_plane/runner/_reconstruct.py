@@ -440,7 +440,9 @@ async def _dispatch_action(
                     reason=f"{type(exc).__name__}: {exc!s}"[:2000],
                 )
                 _LOG.error("failed after %.0fs: %s", time.monotonic() - started, failure.reason)
-                write_receipt(logs_dir, receipt(failure.kind.value, entry.name, reason=failure.reason))
+                write_receipt(
+                    logs_dir, receipt(failure.kind.value, entry.name, reason=failure.reason)
+                )
                 await _best_effort_record_failed(
                     pool,
                     work_ticket_idx=work_ticket_idx,

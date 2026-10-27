@@ -306,7 +306,16 @@ def test_run_accessions_are_accepted_positionally_and_posted_mixed(monkeypatch, 
     monkeypatch.setenv("QIITA_TOKEN", "qk_test")
 
     parser = _build_parser()
-    ns = parser.parse_args(["submit-ena-import", "PRJEB11419", "ERR1074767", "--no-watch"])
+    ns = parser.parse_args(
+        [
+            "--base-url",
+            "https://q.example.test",
+            "submit-ena-import",
+            "PRJEB11419",
+            "ERR1074767",
+            "--no-watch",
+        ]
+    )
 
     assert ns.handler(ns, parser) == 0
     assert calls[0][2] == {"accessions": ["PRJEB11419", "ERR1074767"]}
@@ -324,7 +333,16 @@ def test_run_accessions_are_accepted_from_file(tmp_path, monkeypatch, patch_asyn
     monkeypatch.setenv("QIITA_TOKEN", "qk_test")
 
     parser = _build_parser()
-    ns = parser.parse_args(["submit-ena-import", "--from-file", str(accession_file), "--no-watch"])
+    ns = parser.parse_args(
+        [
+            "--base-url",
+            "https://q.example.test",
+            "submit-ena-import",
+            "--from-file",
+            str(accession_file),
+            "--no-watch",
+        ]
+    )
 
     assert ns.handler(ns, parser) == 0
     assert calls[0][2] == {"accessions": ["ERR1074767", "SRR1234567"]}
@@ -843,7 +861,15 @@ def test_watch_follows_an_ungrouped_run_list_item_as_it_splits_into_study_items(
 
     parser = _build_parser()
     ns = parser.parse_args(
-        ["submit-ena-import", "ERR1", "ERR2", "--poll-interval-seconds", "0.001"]
+        [
+            "--base-url",
+            "https://q.example.test",
+            "submit-ena-import",
+            "ERR1",
+            "ERR2",
+            "--poll-interval-seconds",
+            "0.001",
+        ]
     )
     rc = ns.handler(ns, parser)
 

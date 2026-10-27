@@ -355,7 +355,13 @@ async def _dispatch_action_raising(
     monkeypatch, exc: BaseException, name: str = "register-files"
 ) -> tuple[BaseException, list]:
     """Run `_dispatch_action` with its primitive raising `exc` and the progress-row
-    writes stubbed; returns what it raised and the failure kinds it recorded."""
+    writes stubbed; returns what it raised and the failure kinds it recorded.
+
+    A real workspace is given because `_dispatch_action` writes each action's step log
+    under it; the stubbed primitive never runs, so only the log dir is touched."""
+    import shutil
+    import tempfile
+
     from qiita_common.actions import WorkflowAction
 
     from qiita_control_plane.runner import _reconstruct
@@ -375,12 +381,13 @@ async def _dispatch_action_raising(
     monkeypatch.setattr(_reconstruct, "_best_effort_record_failed", _record_failed)
     monkeypatch.setattr(_reconstruct, "_run_action_primitive", _raise)
     entry = WorkflowAction(kind="action", name=name, inputs=[], outputs=[])
+    workspace = Path(tempfile.mkdtemp(prefix="dispatch-action-"))
     try:
         await _reconstruct._dispatch_action(
             object(),
             entry,
             {},
-            Path("/unused"),
+            workspace,
             {"kind": "prep_sample", "prep_sample_idx": 1},
             work_ticket_idx=1,
             step_index=0,
@@ -390,6 +397,8 @@ async def _dispatch_action_raising(
         )
     except BaseException as raised:
         return raised, recorded
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
     raise AssertionError("_dispatch_action did not raise")
 
 

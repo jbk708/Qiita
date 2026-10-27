@@ -41,7 +41,8 @@ from qiita_common.taxonomic_profile_constants import (
 )
 
 from ..miint import (
-    PARQUET_OPTS,
+    PARQUET_OPTS_AT_REST,
+    PARQUET_OPTS_TRANSFER,
     apply_duckdb_settings,
     duckdb_tmp_dir,
     open_miint_conn,
@@ -289,14 +290,14 @@ async def execute(inputs: Inputs, workspace: Path) -> dict[str, Path]:
             "         adjusted_ani, eff_cov"
             "  FROM profile JOIN profiled_genome g USING (genome_name)"
             "  ORDER BY prep_sample_idx, genome_idx"
-            f") TO '{profile_out}' ({PARQUET_OPTS})"
+            f") TO '{profile_out}' ({PARQUET_OPTS_AT_REST})"
         )
         conn.execute(
             "COPY ("
             f"  SELECT {sample_col}::BIGINT AS prep_sample_idx,"
             "         count(DISTINCT genome_name)::INTEGER AS genome_count"
             f"  FROM profile GROUP BY 1 ORDER BY 1"
-            f") TO '{counts_out}' ({PARQUET_OPTS})"
+            f") TO '{counts_out}' ({PARQUET_OPTS_TRANSFER})"
         )
 
     return {"staging_dir": staging, "profile_counts": Path(counts_out)}
