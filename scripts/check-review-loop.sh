@@ -5,6 +5,8 @@
 #   LABELS    comma-joined PR labels
 #   HEAD_SHA  the PR's head commit (default: HEAD)
 #   BASE_SHA  the base branch tip (default: origin/main)
+#   PR_NUMBER the PR's number (optional; without it, a commit writing the PR number
+#             into the changelog and checklist tags has to be named like any other)
 # Run from a checkout whose history holds both.
 #
 # Passes when the 'no-agent-review' label is present, or when the description has a
@@ -61,6 +63,50 @@ if git merge-base --is-ancestor "$sha" "$base"; then
     fail "'Reviewed at: ${sha}' is a commit of the base branch, not one of this PR's."
 fi
 
+# Succeeds when the commit only writes this PR's number into its changelog and
+# checklist tags: it modifies (no add, delete or rename) files under
+# docs/changelog-pending/ and DEPLOY_CHECKLIST.md alone, adds at least one
+# ` (#PR_NUMBER)`, adds no placeholder tag (` (#TBD)`, ` (#<branch>)`), and leaves each
+# file byte-identical once each ` (#PR_NUMBER)` and placeholder tag is dropped.
+# Comparing whole files, not changed lines, keeps a line moved in the same commit from
+# passing. Without PR_NUMBER (a run outside CI) nothing is exempt.
+tags_pr_number() {
+    local commit=$1 number=${PR_NUMBER:-} statuses status path tag placeholder strip
+    local old_tags new_tags old_placeholders new_placeholders old_hash new_hash added=0
+    [[ "$number" =~ ^[0-9]+$ ]] || return 1
+    tag=" \\(#${number}\\)"
+    placeholder=' \(#[A-Za-z][A-Za-z0-9._/-]*\)'
+    strip="s@${tag}@@g; s@${placeholder}@@g"
+    # --no-renames, so a file renamed into an allowed path lists its source as deleted.
+    statuses=$(git diff --no-ext-diff --no-renames --name-status "${commit}^1" "$commit")
+    [ -n "$statuses" ] || return 1
+    while IFS=$'\t' read -r status path; do
+        [ "$status" = M ] || return 1
+        case "$path" in DEPLOY_CHECKLIST.md | docs/changelog-pending/*) ;; *) return 1 ;; esac
+        # Every read is a command substitution whose pipeline fails under pipefail
+        # (`grep` exiting 1 for "no match" is let through, an error is not), so a read
+        # that fails returns 1 instead of passing as an empty file. Under the C locale,
+        # macOS sed reads bytes instead of failing on non-UTF-8 input.
+        old_tags=$(git show "${commit}^1:${path}" | { grep -oE "$tag" || [ $? -eq 1 ]; } | wc -l) \
+            || return 1
+        new_tags=$(git show "${commit}:${path}" | { grep -oE "$tag" || [ $? -eq 1 ]; } | wc -l) \
+            || return 1
+        [ "$new_tags" -gt "$old_tags" ] && added=1
+        old_placeholders=$(git show "${commit}^1:${path}" \
+            | { grep -oE "$placeholder" || [ $? -eq 1 ]; } | sort) || return 1
+        new_placeholders=$(git show "${commit}:${path}" \
+            | { grep -oE "$placeholder" || [ $? -eq 1 ]; } | sort) || return 1
+        [ -z "$(comm -13 <(printf '%s\n' "$old_placeholders") \
+            <(printf '%s\n' "$new_placeholders"))" ] || return 1
+        old_hash=$(git show "${commit}^1:${path}" | sed -E "$strip" | git hash-object --stdin) \
+            || return 1
+        new_hash=$(git show "${commit}:${path}" | sed -E "$strip" | git hash-object --stdin) \
+            || return 1
+        [ "$old_hash" = "$new_hash" ] || return 1
+    done <<<"$statuses"
+    [ "$added" -eq 1 ]
+}
+
 # Every commit the branch added after the reviewed one must be named on the same
 # line, by its sha or a prefix of at least 7 characters, so a commit no round read is
 # declared there rather than passing under an earlier sha. The walk follows the
@@ -68,6 +114,8 @@ fi
 # base commits, and is itself the commit to name when it brings in others: a pull of
 # work pushed from elsewhere, or another PR's branch merged before that PR was
 # squash-merged (whose commits then never reach the base under their own shas).
+# A commit that only writes the PR's number into its changelog entry and deploy
+# checklist lines, once the PR exists, is exempt too (`tags_pr_number`).
 # Assigned before the loop, not read through `< <(...)`, so a git failure aborts the
 # check instead of reading as "no later commits".
 later=$(git rev-list --first-parent "${sha}..${head}" --not "$base")
@@ -78,6 +126,8 @@ for commit in $later; do
         # Every parent but the first, so an octopus merge's third parent counts too.
         brought=$(git rev-list "${commit}^@" --not "${commit}^1" "$base")
         [ -n "$brought" ] || continue
+    elif LC_ALL=C tags_pr_number "$commit"; then
+        continue
     fi
     found=0
     for prefix in $named; do
