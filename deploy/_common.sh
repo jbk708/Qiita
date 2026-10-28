@@ -264,6 +264,493 @@ read_env_var() {
     ( set +eu; set -a; source "$env_file" >/dev/null 2>&1; set +a; printf '%s' "${!var:-}" )
 }
 
+# read_env_var, blind to the caller's environment. The subshell that sources the
+# file inherits it, so read_env_var returns a KEY exported by whoever runs the script
+# when the file does not assign it. $1 = env file, $2 = KEY.
+read_env_file_var() {
+    ( unset "$2"; read_env_var "$1" "$2" )
+}
+
+# Does the env file itself assign KEY, even to an empty value? read_env_var cannot
+# tell "unset" from "set to empty"; a caller that must reject an empty assignment
+# asks this first. KEY in the caller's environment does not count. $1 = env file,
+# $2 = KEY.
+env_file_sets_var() {
+    local env_file="$1" var="$2"
+    # shellcheck disable=SC1090,SC1091
+    ( unset "$var"; set +eu; set -a; source "$env_file" >/dev/null 2>&1; set +a; [ -n "${!var+x}" ] )
+}
+
+# --- Data-plane topology ------------------------------------------------------
+# Which data-plane instances this host runs, which other hosts' data planes nginx
+# also balances to, and which address the local instances listen on are host
+# settings in $DP_ENV:
+#
+#   QIITA_DATA_PLANE_PORTS      this host's instances, e.g. "50051 50052". Each port
+#                               is the instance specifier of qiita-data-plane@.service.
+#                               Default 50051.
+#   QIITA_DATA_PLANE_PEERS      data planes on other hosts, as host:port. Default none.
+#   QIITA_DATA_PLANE_BIND_HOST  the address this host's instances listen on. Default
+#                               127.0.0.1.
+#
+# activate.sh renders the nginx upstream from them and enables/restarts one unit per
+# port on every deploy; verify.sh health-checks the rendered members. Because they
+# live in the file, a routine `make redeploy` reproduces the topology the host was
+# given. They are read from the file only, never the deploy's environment, so what
+# a deploy renders and enables is what the file says.
+# docs/runbooks/data-plane-scaling.md is the operator procedure.
+
+# The address and port of the loopback listener nginx serves the qiita_data_plane
+# upstream on for on-host clients.
+QIITA_DATA_PLANE_LB_HOST=127.0.0.1
+QIITA_DATA_PLANE_LB_PORT=50050
+
+# The commit this host's data planes were deployed from, as BUILD_COMMIT (activate.sh
+# writes it; the qiita-data-plane@ units read it), and the health service name a
+# data plane running that commit answers SERVING for (BUILD_SERVICE_PREFIX in
+# qiita-data-plane/src/main.rs). verify.sh asks every upstream member for it, so a
+# member deployed from another commit, or not restarted, fails.
+QIITA_DATA_PLANE_BUILD_ENV=/opt/qiita/data-plane/build.env
+# QIITA_BUILD_SHA, as the BUILD_COMMIT activate.sh writes: empty when it is unset, an
+# error when it is not a full commit, on which a data plane refuses to boot
+# (build_service_name in qiita-data-plane/src/main.rs).
+qiita_data_plane_build_commit() {
+    local sha=${QIITA_BUILD_SHA:-}
+    if [ -n "$sha" ] && ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
+        echo "ERROR: QIITA_BUILD_SHA='$sha' is not a full 40-character lowercase commit sha, so the data planes would not boot on it" >&2
+        return 1
+    fi
+    printf '%s' "$sha"
+}
+qiita_data_plane_build_service() {
+    printf 'qiita-data-plane/build/%s' "$1"
+}
+
+# Succeeds when $DP_ENV is absent or unreadable (the defaults apply) or parses as
+# shell. read_env_var discards the file's errors, so without this an unclosed quote
+# would read every topology key as unset and deploy the default topology.
+qiita_dp_env_parses() {
+    [ -r "$DP_ENV" ] || return 0
+    bash -n "$DP_ENV" 2>/dev/null && return 0
+    echo "ERROR: $DP_ENV does not parse as shell (bash -n), so the data-plane topology cannot be read from it" >&2
+    return 1
+}
+
+# Is $1 a plain TCP port (1-65535), written without a leading zero? $2 is a
+# caller-supplied label used verbatim in the error. A leading zero is refused
+# because `050051` and `50051` would name two systemd units for one port.
+qiita_valid_tcp_port() {
+    local port="$1" label="$2"
+    case "$port" in
+        ''|*[!0-9]*)
+            echo "ERROR: $label is not a number" >&2
+            return 1
+            ;;
+        0*)
+            echo "ERROR: $label is not a valid TCP port (1-65535, no leading zero)" >&2
+            return 1
+            ;;
+    esac
+    if [ "$port" -gt 65535 ]; then
+        echo "ERROR: $label is not a valid TCP port (1-65535, no leading zero)" >&2
+        return 1
+    fi
+}
+
+# Is $1 exactly four decimal octets, each 0-255 and written without a leading zero?
+# A leading zero is refused because glibc's inet_aton reads `010` as octal 8, so
+# nginx and the data plane could disagree about which address `010.0.0.1` names.
+qiita_is_ipv4_literal() {
+    local addr="$1" o1 o2 o3 o4 o
+    # Exactly four dot-separated runs of digits, nothing before or after.
+    [[ "$addr" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS=. read -r o1 o2 o3 o4 <<<"$addr"
+    for o in "$o1" "$o2" "$o3" "$o4"; do
+        case "$o" in
+            0?*) return 1 ;;
+        esac
+        # Length first: `[` prints "integer expression expected" past int64.
+        if [ "${#o}" -gt 3 ] || [ "$o" -gt 255 ]; then
+            return 1
+        fi
+    done
+}
+
+# Is $1 an IPv4 address in 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16? Data-plane
+# traffic is unencrypted gRPC (see deploy/nginx/qiita.conf), so neither a peer nor
+# an instance's listener may be on a public address.
+qiita_is_private_ipv4() {
+    local o1 o2 rest
+    qiita_is_ipv4_literal "$1" || return 1
+    IFS=. read -r o1 o2 rest <<<"$1"
+    [ "$o1" -eq 10 ] && return 0
+    [ "$o1" -eq 172 ] && [ "$o2" -ge 16 ] && [ "$o2" -le 31 ] && return 0
+    [ "$o1" -eq 192 ] && [ "$o2" -eq 168 ] && return 0
+    return 1
+}
+
+# The systemd unit of each local data-plane instance, one per port in `$1` (the
+# list qiita_data_plane_ports returns), space-separated.
+qiita_data_plane_units() {
+    local port units=()
+    for port in $1; do
+        units+=("qiita-data-plane@${port}")
+    done
+    echo "${units[*]}"
+}
+
+# The local qiita-data-plane@ units whose port is not in `$1` (the list
+# qiita_data_plane_ports returns) and that are running or enabled, one
+# "<unit> <active>/<enabled>" per line; docs/runbooks/data-plane-scaling.md, "Fewer
+# instances on this host", says why one is a problem. `list-units --all` includes an
+# instance that is enabled but stopped, and leaves out one that is neither (systemd
+# 257). Fails when systemctl cannot list the units.
+qiita_data_plane_stray_units() {
+    local configured=" " port listing unit active enabled
+    for port in $1; do configured+="$port "; done
+    listing=$(systemctl list-units --all --no-legend --plain 'qiita-data-plane@*.service') || {
+        echo "ERROR: systemctl could not list the qiita-data-plane@ units" >&2
+        return 1
+    }
+    while read -r unit _ active _; do
+        [ -n "$unit" ] || continue
+        port=${unit#qiita-data-plane@}
+        port=${port%.service}
+        case "$configured" in *" $port "*) continue ;; esac
+        enabled=$(systemctl is-enabled "$unit" 2>/dev/null) || true
+        if [ "$enabled" = enabled ] || { [ "$active" != inactive ] && [ "$active" != failed ]; }; then
+            printf '%s %s/%s\n' "$unit" "$active" "${enabled:-unknown}"
+        fi
+    done <<<"$listing"
+}
+
+# What the deploy does with the units qiita_data_plane_stray_units finds for the
+# ports in `$1`. With QIITA_DP_DISABLE_REMOVED=1 in the deploy's environment, prints
+# their names, space-separated, for activate.sh to stop and disable. Without it,
+# fails naming each one, so the deploy stops before installing anything rather than
+# leave an instance on the previous build. Prints nothing when there are none.
+qiita_data_plane_units_to_disable() {
+    local strays line
+    case "${QIITA_DP_DISABLE_REMOVED:-}" in
+        ''|1) ;;
+        *) echo "ERROR: QIITA_DP_DISABLE_REMOVED must be 1 or unset, not '$QIITA_DP_DISABLE_REMOVED'" >&2; return 1 ;;
+    esac
+    strays=$(qiita_data_plane_stray_units "$1") || return 1
+    [ -n "$strays" ] || return 0
+    if [ "${QIITA_DP_DISABLE_REMOVED:-}" = 1 ]; then
+        awk '{print $1}' <<<"$strays" | paste -sd ' ' -
+        return 0
+    fi
+    echo "ERROR: data-plane units running or enabled outside QIITA_DATA_PLANE_PORTS ($1):" >&2
+    while IFS= read -r line; do echo "  $line" >&2; done <<<"$strays"
+    echo "  Re-run the deploy with QIITA_DP_DISABLE_REMOVED=1 to stop and disable them, add" >&2
+    echo "  their ports back to QIITA_DATA_PLANE_PORTS, or run 'systemctl disable --now <unit>'." >&2
+    return 1
+}
+
+# The local instance ports, whitespace-separated: QIITA_DATA_PLANE_PORTS in $DP_ENV,
+# else 50051; set but blank is an error. Each port becomes a systemd unit name, an
+# nginx `server` line and a health-check target, so a malformed list fails here
+# rather than rendering broken config. Also refused: the loopback listener's port,
+# which nginx binds, and a repeated port, which would render one member twice.
+qiita_data_plane_ports() {
+    local ports="" port seen=" "
+    qiita_dp_env_parses || return 1
+    if [ -r "$DP_ENV" ] && env_file_sets_var "$DP_ENV" QIITA_DATA_PLANE_PORTS; then
+        ports=$(read_env_file_var "$DP_ENV" QIITA_DATA_PLANE_PORTS)
+    else
+        ports=50051
+    fi
+    # All whitespace, not just spaces: a tab-only value would otherwise validate
+    # nothing and be echoed back as the list.
+    [ -n "${ports//[[:space:]]/}" ] || { echo "ERROR: QIITA_DATA_PLANE_PORTS is set but empty in $DP_ENV" >&2; return 1; }
+    for port in $ports; do
+        qiita_valid_tcp_port "$port" "QIITA_DATA_PLANE_PORTS entry '$port'" || return 1
+        if [ "$port" = "$QIITA_DATA_PLANE_LB_PORT" ]; then
+            echo "ERROR: QIITA_DATA_PLANE_PORTS entry '$port' is the port nginx's loopback listener binds" >&2
+            return 1
+        fi
+        case "$seen" in
+            *" $port "*)
+                echo "ERROR: QIITA_DATA_PLANE_PORTS lists '$port' more than once" >&2
+                return 1
+                ;;
+        esac
+        seen+="$port "
+    done
+    printf '%s' "$ports"
+}
+
+# Data planes on other hosts, as a space-separated `host:port` list:
+# QIITA_DATA_PLANE_PEERS in $DP_ENV, else none.
+# Upstream members only — this deploy neither starts, restarts, nor upgrades them.
+# PORTS and PEERS are separate lists because only PORTS names systemd units here.
+#
+# Each entry is written verbatim into an nginx `server` directive, so the shape is
+# validated: a stray `;` or `}` would otherwise inject config. A host made only of
+# digits and dots must be a valid IPv4 address — nginx would otherwise either fail
+# to resolve it at config load (`999.999.999.999`) or accept an abbreviated form as
+# a different address (`1.2.3` is 1.2.0.3).
+qiita_data_plane_peers() {
+    local peers="" peer host port
+    qiita_dp_env_parses || return 1
+    [ -r "$DP_ENV" ] && peers=$(read_env_file_var "$DP_ENV" QIITA_DATA_PLANE_PEERS)
+    [ -n "${peers//[[:space:]]/}" ] || { printf ''; return 0; }
+    for peer in $peers; do
+        case "$peer" in
+            # Bracketed IPv6 literal: [::1]:50051
+            \[*\]:*)
+                host="${peer%]:*}]"
+                port="${peer##*]:}"
+                case "${host:1:${#host}-2}" in
+                    ''|*[!0-9A-Fa-f:]*)
+                        echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' has a malformed IPv6 host" >&2
+                        return 1
+                        ;;
+                esac
+                ;;
+            # DNS name or IPv4, exactly one colon.
+            *:*:*)
+                echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' has more than one ':'" \
+                     "(bracket an IPv6 literal, e.g. [::1]:50051)" >&2
+                return 1
+                ;;
+            *:*)
+                host="${peer%:*}"
+                port="${peer##*:}"
+                case "$host" in
+                    ''|*[!A-Za-z0-9._-]*)
+                        echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' has a malformed host" >&2
+                        return 1
+                        ;;
+                    *[!0-9.]*) ;;
+                    *)
+                        qiita_is_ipv4_literal "$host" || {
+                            echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' is not a valid IPv4 address" >&2
+                            return 1
+                        }
+                        ;;
+                esac
+                ;;
+            *)
+                echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' is not host:port" >&2
+                return 1
+                ;;
+        esac
+        qiita_valid_tcp_port "$port" "QIITA_DATA_PLANE_PEERS entry '$peer' port '$port'" || return 1
+    done
+    printf '%s' "$peers"
+}
+
+# The address this host's instances listen on: QIITA_DATA_PLANE_BIND_HOST in $DP_ENV,
+# else 127.0.0.1. Read from the file only, never the deploy's environment:
+# qiita-data-plane@.service builds LISTEN_ADDR from the same key through
+# EnvironmentFile=, so a value the deploy saw but the file lacks would render
+# upstream members no instance listens on. An IPv4 address naming one interface,
+# loopback (127.0.0.0/8) or private (qiita_is_private_ipv4), never 0.0.0.0 or a
+# public address: traffic between nginx and the instances is unencrypted. A host
+# other than 127.0.0.1 is how a peer host's instances become reachable from the
+# host that balances to them.
+qiita_data_plane_bind_host() {
+    local host=""
+    qiita_dp_env_parses || return 1
+    if [ -r "$DP_ENV" ] && env_file_sets_var "$DP_ENV" QIITA_DATA_PLANE_BIND_HOST; then
+        host=$(read_env_file_var "$DP_ENV" QIITA_DATA_PLANE_BIND_HOST)
+        [ -n "$host" ] || { echo "ERROR: QIITA_DATA_PLANE_BIND_HOST is set but empty in $DP_ENV" >&2; return 1; }
+    else
+        host=127.0.0.1
+    fi
+    qiita_is_ipv4_literal "$host" || {
+        echo "ERROR: QIITA_DATA_PLANE_BIND_HOST '$host' in $DP_ENV is not an IPv4 address" >&2
+        return 1
+    }
+    [ "$host" != 0.0.0.0 ] || {
+        echo "ERROR: QIITA_DATA_PLANE_BIND_HOST must name one interface, not 0.0.0.0" >&2
+        return 1
+    }
+    case "$host" in
+        127.*) ;;
+        *)
+            qiita_is_private_ipv4 "$host" || {
+                echo "ERROR: QIITA_DATA_PLANE_BIND_HOST '$host' is neither loopback nor a private address" \
+                     "(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)" >&2
+                return 1
+            }
+            ;;
+    esac
+    printf '%s' "$host"
+}
+
+# Abort unless every address a peer names is private (qiita_is_private_ipv4).
+# $1 = a validated `host:port` entry.
+#
+# A hostname is resolved with `getent ahosts`, which lists every address nginx
+# could balance to; one public address among them fails the peer. activate.sh
+# calls this before installing anything, so a name that does not resolve also
+# fails here rather than at nginx's config load. Without getent nothing can be
+# checked, so a hostname fails too.
+qiita_assert_peer_private() {
+    local peer="$1" host addrs addr
+    case "$peer" in
+        \[*\]:*)
+            echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' is IPv6; a peer must be a private IPv4 address" >&2
+            return 1
+            ;;
+        *:*) host="${peer%:*}" ;;
+        *)   echo "ERROR: '$peer' is not host:port" >&2; return 1 ;;
+    esac
+    if qiita_is_ipv4_literal "$host"; then
+        addrs="$host"
+    else
+        if ! command -v getent >/dev/null 2>&1; then
+            echo "ERROR: getent unavailable — cannot check peer '$host' resolves to a private address" >&2
+            return 1
+        fi
+        if ! addrs=$(getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u) || [ -z "$addrs" ]; then
+            echo "ERROR: QIITA_DATA_PLANE_PEERS host '$host' does not resolve" >&2
+            return 1
+        fi
+    fi
+    for addr in $addrs; do
+        qiita_is_private_ipv4 "$addr" || {
+            echo "ERROR: QIITA_DATA_PLANE_PEERS entry '$peer' reaches $addr, not a private address" \
+                 "(10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)" >&2
+            return 1
+        }
+    done
+}
+
+# The deployed nginx config.
+QIITA_NGINX_CONF=/etc/nginx/conf.d/qiita.conf
+
+# The certificate and key the 443 server block in deploy/nginx/qiita.conf names;
+# without them `nginx -t` fails.
+QIITA_NGINX_TLS_CERT=/etc/ssl/certs/qiita.crt
+QIITA_NGINX_TLS_KEY=/etc/ssl/private/qiita.key
+qiita_nginx_tls_present() {
+    [ -r "$QIITA_NGINX_TLS_CERT" ] && [ -r "$QIITA_NGINX_TLS_KEY" ]
+}
+
+# Render the nginx config template $1 into $2: the server name $3, the loopback
+# listener's port, and the qiita_data_plane upstream — one member per local port in
+# $5 at the bind host $4, then each peer in $6, verbatim. $4-$6 come from the
+# validators above. Fails if any `__QIITA_…__` placeholder survives.
+#
+# The upstream is spliced in with `sed /pattern/r` because it is multi-line. sed
+# writes to a new file rather than editing in place, so the same function runs
+# under GNU sed on the deploy host and BSD sed on a macOS dev box.
+#
+# Each step checks its own status: qiita_render_and_test_nginx_conf calls this as
+# `… || {…}`, where bash ignores errexit for the whole body, so an unchecked `sed`
+# on a missing template would install an empty file, which `nginx -t` accepts
+# (nginx 1.26.3, Rocky 10).
+qiita_render_nginx_conf() {
+    local template="$1" dest="$2" server_name="$3" bind_host="$4" ports="$5" peers="$6"
+    local members port peer lines=""
+    # Built in a variable and written once, so the write's status is the one checked.
+    for port in $ports; do
+        lines+="    server $bind_host:$port;"$'\n'
+    done
+    for peer in $peers; do
+        lines+="    server $peer;"$'\n'
+    done
+    members=$(mktemp) || return 1
+    if ! printf '%s' "$lines" >"$members"; then
+        rm -f "$members"
+        return 1
+    fi
+    if ! sed -e "s/__QIITA_HOSTNAME__/${server_name}/g" \
+        -e "s/__QIITA_DATA_PLANE_LB_HOST__/${QIITA_DATA_PLANE_LB_HOST}/g" \
+        -e "s/__QIITA_DATA_PLANE_LB_PORT__/${QIITA_DATA_PLANE_LB_PORT}/g" \
+        -e "/__QIITA_DATA_PLANE_UPSTREAM__/r $members" \
+        -e "/__QIITA_DATA_PLANE_UPSTREAM__/d" \
+        "$template" >"$dest.tmp"; then
+        echo "ERROR: could not render $template; $dest left as it was" >&2
+        rm -f "$members" "$dest.tmp"
+        return 1
+    fi
+    rm -f "$members"
+    if grep -n '__QIITA_[A-Z_]*__' "$dest.tmp" >&2; then
+        echo "ERROR: placeholder left unrendered in $template (lines above)" >&2
+        rm -f "$dest.tmp"
+        return 1
+    fi
+    mv "$dest.tmp" "$dest"
+}
+
+# qiita_render_nginx_conf with the same arguments, then `nginx -t`. When nginx
+# rejects the rendered file, the file it replaced is put back (or the new one
+# removed, if there was none) and this fails: nginx refuses to start on a config
+# `nginx -t` rejects, so a rejected file left in conf.d would stop nginx at its next
+# start. The copy is `$2.previous`, a name nginx's conf.d/*.conf include skips.
+qiita_render_and_test_nginx_conf() {
+    local dest="$2" previous="$2.previous"
+    if [ -e "$dest" ]; then
+        cp -p "$dest" "$previous" || return 1
+    fi
+    qiita_render_nginx_conf "$@" || { rm -f "$previous"; return 1; }
+    if nginx -t; then
+        rm -f "$previous"
+        return 0
+    fi
+    if [ -e "$previous" ]; then
+        mv "$previous" "$dest"
+        echo "ERROR: nginx -t rejected the rendered $dest; the file it replaced is back in place" >&2
+    else
+        rm -f "$dest"
+        echo "ERROR: nginx -t rejected the rendered $dest; removed it (there was no previous file)" >&2
+    fi
+    return 1
+}
+
+# The data-plane upstream members in a rendered config, one per line. $1 = config
+# path (default $QIITA_NGINX_CONF). verify.sh health-checks these rather than
+# re-deriving the list from $DP_ENV or the environment, so it checks the last render
+# activate.sh kept (qiita_render_and_test_nginx_conf covers a rejected one). That is
+# what nginx serves unless the deploy stopped between the render and its `systemctl
+# reload nginx`, skipped the reload for lack of TLS material, or the reload did not
+# apply: `systemctl reload nginx` returns 0 when the config passes `nginx -t` but the
+# running master cannot apply it, such as a listen address it cannot bind, and nginx
+# keeps serving the old config (nginx 1.26.3, Rocky 10).
+#
+# Three outcomes, kept distinct:
+#   0 — members on stdout.
+#   1 — no config to read (first deploy, before nginx was configured). The caller
+#       falls back to the $DP_ENV lists.
+#   2 — the config is there but no members parsed (block renamed, file truncated).
+#       The caller must not fall back: the fallback yields the single default port
+#       whatever the host runs, so a broken parse would pass as one green row.
+qiita_data_plane_rendered_members() {
+    local conf="${1:-$QIITA_NGINX_CONF}" members
+    [ -r "$conf" ] || return 1
+    # Bounded to the qiita_data_plane block: qiita_control_plane is a sibling
+    # upstream in the same file. $2, not the rest of the line: a `server` line may
+    # carry parameters (`server 127.0.0.1:50051 max_fails=3;`).
+    members=$(awk '
+        /^[[:space:]]*upstream[[:space:]]+qiita_data_plane[[:space:]]*\{/ { inblock = 1; next }
+        inblock && /^[[:space:]]*\}/                                      { inblock = 0 }
+        inblock && /^[[:space:]]*server[[:space:]]/ {
+            addr = $2
+            sub(/;.*$/, "", addr)
+            if (addr != "") print addr
+        }
+    ' "$conf")
+    if [ -z "$members" ]; then
+        echo "ERROR: $conf has no 'upstream qiita_data_plane' members" >&2
+        return 2
+    fi
+    printf '%s\n' "$members"
+}
+
+# verify.sh's row label for upstream member $1, given this host's bind host $2:
+# a local instance by port, a peer by host:port.
+qiita_data_plane_member_label() {
+    case "$1" in
+        "$2":*) printf 'health/data-plane@%s' "${1##*:}" ;;
+        *)      printf 'health/data-plane-peer@%s' "$1" ;;
+    esac
+}
+
 # Split the password out of a libpq connection string — key=value form
 # ("host=… user=… password=…") or postgres:// URI form — so a caller can hand it
 # to libpq through PGPASSFILE instead of leaving it in a SQL file or, worse, on a
@@ -504,13 +991,13 @@ qiita_require_lake_data_path() {
     fi
 }
 
-# Wait until the data plane `$1` (a systemd unit, env file `$2`) has nothing in
+# Wait until the data-plane units `$2...` (env file `$1`) have nothing in
 # flight, for up to QIITA_DP_IDLE_WAIT_S seconds (default: the unit's
 # TimeoutStopSec, deploy/systemd/qiita-data-plane@.service; 0 skips the wait), then
 # return 0 whether or not it went idle: the data plane keeps serving while this
 # waits, so under steady load it may not go idle, and its drain lets what is still
-# running finish. Returns at once when the env file is absent (first deploy) or the
-# unit has no main process. Exits non-zero, before any restart, when
+# running finish. Returns at once when the env file is absent (first deploy) or no
+# unit has a main process. Exits non-zero, before any restart, when
 # QIITA_DP_IDLE_WAIT_S is not a whole number or the catalog query fails.
 #
 # In flight, as the data plane already exposes it: a DoGet stream or a
@@ -518,11 +1005,15 @@ qiita_require_lake_data_path() {
 # while an idle data plane's sessions are `idle`, and a DoPut holds its
 # `upload.parquet.partial` open (all measured against a running data plane, macOS).
 # A read export writes through a `.partial` too, so it counts as well. Open files
-# are found through /proc/<pid>/fd (the match measured in a Linux container). The
-# catalog query connects with the data plane's own role, which is what lets it see
-# those sessions' state; a lake-gc or lake-shell session under that role counts too.
+# are found through each unit's /proc/<pid>/fd (the match measured in a Linux
+# container). The catalog query connects with the data plane's own role, which is
+# what lets it see those sessions' state; it counts the sessions of every instance
+# on the catalog, a peer host's included, and a lake-gc or lake-shell session under
+# that role counts too.
 wait_for_data_plane_idle() {
-    local unit=$1 env_file=$2
+    local env_file=$1
+    shift
+    local unit_names="$*"
     local wait_s=${QIITA_DP_IDLE_WAIT_S:-3900}
     case $wait_s in
         '' | *[!0-9]*)
@@ -533,15 +1024,18 @@ wait_for_data_plane_idle() {
     # Base 10, so a leading zero is not read as octal.
     wait_s=$((10#$wait_s))
     [ -r "$env_file" ] && [ "$wait_s" -gt 0 ] || return 0
-    local pid
-    pid=$(systemctl show -p MainPID --value "$unit")
-    [ "${pid:-0}" -gt 0 ] || return 0
+    local unit pid pids=""
+    for unit in "$@"; do
+        pid=$(systemctl show -p MainPID --value "$unit")
+        [ "${pid:-0}" -gt 0 ] && pids="$pids $pid"
+    done
+    [ -n "$pids" ] || return 0
     # A subshell, so qiita_pgpass_init's EXIT trap removes the pgpass when the wait
     # ends rather than replacing this script's own exit handling. The password
     # reaches libpq through that 0600 file, not psql's argv (see
     # qiita_split_conn_password).
     (
-        local conn user password lake partials
+        local conn user password lake partials n
         IFS=$'\t' read -r conn user password \
             < <(qiita_split_conn_password "$(read_env_var "$env_file" DUCKLAKE_CATALOG_CONNSTR)")
         qiita_pgpass_init "qiita-dp-idle"
@@ -551,22 +1045,25 @@ wait_for_data_plane_idle() {
             lake=$(PGPASSFILE="$PGPASS_FILE" psql "$conn" -Atc "SELECT count(*) FROM pg_stat_activity
                 WHERE datname = current_database() AND pid <> pg_backend_pid()
                   AND state IN ('active', 'idle in transaction')") || {
-                echo "ERROR: cannot query the data plane's catalog to tell whether $unit is idle; set QIITA_DP_IDLE_WAIT_S=0 to restart without waiting" >&2
+                echo "ERROR: cannot query the data plane's catalog to tell whether $unit_names is idle; set QIITA_DP_IDLE_WAIT_S=0 to restart without waiting" >&2
                 exit 1
             }
-            # `|| true`: find fails once the process has exited (no fd dir), and
-            # pipefail would carry that out of the assignment.
-            partials=$(find "/proc/$pid/fd" -lname '*.partial' 2>/dev/null | wc -l || true)
-            partials=$((partials))
+            partials=0
+            for pid in $pids; do
+                # `|| true`: find fails once the process has exited (no fd dir), and
+                # pipefail would carry that out of the assignment.
+                n=$(find "/proc/$pid/fd" -lname '*.partial' 2>/dev/null | wc -l || true)
+                partials=$((partials + n))
+            done
             if [ "$lake" -eq 0 ] && [ "$partials" -eq 0 ]; then
                 exit 0
             fi
             if [ "$SECONDS" -ge "$deadline" ]; then
-                echo "$unit still busy after ${wait_s}s (catalog sessions: $lake, open partial files: $partials); restarting, and its drain lets them finish" >&2
+                echo "$unit_names still busy after ${wait_s}s (catalog sessions: $lake, open partial files: $partials); restarting, and its drain lets them finish" >&2
                 exit 0
             fi
             if [ "$SECONDS" -ge "$next_report" ]; then
-                echo "waiting for $unit to go idle (catalog sessions: $lake, open partial files: $partials); up to $((deadline - SECONDS))s more" >&2
+                echo "waiting for $unit_names to go idle (catalog sessions: $lake, open partial files: $partials); up to $((deadline - SECONDS))s more" >&2
                 next_report=$((SECONDS + 60))
             fi
             sleep "${QIITA_DP_IDLE_POLL_S:-5}"

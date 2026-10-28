@@ -31,7 +31,7 @@
 | `qiita-compute-orchestrator` | Python / FastAPI | 8081 | SLURM job lifecycle |
 | `qiita-common` | Python (path dep) | — | Shared Pydantic models, config, REST client |
 
-nginx terminates TLS and routes: `REST → :8080`, `gRPC → :50051` (load-balanced across N data plane instances via `upstream qiita_data_plane` in `deploy/nginx/qiita.conf`).
+nginx terminates TLS and routes: `REST → :8080`, `gRPC →` the `qiita_data_plane` upstream (one member per data-plane instance, `:50051` on a single-instance host; rendered from `deploy/nginx/qiita.conf`). It also serves that upstream, unencrypted, on a loopback listener at `127.0.0.1:50050` for on-host clients.
 
 ### Identifier ownership
 
@@ -97,7 +97,7 @@ Sorting a result Parquet by its identifier columns helps DuckLake prune and Parq
 
 > Other docs state that sort as a `must` and as enforced, and list identifier columns this section calls unbuilt. Reconciling them is its own change; where they disagree with this section, this section is the one measured against the code.
 
-**Horizontal scaling**: each data plane instance holds its own pool of DuckDB+DuckLake connections to the shared Postgres catalog. Add instances to `upstream qiita_data_plane` in nginx to scale.
+**Horizontal scaling**: each data plane instance holds its own pool of DuckDB+DuckLake connections to the shared Postgres catalog. A read through one instance sees a commit made through another, on a connection attached before the commit as well as on a new one (`tests/integration/test_ducklake_cross_process_visibility.py`). Writes do contend: registrations into the replace-keyed tables serialize on `qiita_lake.registration_lock` (`flight_service::register_files`), and instances booting together take turns setting up the catalog, on a Postgres advisory lock (`ducklake::setup_catalog`). How instances and peers are configured and rendered into nginx is in [build-and-deploy.md](build-and-deploy.md#deployment).
 
 **Two Rust build flavors**: `make build-data-plane` produces a release binary with `--features duckdb/bundled` (statically linked, slow to build). `make build-data-plane-debug` produces a debug binary that dynamically links libduckdb via `DUCKDB_DOWNLOAD_LIB=1` (fast). `make test-integration` and `make test-system` depend on the debug binary because Python integration tests spawn it directly from its target path instead of shelling out to `cargo run`.
 

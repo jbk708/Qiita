@@ -171,7 +171,7 @@ test-workflows:
 # phases because DuckLake pins DATA_PATH into the catalog, and the two suites
 # use different DATA_PATH values (Python picks a pytest tmp_path_factory dir,
 # Rust defaults to /tmp/qiita-integration-ducklake-data). Mirrors the Python
-# _reset_ducklake_catalog() helper in tests/integration/conftest.py.
+# reset_ducklake_catalog() helper in tests/integration/conftest.py.
 test-integration: build-data-plane-debug build-integration $(DBMATE_BIN)
 	(cd $(PG_COMPOSE_DIR) && $(PG_BRINGUP)) && \
 	  ((cd tests/integration && uv run pytest -m 'not system'); PY_EC=$$?; \
@@ -256,17 +256,14 @@ sync-actions:
 
 # Build and print deploy instructions (no sudo)
 deploy: build
-	@echo "=== Build complete. Run the following commands as admin: ==="
+	@echo "=== Build complete. Install as admin: ==="
 	@echo ""
-	@echo "  sudo cp deploy/systemd/qiita-control-plane.service /etc/systemd/system/"
-	@echo "  sudo cp deploy/systemd/qiita-data-plane@.service /etc/systemd/system/"
-	@echo "  sudo cp deploy/systemd/qiita-compute-orchestrator.service /etc/systemd/system/"
-	@echo "  sudo cp deploy/nginx/qiita.conf /etc/nginx/conf.d/"
-	@echo "  sudo systemctl daemon-reload"
-	@echo "  sudo systemctl restart qiita-control-plane"
-	@echo "  sudo systemctl restart 'qiita-data-plane@50051'"
-	@echo "  sudo systemctl restart qiita-compute-orchestrator"
-	@echo "  sudo systemctl reload nginx"
+	@echo "  First deploy:     sudo QIITA_HOSTNAME=<fqdn> deploy/local-deploy.sh   (docs/runbooks/first-deploy.md)"
+	@echo "  Established host: sudo make redeploy QIITA_HOSTNAME=<fqdn>           (docs/runbooks/redeploy.md)"
+	@echo ""
+	@echo "Both render /etc/nginx/conf.d/qiita.conf and restart one data-plane unit per"
+	@echo "port, from /etc/qiita/data-plane.env. deploy/nginx/qiita.conf is a template:"
+	@echo "copied as is, it fails 'nginx -t'."
 	@echo ""
 	@echo "Then verify: make verify-health"
 
@@ -278,7 +275,7 @@ verify-health: $(GRPCURL_BIN)
 	@echo "Checking compute orchestrator..."
 	@curl -sf http://localhost:8081/health || (echo "FAIL: compute orchestrator" && exit 1)
 	@echo " OK"
-	@echo "Checking data plane..."
+	@echo "Checking data plane (instance 50051 only; verify-deploy checks every member)..."
 	@$(GRPCURL_BIN) -plaintext localhost:50051 grpc.health.v1.Health/Check || (echo "FAIL: data plane" && exit 1)
 	@echo " OK"
 	@echo "All services healthy."

@@ -1,5 +1,4 @@
 use arrow_flight::flight_service_server::FlightServiceServer;
-use duckdb::Connection;
 use tonic::transport::Server;
 use tonic_health::ServingStatus;
 
@@ -21,21 +20,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Configuration error: {e}");
         e
     })?;
+    let build_service =
+        build_service_name(std::env::var("BUILD_COMMIT").ok().as_deref()).map_err(|e| {
+            eprintln!("Configuration error: {e}");
+            e
+        })?;
 
-    // Ensure DuckLake tables exist (one-time setup connection)
-    let setup_conn = Connection::open_in_memory()?;
-    ducklake::connect_ducklake(
-        &setup_conn,
-        &cfg.ducklake_catalog_connstr,
-        &cfg.path_persistent_ducklake,
-    )?;
-    // Catalog-global Parquet defaults (at-rest zstd level + v2). Set ONCE here at
-    // boot, NOT on every attach the pool makes: a per-attach write races on
-    // ducklake_metadata under concurrent Flight load and fails with SQLSTATE 40001.
-    // See set_catalog_options.
-    ducklake::set_catalog_options(&setup_conn)?;
-    ducklake::ensure_lake_tables(&setup_conn)?;
-    drop(setup_conn);
+    // Attach the catalog and create its tables once, at boot (see setup_catalog).
+    ducklake::setup_catalog(&cfg.ducklake_catalog_connstr, &cfg.path_persistent_ducklake)?;
 
     // One bounded pool of attached connections serves every request; its size is
     // the number in flight. Logged after it opens, so the line is a statement
@@ -73,6 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     health_reporter
         .set_service_status("", ServingStatus::Serving)
         .await;
+    match &build_service {
+        Some(name) => {
+            health_reporter
+                .set_service_status(name, ServingStatus::Serving)
+                .await;
+            eprintln!("qiita-data-plane build: health service {name}");
+        }
+        None => eprintln!("qiita-data-plane build: BUILD_COMMIT unset, no build health service"),
+    }
 
     // gRPC reflection lets `grpcurl` introspect the server (used
     // by `make verify-health` from the deploy host). Both v1 and
@@ -116,6 +117,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Prefix of the health service name under which a data plane reports the commit
+/// it was deployed from. `deploy/verify.sh` asks each upstream member for the name
+/// carrying this host's commit (`qiita_data_plane_build_service` in
+/// `deploy/_common.sh` builds the same string); a member running another commit
+/// answers NOT_FOUND, which tonic-health returns for a name never registered.
+const BUILD_SERVICE_PREFIX: &str = "qiita-data-plane/build/";
+
+/// The build health service name for `BUILD_COMMIT`, which activate.sh writes into
+/// `/opt/qiita/data-plane/build.env`: None when it is unset or empty, an error
+/// when it is not a full 40-character lowercase commit sha.
+fn build_service_name(sha: Option<&str>) -> Result<Option<String>, String> {
+    let Some(sha) = sha.filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if sha.len() != 40 || !sha.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(format!(
+            "BUILD_COMMIT {sha:?} is not a 40-character lowercase commit sha"
+        ));
+    }
+    Ok(Some(format!("{BUILD_SERVICE_PREFIX}{sha}")))
+}
+
 /// Resolves on SIGTERM (what `systemctl stop` / `restart` sends) or SIGINT, which
 /// starts tonic's graceful shutdown: the listener closes, so a new connection is
 /// refused, and `serve_with_shutdown` returns once every request already in flight
@@ -135,6 +158,28 @@ async fn drain_signal() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn build_service_name_from_build_commit() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            super::build_service_name(Some(sha)),
+            Ok(Some(format!("qiita-data-plane/build/{sha}")))
+        );
+        assert_eq!(super::build_service_name(None), Ok(None));
+        assert_eq!(super::build_service_name(Some("")), Ok(None));
+        for bad in [
+            "0123456",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789abcdef0123456789abcdef012345678",
+        ] {
+            assert!(
+                super::build_service_name(Some(bad)).is_err(),
+                "{bad} accepted"
+            );
+        }
+    }
+
     use super::config::Settings;
     use super::miint;
     use base64::Engine;

@@ -46,6 +46,86 @@ pub(crate) fn validate_sql_literal(value: &str, field: &str) -> Result<(), Strin
 /// and pins it to the Python constant.
 const CHUNK_ROW_GROUP_SIZE: u64 = 16384;
 
+/// Key of the Postgres advisory lock a data plane holds while it sets up the
+/// catalog (`setup_catalog`).
+const CATALOG_SETUP_LOCK_KEY: i64 = 0x7169_6974_615f_6470;
+
+/// How long boot waits for another data plane's catalog setup to release
+/// `CATALOG_SETUP_LOCK_KEY`. A backstop for a setup that holds the lock and does
+/// not finish: measured with the debug build against Postgres 17 on localhost, 10
+/// instances booting together were all listening within 5.8 s on an empty catalog
+/// and 4.4 s on an existing one, and 20 within 6.8 s.
+const BOOT_SETUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Attach the catalog and create its tables, once, at boot.
+///
+/// Every data plane runs this when it starts, and a deploy or a reboot starts all
+/// of a host's instances together. Two setups running at once conflict on the
+/// catalog (measured with 4 processes, DuckDB 1.5.4, ducklake d318a545, Postgres
+/// 17: a serialization failure on `ducklake_metadata`, a duplicate `pg_type` key
+/// during the first ATTACH, and DuckLake commit conflicts on the `ensure_*`
+/// statements), so each takes `CATALOG_SETUP_LOCK_KEY` first and the setups run
+/// one after another.
+///
+/// The lock is transaction-scoped and taken inside an open DuckDB transaction on
+/// its own attach: measured with DuckDB 1.5.5, the postgres extension keeps one
+/// Postgres connection for the length of a DuckDB transaction, and sends
+/// `DISCARD ALL` (which drops session advisory locks) when a pooled connection is
+/// returned, so a session lock taken through it is released at once. Postgres
+/// releases the lock when the setup commits, or when the process exits and its
+/// connection closes.
+pub fn setup_catalog(
+    catalog_connstr: &str,
+    data_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_sql_literal(catalog_connstr, "catalog_connstr")?;
+    let lock = Connection::open_in_memory()?;
+    lock.execute_batch(&format!(
+        "LOAD postgres;
+         ATTACH '{catalog_connstr}' AS catalog_setup_lock (TYPE postgres);
+         BEGIN;"
+    ))?;
+    let deadline = std::time::Instant::now() + BOOT_SETUP_BUDGET;
+    loop {
+        let taken: bool = lock.query_row(
+            &format!(
+                "SELECT taken FROM postgres_query('catalog_setup_lock', \
+                 'SELECT pg_try_advisory_xact_lock({CATALOG_SETUP_LOCK_KEY}) AS taken')"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if taken {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "another data plane held the catalog setup lock for {}s",
+                BOOT_SETUP_BUDGET.as_secs()
+            )
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    setup_catalog_once(catalog_connstr, data_path)?;
+    lock.execute_batch("COMMIT;")?;
+    Ok(())
+}
+
+/// The catalog setup `setup_catalog` runs under its lock, on its own connection.
+fn setup_catalog_once(
+    catalog_connstr: &str,
+    data_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let conn = Connection::open_in_memory()?;
+    connect_ducklake(&conn, catalog_connstr, data_path)?;
+    // Catalog-global Parquet defaults: set once here, never per attach (see
+    // set_catalog_options).
+    set_catalog_options(&conn)?;
+    ensure_lake_tables(&conn)?;
+    Ok(())
+}
+
 /// Connect to DuckLake backed by a Postgres catalog.
 ///
 /// Attaches the DuckLake catalog as `qiita_lake` in the DuckDB session.
