@@ -10,9 +10,10 @@ from http.server import BaseHTTPRequestHandler
 import duckdb
 import pytest
 from qiita_common.api_paths import LOOPBACK_HOST
+from qiita_common.duckdb_miint import miint_load_sql
 from qiita_common.testing.loopback import serve_on_loopback
 
-from qiita_compute_orchestrator.miint import MIINT_HTTP_RETRY_SETTINGS, open_miint_conn
+from qiita_compute_orchestrator.miint import MIINT_HTTP_RETRY_SETTINGS, open_conn, open_miint_conn
 
 _RECORDS = 40
 _FASTQ = "".join(f"@r{i}\nACGTACGTAC\n+\nIIIIIIIIII\n" for i in range(_RECORDS)).encode()
@@ -35,17 +36,19 @@ def _http_settings(conn) -> dict[str, tuple[float, str]]:
 
 
 def test_retry_settings_are_session_values_and_global_keeps_defaults(miint_conn):
-    """The Portal client and cursors read GLOBAL, which must stay at DuckDB's defaults."""
+    """GLOBAL, which a cursor reads, must match a plain connection's defaults."""
     session = _http_settings(miint_conn)
     assert {n: v for n, (v, _) in session.items()} == {
         n: float(v) for n, v in MIINT_HTTP_RETRY_SETTINGS.items()
     }
     assert {scope for _, scope in session.values()} == {"LOCAL"}
-    assert {n: v for n, (v, _) in _http_settings(miint_conn.cursor()).items()} == {
-        "http_retries": 3.0,
-        "http_retry_wait_ms": 100.0,
-        "http_retry_backoff": 4.0,
-    }
+    plain = open_conn()
+    try:
+        plain.execute(miint_load_sql())
+        defaults = _http_settings(plain)
+    finally:
+        plain.close()
+    assert _http_settings(miint_conn.cursor()) == defaults
 
 
 class _FlakyFastqHandler(BaseHTTPRequestHandler):
