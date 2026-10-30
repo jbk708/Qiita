@@ -362,12 +362,12 @@ def resolve_duckdb_memory_gb(
     return max(1, resolved)
 
 
-# ENA's file server drops connections in bursts; DuckDB's default of 3 retries within
-# about half a second gives up first. These allow 8 retries over about a minute per
-# request. Applied as session SETs after httpfs is loaded, not in the connect config: a
-# connect-time httpfs setting makes connect() autoinstall httpfs, and a GLOBAL value would
-# change the retries of miint's Portal ENAClient, which keeps DuckDB's defaults on purpose.
-# FASTQ downloads run through the connection's own filesystem and take the session values.
+# ENA's file server drops connections in bursts that outlast DuckDB's default of 3
+# retries. These allow 8 retries over about a minute per request. Applied as session SETs
+# after httpfs is loaded, not in the connect config: a connect-time httpfs setting makes
+# connect() autoinstall httpfs, and a GLOBAL value would nest under the 3-try retry loop of
+# miint's Portal ENAClient. FASTQ downloads run through the connection's own filesystem and
+# take the session values.
 MIINT_HTTP_RETRY_SETTINGS: dict[str, str] = {
     "http_retries": "8",
     "http_retry_wait_ms": "500",
