@@ -478,11 +478,10 @@ Where verification does not apply (an SFF run, a file that is not gzip-compresse
 warning fails permanently.
 
 **Dropped connections are retried by DuckDB.** The compute orchestrator's miint connections
-(`open_miint_conn`) set `http_retries` to 8, `http_retry_wait_ms` to 500 and
-`http_retry_backoff` to 2, so a dropped request is retried up to 8 times over about a minute
-instead of DuckDB's 3 within half a second. The values are constants
-(`MIINT_HTTP_RETRY_CONFIG` in `qiita_common.duckdb_miint`), not configuration: changing them
-takes a code change and a release.
+retry a dropped HTTP request up to 8 times, about a minute per request; a 3 GB run makes
+about 95 requests, each with its own retries. The values are constants
+(`MIINT_HTTP_RETRY_SETTINGS` in `qiita_compute_orchestrator.miint`), not configuration:
+changing them takes a code change and a release.
 
 A run that fails in a way a retry cannot clear (a format error, a run with no sequence
 data, a 404 from duckdb-miint#312 on, zero reads) does not fail its pool when another run

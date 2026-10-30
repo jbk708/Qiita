@@ -83,14 +83,6 @@ def miint_connect_config() -> dict[str, str]:
     return config
 
 
-# Connect config, not a session SET: miint's ENA client reads only GLOBAL (docs/duckdb-miint.md).
-MIINT_HTTP_RETRY_CONFIG: dict[str, str] = {
-    "http_retries": "8",
-    "http_retry_wait_ms": "500",
-    "http_retry_backoff": "2",
-}
-
-
 def miint_install_sql(*, force: bool = False) -> str:
     """The INSTALL statement for miint, from the mirror (`MIINT_EXTENSION_REPO`
     override, else `MIINT_MIRROR_URL`).

@@ -33,7 +33,6 @@ import duckdb
 from qiita_common.chunking import CHUNK_ROW_GROUP_SIZE
 from qiita_common.duckdb_miint import (
     MIINT_EXTENSION_DIRECTORY_VAR,
-    MIINT_HTTP_RETRY_CONFIG,
     miint_connect_config,
     miint_install_sql,
     miint_load_sql,
@@ -363,19 +362,32 @@ def resolve_duckdb_memory_gb(
     return max(1, resolved)
 
 
-def open_conn(extra_config: dict[str, str] | None = None) -> duckdb.DuckDBPyConnection:
+# ENA's file server drops connections in bursts; DuckDB's default of 3 retries within
+# about half a second gives up first. These allow 8 retries over about a minute per
+# request. Applied as session SETs after httpfs is loaded, not in the connect config: a
+# connect-time httpfs setting makes connect() autoinstall httpfs, and a GLOBAL value would
+# change the retries of miint's Portal ENAClient, which keeps DuckDB's defaults on purpose.
+# FASTQ downloads run through the connection's own filesystem and take the session values.
+MIINT_HTTP_RETRY_SETTINGS: dict[str, str] = {
+    "http_retries": "8",
+    "http_retry_wait_ms": "500",
+    "http_retry_backoff": "2",
+}
+
+
+def open_conn() -> duckdb.DuckDBPyConnection:
     """Open an in-memory DuckDB connection with the miint-load config: unsigned
     extensions are always allowed (miint installs from a mirror, not a
     DuckDB-signed channel), and the extension_directory is used when
     MIINT_EXTENSION_DIRECTORY is set. Config resolution is shared with the CLI
     via `qiita_common.duckdb_miint.miint_connect_config`. Does **not** LOAD
     miint — use `open_miint_conn()` when you need the extension."""
-    return duckdb.connect(":memory:", config={**miint_connect_config(), **(extra_config or {})})
+    return duckdb.connect(":memory:", config=miint_connect_config())
 
 
 def open_miint_conn() -> duckdb.DuckDBPyConnection:
     """Open a fresh DuckDB connection with the miint extension LOADed and
-    `MIINT_HTTP_RETRY_CONFIG` applied.
+    `MIINT_HTTP_RETRY_SETTINGS` applied.
 
     LOAD-only: miint is pre-staged into MIINT_EXTENSION_DIRECTORY at deploy, so
     this never installs, downloads, or touches the mirror. If the extension is
@@ -393,8 +405,10 @@ def open_miint_conn() -> duckdb.DuckDBPyConnection:
     hits the `/dev/null` home the CP hit. On `COMPUTE_BACKEND=local` (dev/smoke)
     the var is legitimately unset and a developer's own `$HOME` resolves fine —
     requiring it here would break that path for every native job."""
-    conn = open_conn(MIINT_HTTP_RETRY_CONFIG)
+    conn = open_conn()
     conn.execute(miint_load_sql())
+    for name, value in MIINT_HTTP_RETRY_SETTINGS.items():
+        conn.execute(f"SET {name}={value}")
     return conn
 
 

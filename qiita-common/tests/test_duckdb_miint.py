@@ -18,7 +18,6 @@ import pytest
 
 from qiita_common.duckdb_miint import (
     MIINT_EXTENSION_DIRECTORY_VAR,
-    MIINT_HTTP_RETRY_CONFIG,
     MIINT_MIRROR_URL,
     MIINT_REQUIRED_JOB_VARS,
     is_empty_sequence_file,
@@ -270,11 +269,3 @@ def test_is_empty_sequence_file(tmp_path, name, payload, empty):
         assert path.stat().st_size > 0, "an empty gzip member is still bytes on disk"
 
     assert is_empty_sequence_file(path) is empty
-
-
-def test_http_retry_config_pins_the_connect_settings():
-    assert MIINT_HTTP_RETRY_CONFIG == {
-        "http_retries": "8",
-        "http_retry_wait_ms": "500",
-        "http_retry_backoff": "2",
-    }
