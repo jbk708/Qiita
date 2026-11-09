@@ -21,6 +21,7 @@ from typing import Any
 import asyncpg
 from qiita_common.actions import (
     PROCESSING_IDX_BINDING,
+    WorkflowAction,
     action_threads_processing_idx,
 )
 from qiita_common.api_paths import LibraryPrimitive

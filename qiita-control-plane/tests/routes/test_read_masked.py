@@ -27,6 +27,7 @@ from qiita_common.api_paths import (
 from qiita_common.auth_constants import Scope
 
 from qiita_control_plane.auth.token import mint_api_token
+from qiita_control_plane.repositories.block import MASK_SAMPLE_COMPLETED, MASK_SAMPLE_PENDING
 from qiita_control_plane.repositories.mask_definition import mint_mask_definition
 from qiita_control_plane.testing.db_seeds import (
     seed_biosample_with_sequenced_prep_sample,
@@ -288,7 +289,7 @@ async def test_doget_signs_mandatory_filter(ctx):
     """A 'completed' gate under the mask → a signed ticket carrying BOTH
     identifiers as a non-empty filter."""
     pool = ctx["pool"]
-    prep, mask, bs = await _seed_gate(pool, ctx["principal_idx"], state="completed")
+    prep, mask, bs = await _seed_gate(pool, ctx["principal_idx"], state=MASK_SAMPLE_COMPLETED)
     try:
         resp = await ctx["sa"].post(
             URL_READ_MASKED_DOGET, json={"prep_sample_idx": prep, "mask_idx": mask}
@@ -298,11 +299,59 @@ async def test_doget_signs_mandatory_filter(ctx):
         # read_masked table + BOTH identifiers present and non-empty.
         assert payload["table"] == "read_masked"
         assert payload["filter"] == {"prep_sample_idx": [prep], "mask_idx": [mask]}
+        # No projection asked for, none signed: the data plane streams the full shape.
+        assert "columns" not in payload
     finally:
         await _cleanup_gate(pool, prep, mask, bs)
 
 
-@pytest.mark.parametrize("state", [None, "pending"])
+async def test_doget_signs_a_requested_projection(ctx):
+    """A `columns` list rides the ticket in the caller's order."""
+    pool = ctx["pool"]
+    prep, mask, bs = await _seed_gate(pool, ctx["principal_idx"], state=MASK_SAMPLE_COMPLETED)
+    try:
+        resp = await ctx["sa"].post(
+            URL_READ_MASKED_DOGET,
+            json={
+                "prep_sample_idx": prep,
+                "mask_idx": mask,
+                "columns": ["read_id", "sequence_idx"],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        payload = _decode_ticket_payload(resp.json()["ticket"])
+        assert payload["columns"] == ["read_id", "sequence_idx"]
+        assert payload["filter"] == {"prep_sample_idx": [prep], "mask_idx": [mask]}
+    finally:
+        await _cleanup_gate(pool, prep, mask, bs)
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(["sequence_idx", "left_trim1"], id="unknown"),
+        pytest.param(["read_id", "read_id"], id="duplicate"),
+        pytest.param(["read_id; DROP TABLE read"], id="injection-shaped"),
+        pytest.param([], id="empty"),
+    ],
+)
+async def test_doget_bad_column_list_422(ctx, columns):
+    """A bad projection is refused at mint and never signed. The empty case is
+    the one that only this layer can catch: on the wire an empty list is
+    indistinguishable from an absent one, which means the full shape."""
+    pool = ctx["pool"]
+    prep, mask, bs = await _seed_gate(pool, ctx["principal_idx"], state=MASK_SAMPLE_COMPLETED)
+    try:
+        resp = await ctx["sa"].post(
+            URL_READ_MASKED_DOGET,
+            json={"prep_sample_idx": prep, "mask_idx": mask, "columns": columns},
+        )
+        assert resp.status_code == 422, resp.text
+    finally:
+        await _cleanup_gate(pool, prep, mask, bs)
+
+
+@pytest.mark.parametrize("state", [None, MASK_SAMPLE_PENDING])
 async def test_doget_refuses_when_not_masked_complete(ctx, state):
     """The completion gate: a 'pending' gate (a covering block still in flight) or
     NO gate row (absence is not exempt) both 409 — an in-flight/absent pass-set
@@ -333,7 +382,7 @@ async def test_doget_table_is_in_cp_allowlist(ctx):
 
 def test_cp_doget_allowlist_matches_the_rust_one_exactly():
     """`_DOGET_ALLOWED_TABLES` is a hand-copy of the data plane's `ALLOWED_TABLES`
-    (flight_service.rs). The CP signs tickets; the DP serves them. The two lists must
+    (flight_service/query.rs). The CP signs tickets; the DP serves them. The two lists must
     be IDENTICAL, and the failure when they aren't is asymmetric and silent:
 
     * a table in the DP list but not the CP one is UNREACHABLE — the DP would serve
@@ -353,10 +402,14 @@ def test_cp_doget_allowlist_matches_the_rust_one_exactly():
     from qiita_control_plane.routes.reference import _DOGET_ALLOWED_TABLES
 
     src = (
-        Path(__file__).resolve().parents[3] / "qiita-data-plane" / "src" / "flight_service.rs"
+        Path(__file__).resolve().parents[3]
+        / "qiita-data-plane"
+        / "src"
+        / "flight_service"
+        / "query.rs"
     ).read_text()
     m = re.search(r"const ALLOWED_TABLES: &\[&str\] = &\[(.*?)\];", src, flags=re.DOTALL)
-    assert m, "ALLOWED_TABLES not found in flight_service.rs"
+    assert m, "ALLOWED_TABLES not found in flight_service/query.rs"
     rust_tables = set(re.findall(r'"([^"]+)"', m.group(1)))
 
     assert rust_tables == set(_DOGET_ALLOWED_TABLES), (

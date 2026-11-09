@@ -95,13 +95,9 @@ ROLE_IMPLIED_SCOPES: Mapping[SystemRole, frozenset[Scope]] = {
             # PREP_SAMPLE_WRITE but not destroy them. Service accounts never
             # get it.
             Scope.SEQUENCED_POOL_DELETE,
-            # Full mask purge is system_admin-only, same as REFERENCE_DELETE:
-            # deleting a mask drops its mask_definition row and DuckLake
-            # read_mask data. Service accounts never get it.
-            Scope.MASK_DEFINITION_DELETE,
-            # Deprecating a mask / withdrawing its runs is system_admin-only for
-            # the same reason: it decides that published results were produced by
-            # a filter we no longer stand behind. Non-destructive, but not a
+            # Deprecating a mask / withdrawing its runs is system_admin-only: it
+            # decides that published results were produced by a filter we no
+            # longer stand behind. Non-destructive, but not a
             # judgement a service account or wet_lab_admin makes.
             Scope.MASK_DEFINITION_LIFECYCLE,
             # Deprecating an assembly run / withdrawing its per-sample results is
@@ -109,12 +105,10 @@ ROLE_IMPLIED_SCOPES: Mapping[SystemRole, frozenset[Scope]] = {
             # decides that published contigs were produced by a run we no longer
             # stand behind.
             Scope.PROCESSING_LIFECYCLE,
-            # Full alignment purge is system_admin-only, same as
-            # MASK_DEFINITION_DELETE: deleting an alignment drops its
-            # alignment_definition row (cascading the alignment_sample gate) and
-            # its DuckLake alignment data. The disallow-without-delete escape
-            # hatch. Service accounts never get it.
-            Scope.ALIGNMENT_DEFINITION_DELETE,
+            # Deprecating an alignment / withdrawing its per-prep_sample runs /
+            # abandoning a failed align plan is system_admin-only for the same
+            # reason as the mask and processing twins above.
+            Scope.ALIGNMENT_DEFINITION_LIFECYCLE,
             Scope.STUDY_READ,
             Scope.STUDY_WRITE,
             # Human-callable alignment / assembly DoGet mints. On every ceiling,
@@ -127,9 +121,8 @@ ROLE_IMPLIED_SCOPES: Mapping[SystemRole, frozenset[Scope]] = {
             Scope.ADMIN_AUDIT_READ,
             # Owner-id re-identification export is system_admin-only —
             # owner-submitted names can carry incautiously-entered PII. The
-            # field is pinned to member tier, but nothing enforces that pin
-            # yet, and wet_lab_admin and system_admin reach owner-ids
-            # regardless of tier.
+            # study-scoped reads return them only to callers whose tier on the
+            # study reaches repositories.biosample.OWNER_BIOSAMPLE_ID_TIER_OVERRIDE.
             Scope.ADMIN_BIOSAMPLE_OWNER_ID_READ,
             # Per-pool masked-read export is system_admin-only — the first human
             # masked-read pull, admin-gated until there's a model for picking the

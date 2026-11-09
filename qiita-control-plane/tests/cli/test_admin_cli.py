@@ -13,6 +13,7 @@ argparse wiring on the admin entry point.
 
 import argparse
 
+import asyncpg
 import httpx
 import pytest
 from qiita_common.api_paths import (
@@ -382,7 +383,7 @@ def test_force_fail_refuses_terminal_ticket(monkeypatch):
     async def fake_connect(database_url, **kwargs):
         return fake
 
-    monkeypatch.setattr(cli.asyncpg, "connect", fake_connect)
+    monkeypatch.setattr(asyncpg, "connect", fake_connect)
     with pytest.raises(RuntimeError, match="terminal state 'completed'"):
         asyncio.run(
             cli._force_fail_ticket(
@@ -433,7 +434,7 @@ def test_force_fail_happy_path_runs_update(monkeypatch):
     async def fake_connect(database_url, **kwargs):
         return fake
 
-    monkeypatch.setattr(cli.asyncpg, "connect", fake_connect)
+    monkeypatch.setattr(asyncpg, "connect", fake_connect)
     result = asyncio.run(
         cli._force_fail_ticket(
             "postgres://x",
@@ -2052,7 +2053,7 @@ def test_masked_read_export_fastq_refuses_existing_file(monkeypatch, tmp_path, c
     [
         ("parquet", "refused", "flight error: ", "data plane unavailable"),
         ("parquet", "midstream", "error: ", "data plane stream cut"),
-        ("fastq", "midstream", "error: Invalid Input Error: arrow_scan", "data plane stream cut"),
+        ("fastq", "midstream", "error: Invalid Input Error: ", "data plane stream cut"),
     ],
 )
 def test_masked_read_export_data_plane_failure_is_an_error_not_a_traceback(
@@ -2523,3 +2524,153 @@ def test_export_stem_ignores_an_ena_run_accession():
         "ena_run_accession": "ERR1234567",
     }
     assert _export_stem(sample, 5, 7) == "SAMN_A.5.7.42"
+
+
+def test_backfill_mask_adapter_hash_execute_reports_skipped_rows(monkeypatch, capsys):
+    """`--execute` reports the rows apply skipped, as planned minus written."""
+    from qiita_control_plane.backfill.mask_adapter_hash import RekeyPlan, RekeyRow
+    from qiita_control_plane.cli import admin as cli
+
+    rows = [RekeyRow(i, b"\x00" * 32, {}, b"\x01" * 32) for i in (7, 8)]
+    plan = RekeyPlan(reference_idx=5, current_hash="h", convertible=rows)
+
+    async def _fake(database_url, *, report, execute, **_):
+        report(plan)
+        assert execute
+        return plan, 1
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unused")
+    monkeypatch.setattr(cli, "_backfill_mask_adapter_hash", _fake)
+    rc = cli.main(["backfill", "mask-adapter-hash", "--reference-idx", "5", "--execute"])
+
+    assert rc == 0
+    assert "wrote 1 mask_definition row(s); skipped 1 re-keyed since" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# alignment (calls the /alignment-definition lifecycle routes)
+# ---------------------------------------------------------------------------
+
+
+def _capture_alignment_call(monkeypatch, response_body, status=200):
+    from qiita_control_plane.cli import _common
+
+    monkeypatch.setenv("QIITA_TOKEN", "qk_admin")
+    captured: dict = {}
+
+    def fake_request(method, url, headers=None, json=None, params=None, timeout=None):
+        captured.update(method=method, url=url, json=json)
+        return httpx.Response(status, json=response_body, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(_common.httpx, "request", fake_request)
+    return captured
+
+
+def test_alignment_deprecate_patches_status_with_reason(monkeypatch, capsys):
+    from qiita_common.api_paths import URL_ALIGNMENT_DEFINITION_STATUS
+
+    from qiita_control_plane.cli import admin as cli
+
+    captured = _capture_alignment_call(
+        monkeypatch,
+        {"alignment_idx": 7, "status": "deprecated", "deprecation_reason": "bad build"},
+    )
+    rc = cli.main(["alignment", "deprecate", "7", "--reason", "bad build", "--superseded-by", "9"])
+    assert rc == 0
+    assert captured["method"] == "PATCH"
+    assert captured["url"].endswith(URL_ALIGNMENT_DEFINITION_STATUS.format(alignment_idx=7))
+    assert captured["json"] == {"status": "deprecated", "reason": "bad build", "superseded_by": 9}
+    assert "alignment 7: deprecated (bad build)" in capsys.readouterr().err
+
+
+def test_alignment_deprecate_surfaces_the_unfinished_tickets_409(monkeypatch, capsys):
+    from qiita_control_plane.cli import admin as cli
+
+    _capture_alignment_call(
+        monkeypatch,
+        {"detail": {"reason": "alignment 7 has 1 unfinished work ticket(s): [42]"}},
+        status=409,
+    )
+    rc = cli.main(["alignment", "deprecate", "7", "--reason", "bad build"])
+    assert rc == 1
+    assert "[42]" in capsys.readouterr().err
+
+
+def test_alignment_deprecate_requires_a_reason():
+    from qiita_control_plane.cli import admin as cli
+
+    with pytest.raises(SystemExit):
+        cli.main(["alignment", "deprecate", "7"])
+
+
+def test_alignment_activate_sends_no_reason(monkeypatch):
+    from qiita_control_plane.cli import admin as cli
+
+    captured = _capture_alignment_call(monkeypatch, {"alignment_idx": 7, "status": "active"})
+    assert cli.main(["alignment", "activate", "7"]) == 0
+    assert captured["json"] == {"status": "active"}
+
+
+def test_alignment_invalidate_and_restore_patch_sample_status(monkeypatch, capsys):
+    from qiita_common.api_paths import URL_ALIGNMENT_DEFINITION_SAMPLE_STATUS
+
+    from qiita_control_plane.cli import admin as cli
+
+    body = {
+        "alignment_idx": 7,
+        "state": "invalidated",
+        "updated": [11],
+        "unchanged": [],
+        "not_found": [13],
+        "skipped_pending": [12],
+    }
+    captured = _capture_alignment_call(monkeypatch, body)
+    rc = cli.main(
+        [
+            "alignment",
+            "invalidate",
+            "7",
+            "--prep-sample-idx",
+            "11",
+            "12",
+            "13",
+            "--reason",
+            "OOM-escalated run",
+        ]
+    )
+    assert rc == 0
+    assert captured["url"].endswith(URL_ALIGNMENT_DEFINITION_SAMPLE_STATUS.format(alignment_idx=7))
+    assert captured["json"] == {
+        "prep_sample_idx": [11, 12, 13],
+        "state": "invalidated",
+        "reason": "OOM-escalated run",
+    }
+    err = capsys.readouterr().err
+    assert "not_found" in err and "skipped_pending" in err
+
+    captured = _capture_alignment_call(monkeypatch, {**body, "state": "completed"})
+    assert cli.main(["alignment", "restore", "7", "--prep-sample-idx", "11"]) == 0
+    assert captured["json"] == {"prep_sample_idx": [11], "state": "completed"}
+
+
+def test_alignment_abandon_plan_posts_and_summarises(monkeypatch, capsys):
+    from qiita_common.api_paths import URL_ALIGNMENT_DEFINITION_ABANDON_PLAN
+
+    from qiita_control_plane.cli import admin as cli
+
+    captured = _capture_alignment_call(
+        monkeypatch,
+        {
+            "alignment_idx": 7,
+            "abandoned_block_idx": [3, 4],
+            "cancelled_work_ticket_idx": [44],
+            "cleared_prep_sample_idx": [11, 12],
+            "rows_deleted": 900,
+        },
+    )
+    assert cli.main(["alignment", "abandon-plan", "7"]) == 0
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith(URL_ALIGNMENT_DEFINITION_ABANDON_PLAN.format(alignment_idx=7))
+    err = capsys.readouterr().err
+    assert "2 block(s) abandoned" in err
+    assert "only_missing=true" in err

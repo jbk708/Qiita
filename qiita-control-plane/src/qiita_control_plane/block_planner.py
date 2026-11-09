@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import asyncpg
 from qiita_common.actions import BLOCK_MASK_ACTION_ID as _BLOCK_MASK_ACTION_ID
+from qiita_common.api_paths import URL_MASK_DEFINITION_STATUS
 from qiita_common.host_filter_plan import (
     PoolPlanRefusal,
     SampleHostFilter,
@@ -57,7 +58,7 @@ from .repositories.block import (
     lock_mask_sample_gate_advisory,
     set_block_work_ticket,
 )
-from .repositories.mask_definition import mint_mask_definition
+from .repositories.mask_definition import lock_active_mask, mint_mask_definition
 from .repositories.sequenced_sample import fetch_empty_ingest_tickets
 from .repositories.sequencing_run import fetch_sequencing_run_platform
 from .runner import (
@@ -219,19 +220,21 @@ class BlockMaskResubmitError(RuntimeError):
       non-completed block, so the gate never flips and the sample stays
       non-exportable).
 
-    The block-compute analog of the sequenced_pool COMPLETED-resubmit rule: an
-    existing gate requires an explicit DELETE before resubmission. The operator
-    either DELETEs the mask first (to genuinely re-mask) or passes
+    The block-compute analog of the sequenced_pool COMPLETED-resubmit rule. A mask
+    is never deleted; one whose config is bad is deprecated, which stops new data
+    being masked or aligned under it. Resuming an interrupted plan passes
     `only_missing=true` to plan only the not-yet-gated samples. The route maps this
     to 409."""
 
-    def __init__(self, conflicting_prep_sample_idxs: list[int]):
+    def __init__(self, conflicting_prep_sample_idxs: list[int], mask_idxs: list[int]):
         self.conflicting_prep_sample_idxs = conflicting_prep_sample_idxs
+        self.mask_idxs = mask_idxs
         super().__init__(
             f"{len(conflicting_prep_sample_idxs)} sample(s) already have a read-mask gate "
-            "(pending or completed) for the resolved filtering config; a fresh plan would "
-            "double-write a completed mask or wedge an in-flight one. DELETE the mask first "
-            "to re-mask, or pass only_missing=true to plan only the ungated samples. "
+            f"(pending or completed) under mask_idx(s) {mask_idxs}; a fresh plan would "
+            "double-write a completed mask or wedge an in-flight one. If that mask is bad, "
+            f"a system_admin deprecates it (PATCH {URL_MASK_DEFINITION_STATUS}). To resume "
+            "an interrupted plan, pass only_missing=true to plan only the ungated samples. "
             f"prep_sample_idxs: {conflicting_prep_sample_idxs}"
         )
 
@@ -696,6 +699,10 @@ async def plan_and_submit_blocks(
     block_summaries: list[dict[str, Any]] = []
     partition_summaries: list[dict[str, Any]] = []
     async with pool.acquire() as conn, conn.transaction():
+        # A deprecation landing between the mints above and this transaction would
+        # otherwise see none of the tickets below (`lock_active_mask`).
+        for partition_mask_idx in sorted(partitions):
+            await lock_active_mask(conn, partition_mask_idx)
         # NB1: serialize the cross-path double-mask race. Take a per-sample advisory
         # lock (mask_idx, prep_sample), held to commit, BEFORE the disallow-without-
         # delete check + create_mask_sample_pending below, so that check→write is
@@ -728,19 +735,23 @@ async def plan_and_submit_blocks(
         # dropped ALL gated samples above (pending or completed), so this fires only
         # when only_missing is False (a fresh plan over an already-block-masked pool).
         # One batched query over the (mask_idx, prep_sample_idx) pairs; a genuine
-        # re-mask DELETEs first, an interrupted plan resumes with only_missing=true.
+        # bad mask is deprecated (see BlockMaskResubmitError), an interrupted plan
+        # resumes with only_missing=true.
         # Runs INSIDE the lock+txn (above) so a concurrent per-sample finalize cannot
         # slip a 'completed' row between this check and create_mask_sample_pending.
         if to_plan:
             conflicting = await conn.fetch(
-                "SELECT ms.prep_sample_idx FROM qiita.mask_sample ms"
+                "SELECT ms.prep_sample_idx, ms.mask_idx FROM qiita.mask_sample ms"
                 "  JOIN unnest($1::bigint[], $2::bigint[]) AS t(mask_idx, prep_sample_idx)"
                 "    ON ms.mask_idx = t.mask_idx AND ms.prep_sample_idx = t.prep_sample_idx",
                 [mask_by_prep_sample[s.prep_sample_idx] for s in to_plan],
                 [s.prep_sample_idx for s in to_plan],
             )
             if conflicting:
-                raise BlockMaskResubmitError(sorted(r["prep_sample_idx"] for r in conflicting))
+                raise BlockMaskResubmitError(
+                    sorted(r["prep_sample_idx"] for r in conflicting),
+                    sorted({r["mask_idx"] for r in conflicting}),
+                )
 
         for mask_idx, samples in sorted(partitions.items()):
             # Each partition carries ITS OWN host refs — the decision that minted

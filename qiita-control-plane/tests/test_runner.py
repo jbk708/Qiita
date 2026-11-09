@@ -47,6 +47,7 @@ from qiita_common.testing.containers import REFERENCE_HASH_CONTAINER, REFERENCE_
 from qiita_control_plane import step_progress
 from qiita_control_plane.actions.library import QcProducer
 from qiita_control_plane.testing.db_teardown import delete_principal, teardown_entity_graph
+from qiita_control_plane.testing.run_context import run_context
 
 pytestmark = pytest.mark.db
 
@@ -1982,14 +1983,16 @@ async def test_dispatch_register_index_writes_row(postgres_pool, reference_idx, 
     )
 
     out = await _run_action_primitive(
-        postgres_pool,
+        run_context(
+            pool=postgres_pool,
+            scope_target={"kind": "reference", "reference_idx": reference_idx},
+            work_ticket_idx=1,
+            signing_key=b"\x00" * 32,
+            data_plane_url="grpc://unused:50051",
+        ),
         entry,
         bound,
         tmp_path,
-        {"kind": "reference", "reference_idx": reference_idx},
-        work_ticket_idx=1,  # register-index ignores it; required by the signature
-        signing_key=b"\x00" * 32,
-        data_plane_url="grpc://unused:50051",
     )
     assert out == {}
 
@@ -2036,14 +2039,16 @@ async def test_dispatch_register_index_minimap2_meta(postgres_pool, reference_id
     )
 
     out = await _run_action_primitive(
-        postgres_pool,
+        run_context(
+            pool=postgres_pool,
+            scope_target={"kind": "reference", "reference_idx": reference_idx},
+            work_ticket_idx=1,
+            signing_key=b"\x00" * 32,
+            data_plane_url="grpc://unused:50051",
+        ),
         entry,
         bound,
         tmp_path,
-        {"kind": "reference", "reference_idx": reference_idx},
-        work_ticket_idx=1,  # register-index ignores it; required by the signature
-        signing_key=b"\x00" * 32,
-        data_plane_url="grpc://unused:50051",
     )
     assert out == {}
 
@@ -2073,14 +2078,16 @@ async def test_dispatch_register_index_threads_shard_id(postgres_pool, reference
         meta_path.write_text(json.dumps(meta))
         entry = WorkflowAction(kind="action", name="register-index", inputs=[binding], outputs=[])
         out = await _run_action_primitive(
-            postgres_pool,
+            run_context(
+                pool=postgres_pool,
+                scope_target={"kind": "reference", "reference_idx": reference_idx},
+                work_ticket_idx=1,
+                signing_key=b"unused",
+                data_plane_url="grpc://unused:50051",
+            ),
             entry,
             {binding: str(meta_path)},
             tmp_path,
-            {"kind": "reference", "reference_idx": reference_idx},
-            work_ticket_idx=1,
-            signing_key=b"unused",
-            data_plane_url="grpc://unused:50051",
         )
         assert out == {}
 
@@ -2142,15 +2149,17 @@ async def test_run_action_primitive_plan_shards_is_opt_in(postgres_pool, tmp_pat
 
     async def _call(bound, *, dispatch_cb):
         return await _run_action_primitive(
-            postgres_pool,
+            run_context(
+                pool=postgres_pool,
+                scope_target=ref_scope,
+                work_ticket_idx=1,
+                signing_key=b"unused",
+                data_plane_url="grpc://unused:50051",
+                dispatch_cb=dispatch_cb,
+            ),
             entry,
             bound,
             tmp_path,
-            ref_scope,
-            work_ticket_idx=1,
-            signing_key=b"unused",
-            data_plane_url="grpc://unused:50051",
-            dispatch_cb=dispatch_cb,
         )
 
     # Absent key => no-op, even without a dispatch_cb (the failing-smoke case).
@@ -2191,14 +2200,16 @@ async def test_run_action_primitive_sync_reference_exclusion_stages_under_worksp
     pool = object()  # the arm forwards it unchanged; the DB read lives in the primitive
     entry = WorkflowAction(kind="action", name="sync-reference-exclusion", inputs=[], outputs=[])
     out = await _run_action_primitive(
-        pool,
+        run_context(
+            pool=pool,
+            scope_target={"kind": "reference", "reference_idx": 1},
+            work_ticket_idx=1,
+            signing_key=b"\x00" * 32,
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {},
         tmp_path,
-        {"kind": "reference", "reference_idx": 1},
-        work_ticket_idx=1,
-        signing_key=b"\x00" * 32,
-        data_plane_url="grpc://dp:50051",
     )
 
     assert out == {}
@@ -2249,14 +2260,16 @@ async def test_run_action_primitive_reconcile_block_dispatches(monkeypatch, tmp_
 
     entry = WorkflowAction(kind="action", name="reconcile-block", inputs=[], outputs=[])
     out = await _run_action_primitive(
-        None,  # pool — the fake ignores it
+        run_context(
+            pool=None,
+            scope_target={"kind": "block", "block_idx": 42},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {"mask_idx": 77},
         tmp_path,
-        {"kind": "block", "block_idx": 42},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {
@@ -2277,14 +2290,16 @@ async def test_run_action_primitive_reconcile_block_rejects_non_block_scope(tmp_
     entry = WorkflowAction(kind="action", name="reconcile-block", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="block-scoped"):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"mask_idx": 1},
             tmp_path,
-            {"kind": "prep_sample", "prep_sample_idx": 5},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -2308,14 +2323,16 @@ async def test_run_action_primitive_finalize_mask_sample_dispatches(monkeypatch,
 
     entry = WorkflowAction(kind="action", name="finalize-mask-sample", inputs=[], outputs=[])
     out = await _run_action_primitive(
-        None,  # pool — the fake ignores it
+        run_context(
+            pool=None,
+            scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {"mask_idx": 77},
         tmp_path,
-        {"kind": "prep_sample", "prep_sample_idx": 5},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {"mask_idx": 77, "prep_sample_idx": 5}
@@ -2347,14 +2364,16 @@ async def test_run_action_primitive_persist_syndna_read_count_dispatches(monkeyp
     )
     alignment = tmp_path / "syndna_alignment.parquet"
     out = await _run_action_primitive(
-        None,
+        run_context(
+            pool=None,
+            scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {"mask_idx": 77, "alignment": str(alignment)},
         tmp_path,
-        {"kind": "prep_sample", "prep_sample_idx": 5},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {"mask_idx": 77, "prep_sample_idx": 5, "alignment_path": Path(alignment)}
@@ -2379,14 +2398,16 @@ async def test_run_action_primitive_persist_syndna_read_count_rejects_a_bad_entr
     )
     with pytest.raises(RuntimeError, match=match):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target=scope,
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"mask_idx": 1, "alignment": "x", "read_mask": "x"},
             tmp_path,
-            scope,
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -2419,14 +2440,16 @@ async def test_run_action_primitive_refuses_a_wrongly_scoped_ticket(
     entry = WorkflowAction(kind="action", name=name, inputs=inputs, outputs=[])
     with pytest.raises(RuntimeError) as exc:
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": wrong},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"shard_index": True, "run_outcomes": "x", "alignment": "x"},
             tmp_path,
-            {"kind": wrong},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
     assert str(exc.value) == f"{name} requires a {required}-scoped ticket; got {wrong!r}"
 
@@ -2464,14 +2487,16 @@ async def test_run_action_primitive_persist_qc_checks_dispatches(monkeypatch, tm
     )
     sidecar = tmp_path / "qc_checks.json"
     out = await _run_action_primitive(
-        None,
+        run_context(
+            pool=None,
+            scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {"qc_checks": str(sidecar), QC_PRODUCER_BINDING: QcProducer.ALIGNMENT},
         tmp_path,
-        {"kind": "prep_sample", "prep_sample_idx": 5},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {
@@ -2501,14 +2526,16 @@ async def test_run_action_primitive_persist_qc_checks_rejects_a_bad_entry(
     entry = WorkflowAction(kind="action", name="persist-qc-checks", inputs=inputs, outputs=[])
     with pytest.raises(RuntimeError, match=match):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target=scope,
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"qc_checks": "x", "alignment": "x", QC_PRODUCER_BINDING: QcProducer.NONE},
             tmp_path,
-            scope,
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -2522,14 +2549,16 @@ async def test_run_action_primitive_finalize_mask_sample_rejects_non_prep_sample
     entry = WorkflowAction(kind="action", name="finalize-mask-sample", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="prep_sample-scoped"):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": "block", "block_idx": 42},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"mask_idx": 1},
             tmp_path,
-            {"kind": "block", "block_idx": 42},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -2554,14 +2583,16 @@ async def test_run_action_primitive_finalize_assembly_sample_dispatches(monkeypa
 
     entry = WorkflowAction(kind="action", name="finalize-assembly-sample", inputs=[], outputs=[])
     out = await _run_action_primitive(
-        None,  # pool — the fake ignores it
+        run_context(
+            pool=None,
+            scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {"processing_idx": 31},
         tmp_path,
-        {"kind": "prep_sample", "prep_sample_idx": 5},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {"processing_idx": 31, "prep_sample_idx": 5}
@@ -2579,14 +2610,16 @@ async def test_run_action_primitive_finalize_assembly_sample_rejects_non_prep_sa
     entry = WorkflowAction(kind="action", name="finalize-assembly-sample", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="prep_sample-scoped"):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": "block", "block_idx": 42},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"processing_idx": 1},
             tmp_path,
-            {"kind": "block", "block_idx": 42},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -2615,14 +2648,16 @@ async def test_run_action_primitive_delete_block_mask_dispatches(monkeypatch, tm
 
     entry = WorkflowAction(kind="action", name="delete-block-mask", inputs=[], outputs=[])
     out = await _run_action_primitive(
-        None,  # pool — the fake ignores it
+        run_context(
+            pool=None,
+            scope_target={"kind": "block", "block_idx": 42},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         {"mask_idx": 77},
         tmp_path,
-        {"kind": "block", "block_idx": 42},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {
@@ -2643,14 +2678,16 @@ async def test_run_action_primitive_delete_block_mask_rejects_non_block_scope(tm
     entry = WorkflowAction(kind="action", name="delete-block-mask", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="block-scoped"):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"mask_idx": 1},
             tmp_path,
-            {"kind": "prep_sample", "prep_sample_idx": 5},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -2700,14 +2737,16 @@ async def test_run_action_primitive_delete_alignment_sample_dispatches(
     pool = _FakeAlignmentIdxPool(77)
     entry = WorkflowAction(kind="action", name="delete-alignment-sample", inputs=[], outputs=[])
     out = await _run_action_primitive(
-        pool,
+        run_context(
+            pool=pool,
+            scope_target={"kind": "prep_sample", "prep_sample_idx": 42},
+            work_ticket_idx=9,
+            signing_key=b"sekret",
+            data_plane_url="grpc://dp:50051",
+        ),
         entry,
         bound,
         tmp_path,
-        {"kind": "prep_sample", "prep_sample_idx": 42},
-        work_ticket_idx=9,
-        signing_key=b"sekret",
-        data_plane_url="grpc://dp:50051",
     )
     assert out == {}
     assert recorded == {
@@ -2745,14 +2784,16 @@ async def test_run_action_primitive_delete_alignment_sample_refuses_context_disa
     entry = WorkflowAction(kind="action", name="delete-alignment-sample", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="action_context declares 999"):
         await _run_action_primitive(
-            _FakeAlignmentIdxPool(77),
+            run_context(
+                pool=_FakeAlignmentIdxPool(77),
+                scope_target={"kind": "prep_sample", "prep_sample_idx": 42},
+                work_ticket_idx=9,
+                signing_key=b"sekret",
+                data_plane_url="grpc://dp:50051",
+            ),
             entry,
             {"alignment_idx": 999},
             tmp_path,
-            {"kind": "prep_sample", "prep_sample_idx": 42},
-            work_ticket_idx=9,
-            signing_key=b"sekret",
-            data_plane_url="grpc://dp:50051",
         )
 
 
@@ -2760,8 +2801,8 @@ async def test_run_action_primitive_delete_alignment_sample_refuses_null_alignme
     monkeypatch, tmp_path
 ):
     """A ticket whose `alignment_idx` column is NULL has no alignment to scope the
-    delete to — no planner set it, or a mid-flight DELETE /alignment-definition
-    detached it (ON DELETE SET NULL). Refuse rather than fall back to the
+    delete to — no planner set it, or its alignment_definition row was removed
+    mid-flight (ON DELETE SET NULL). Refuse rather than fall back to the
     caller-chosen `action_context` value."""
     from qiita_common.actions import WorkflowAction
     from qiita_common.api_paths import LibraryPrimitive
@@ -2777,14 +2818,16 @@ async def test_run_action_primitive_delete_alignment_sample_refuses_null_alignme
     entry = WorkflowAction(kind="action", name="delete-alignment-sample", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="alignment_idx"):
         await _run_action_primitive(
-            _FakeAlignmentIdxPool(None),
+            run_context(
+                pool=_FakeAlignmentIdxPool(None),
+                scope_target={"kind": "prep_sample", "prep_sample_idx": 42},
+                work_ticket_idx=9,
+                signing_key=b"sekret",
+                data_plane_url="grpc://dp:50051",
+            ),
             entry,
             {"alignment_idx": 999},
             tmp_path,
-            {"kind": "prep_sample", "prep_sample_idx": 42},
-            work_ticket_idx=9,
-            signing_key=b"sekret",
-            data_plane_url="grpc://dp:50051",
         )
 
 
@@ -2799,14 +2842,16 @@ async def test_run_action_primitive_delete_alignment_sample_rejects_non_prep_sam
     entry = WorkflowAction(kind="action", name="delete-alignment-sample", inputs=[], outputs=[])
     with pytest.raises(RuntimeError, match="prep_sample-scoped"):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": "block", "block_idx": 5},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"alignment_idx": 1},
             tmp_path,
-            {"kind": "block", "block_idx": 5},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 
@@ -4213,15 +4258,17 @@ async def test_plan_shards_arm_stages_router_on_fanout(
 
     try:
         out = await runner._run_action_primitive(
-            postgres_pool,
+            run_context(
+                pool=postgres_pool,
+                scope_target=ref_scope,
+                work_ticket_idx=1,
+                signing_key=b"x" * 32,
+                data_plane_url="grpc://unused:1",
+                dispatch_cb=lambda _idx: None,
+            ),
             entry,
             {"shard_index": True},
             tmp_path,
-            ref_scope,
-            work_ticket_idx=1,
-            signing_key=b"x" * 32,
-            data_plane_url="grpc://unused:1",
-            dispatch_cb=lambda _idx: None,
         )
         assert out["router_pending"] is True
         with duckdb.connect(":memory:") as con:
@@ -4261,15 +4308,17 @@ async def test_plan_shards_arm_raises_on_zero_shards_when_requested(
     monkeypatch.setattr(shard_orchestration, "plan_shards", fake_noop)
     with pytest.raises(RuntimeError, match="no genome-bearing features to shard"):
         await runner._run_action_primitive(
-            postgres_pool,
+            run_context(
+                pool=postgres_pool,
+                scope_target=ref_scope,
+                work_ticket_idx=1,
+                signing_key=b"x" * 32,
+                data_plane_url="grpc://unused:1",
+                dispatch_cb=lambda _idx: None,
+            ),
             entry,
             {"shard_index": True},
             tmp_path,
-            ref_scope,
-            work_ticket_idx=1,
-            signing_key=b"x" * 32,
-            data_plane_url="grpc://unused:1",
-            dispatch_cb=lambda _idx: None,
         )
 
 
@@ -6083,14 +6132,16 @@ async def test_dispatch_mint_features_rejects_unknown_inputs(postgres_pool, libr
     )
     with pytest.raises(RuntimeError, match="mint-features expects inputs"):
         await _run_action_primitive(
-            postgres_pool,
+            run_context(
+                pool=postgres_pool,
+                scope_target={"kind": "prep_sample", "prep_sample_idx": 1},
+                work_ticket_idx=1,
+                signing_key=b"\x00" * 32,
+                data_plane_url="grpc://unused:50051",
+            ),
             entry,
             {"contig_manifest": str(tmp_path / "m.parquet")},
             tmp_path / "ws",
-            {"kind": "prep_sample", "prep_sample_idx": 1},
-            work_ticket_idx=1,
-            signing_key=b"\x00" * 32,
-            data_plane_url="grpc://unused:50051",
         )
     assert library_spy.calls == []
 
@@ -7002,14 +7053,16 @@ async def test_run_action_primitive_persist_qc_checks_refuses_an_unresolved_prod
     match = "cannot be counted" if bind_none else "did not bind"
     with pytest.raises(RuntimeError, match=match):
         await _run_action_primitive(
-            None,
+            run_context(
+                pool=None,
+                scope_target={"kind": "prep_sample", "prep_sample_idx": 5},
+                work_ticket_idx=1,
+                signing_key=b"x",
+                data_plane_url="grpc://x",
+            ),
             entry,
             {"qc_checks": "x", **({QC_PRODUCER_BINDING: None} if bind_none else {})},
             tmp_path,
-            {"kind": "prep_sample", "prep_sample_idx": 5},
-            work_ticket_idx=1,
-            signing_key=b"x",
-            data_plane_url="grpc://x",
         )
 
 

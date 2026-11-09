@@ -499,7 +499,7 @@ async def test_plan_only_missing_skips_already_gated(pooled, planapp):
 
 async def test_plan_disallow_resubmit_over_completed_mask(pooled, planapp):
     """A sample already COMPLETED for its resolved mask cannot be re-planned
-    without a DELETE (mirrors the pool COMPLETED-resubmit rule): re-masking would
+    under that mask (mirrors the pool COMPLETED-resubmit rule): re-masking would
     double-write its read_mask. only_missing=False raises BlockMaskResubmitError;
     only_missing=True skips it (the resume path)."""
     pool = pooled["pool"]
@@ -964,3 +964,22 @@ async def test_plan_forced_reference_not_ready_raises(hf, planapp):
             )
     finally:
         await pool.execute("DELETE FROM qiita.reference WHERE reference_idx = $1", bare_ref)
+
+
+async def test_plan_holds_each_partition_mask_in_its_ticket_transaction(
+    pooled, planapp, monkeypatch
+):
+    """Every partition's mask row is taken `FOR SHARE` in the transaction that writes
+    its tickets (`lock_active_mask`), so a deprecation cannot commit between the mint
+    and the tickets without counting them."""
+    locked: list[tuple[int, bool]] = []
+    real = block_planner.lock_active_mask
+
+    async def _spy(conn, idx):
+        locked.append((idx, conn.is_in_transaction()))
+        await real(conn, idx)
+
+    monkeypatch.setattr(block_planner, "lock_active_mask", _spy)
+    await pooled["add_sample"](reads=150)
+    summary, _dispatched = await _plan(pooled, planapp)
+    assert locked == [(summary["partitions"][0]["mask_idx"], True)]

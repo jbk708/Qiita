@@ -34,7 +34,7 @@ import pyarrow as pa
 import pyarrow.flight as _flight
 import pyarrow.parquet as pq
 from pydantic import TypeAdapter
-from qiita_common.api_paths import LibraryPrimitive
+from qiita_common.api_paths import URL_ALIGNMENT_DEFINITION_ABANDON_PLAN, LibraryPrimitive
 from qiita_common.assembly_constants import (
     CONTIG_ATTRIBUTE_REPRESENTATIVE_SQL,
     CONTIG_ATTRIBUTES_FILE,
@@ -65,9 +65,13 @@ from qiita_common.qc_reasons import load_qc_reasons
 from qiita_common.taxonomy import TAXONOMY_SOURCE_TABLE, genome_lineage_select_sql
 
 from ..auth.tickets import run_signed_flight_call, sign_action, sign_ticket
-from ..miint import duckdb_connect
+from ..miint import arrow_batches, duckdb_connect, run_on_connection
 from ..problem_list import capped
 from ..repositories import require_transaction
+from ..repositories.alignment_definition import (
+    ALIGNMENT_SAMPLE_COMPLETED,
+    ALIGNMENT_SAMPLE_INVALIDATED,
+)
 from ..repositories.amplicon import close_amplicon_samples
 from ..repositories.assembly import (
     ASSEMBLY_GENOME_MAP_PAIRS_SQL,
@@ -78,8 +82,10 @@ from ..repositories.assembly import (
     upsert_assembly_sample_completed,
 )
 from ..repositories.block import (
+    BLOCK_ABANDONED,
     MASK_SAMPLE_COMPLETED,
     MASK_SAMPLE_INVALIDATED,
+    AlignmentSampleInvalidated,
     MaskSampleInvalidated,
     fetch_block_members,
     finalize_alignment_sample,
@@ -416,13 +422,15 @@ async def _associate_genomes(
     """
     with duckdb_connect() as duck:
         prep_select = "g.prep_sample_idx" if has_prep else "CAST(NULL AS BIGINT) AS prep_sample_idx"
-        reader = duck.execute(
+        reader = arrow_batches(
+            duck,
             f"SELECT fm.feature_idx, g.genome_source, g.genome_source_id, {prep_select}"
             " FROM read_parquet(?) AS m"
             " JOIN read_parquet(?) AS g USING (read_id)"
             " JOIN read_parquet(?) AS fm USING (sequence_hash)",
             [str(manifest_path), str(genome_map_path), str(feature_map_path)],
-        ).to_arrow_reader(_CHUNK_SIZE)
+            _CHUNK_SIZE,
+        )
         for batch in reader:
             feat_idxs = batch.column("feature_idx").to_pylist()
             if not feat_idxs:
@@ -583,10 +591,12 @@ async def mint_features(
         # upsert), and an ORDER BY would force a full blocking sort before the
         # first batch, defeating the streaming. The output is separately
         # ordered by feature_idx at COPY time.
-        reader = read_conn.execute(
+        reader = arrow_batches(
+            read_conn,
             "SELECT sequence_hash FROM read_parquet(?)",
             [str(manifest_path)],
-        ).to_arrow_reader(_CHUNK_SIZE)
+            _CHUNK_SIZE,
+        )
         for batch in reader:
             raw_hashes = batch.column("sequence_hash").to_pylist()
             if not raw_hashes:
@@ -609,7 +619,8 @@ async def mint_features(
         # The one large blocking step — DISTINCT + sort + Parquet encode — runs
         # off the event loop so it never starves the API the CP also serves. An
         # empty manifest yields zero rows and a valid empty Parquet here.
-        await asyncio.to_thread(
+        await run_on_connection(
+            write_conn,
             write_conn.execute,
             "COPY (SELECT DISTINCT sequence_hash, feature_idx FROM feature_map "
             f"      ORDER BY feature_idx) TO '{out}' ({PARQUET_OPTS_TRANSFER})",
@@ -753,15 +764,16 @@ async def _write_annotation_claims(
         # Footer-only count first: on the no-GFF path this is the entire cost. The empty
         # map is still WRITTEN — reference_load binds it unconditionally, so an absent
         # file is a FileNotFoundError, not an absent annotation set.
-        expected = read_conn.execute(
+        [(expected,)] = read_conn.execute(
             "SELECT count(*) FROM read_parquet(?)", [str(annotation_manifest_path)]
-        ).fetchone()[0]
+        ).fetchall()
         if expected == 0:
             _copy_annotation_map(write_conn, out_path)
             return out_path
 
         read_conn.execute("SET preserve_insertion_order=false")
-        reader = read_conn.execute(
+        reader = arrow_batches(
+            read_conn,
             "SELECT afm.feature_idx, "
             "       fm.feature_idx AS parent_feature_idx, "
             "       am.position, am.stop_position, am.annotation_type, am.strand, "
@@ -774,7 +786,8 @@ async def _write_annotation_claims(
                 str(annotation_feature_map_path),
                 str(feature_map_path),
             ],
-        ).to_arrow_reader(_CHUNK_SIZE)
+            _CHUNK_SIZE,
+        )
 
         resolved = 0
         for batch in reader:
@@ -833,7 +846,7 @@ async def _write_annotation_claims(
                 f"{expected} annotation(s) — an interval's feature_idx or its parent's "
                 "could not be resolved from the feature maps"
             )
-        await asyncio.to_thread(_copy_annotation_map, write_conn, out_path)
+        await run_on_connection(write_conn, _copy_annotation_map, write_conn, out_path)
     finally:
         read_conn.close()
         write_conn.close()
@@ -966,9 +979,9 @@ async def _write_annotation_terms(
     """
     read_conn = duckdb_connect()
     try:
-        expected = read_conn.execute(
+        [(expected,)] = read_conn.execute(
             "SELECT count(*) FROM read_parquet(?)", [str(annotation_manifest_path)]
-        ).fetchone()[0]
+        ).fetchall()
         if expected == 0:
             return 0
 
@@ -976,7 +989,7 @@ async def _write_annotation_terms(
         params = [str(annotation_manifest_path), str(feature_map_path)]
 
         # PASS 1 — the terms themselves.
-        terms = read_conn.execute(_term_grain_sql(), params).to_arrow_reader(_CHUNK_SIZE)
+        terms = arrow_batches(read_conn, _term_grain_sql(), params, _CHUNK_SIZE)
         for batch in terms:
             if not batch.num_rows:
                 continue
@@ -996,7 +1009,7 @@ async def _write_annotation_terms(
                 )
 
         # PASS 2 — the links, now that every term they name is resolvable.
-        links = read_conn.execute(_link_grain_sql(), params).to_arrow_reader(_CHUNK_SIZE)
+        links = arrow_batches(read_conn, _link_grain_sql(), params, _CHUNK_SIZE)
         linked = 0
         for batch in links:
             if not batch.num_rows:
@@ -1195,10 +1208,12 @@ async def write_membership(
     total_seen = 0
     async with pool.acquire() as conn:
         with duckdb_connect() as duck:
-            reader = duck.execute(
+            reader = arrow_batches(
+                duck,
                 MEMBERSHIP_ACCESSION_JOIN_SQL,
                 [str(feature_map_path), str(manifest_path)],
-            ).to_arrow_reader(_CHUNK_SIZE)
+                _CHUNK_SIZE,
+            )
             for batch in reader:
                 feature_idxs = batch.column("feature_idx").to_pylist()
                 if not feature_idxs:
@@ -1742,7 +1757,7 @@ async def plan_shards(
 # They do NOT converge the same way on a re-run. This side upserts and COALESCEs,
 # so a replay whose genomes_dir has no sidecar keeps the attributes an earlier
 # pass stored; the lake side is replace-keyed on (prep_sample_idx,
-# processing_idx) in `flight_service::REPLACE_KEY_TABLES`, so the same replay
+# processing_idx) in `flight_service::registration::REPLACE_KEY_TABLES`, so the same replay
 # supersedes that run's lake rows with the NULLs it just computed. Postgres is
 # the authority for these four columns; the lake copy reflects the LAST run.
 ASSEMBLY_MEMBERSHIP_JOIN_SQL = (
@@ -1830,10 +1845,12 @@ async def write_assembly_membership(
     async with pool.acquire() as conn:
         with duckdb_connect() as duck:
             register_contig_attribute_table(duck, genomes_dir / CONTIG_ATTRIBUTES_FILE)
-            reader = duck.execute(
+            reader = arrow_batches(
+                duck,
                 ASSEMBLY_MEMBERSHIP_JOIN_SQL,
                 [str(bin_map_path), str(manifest_path), str(feature_map_path)],
-            ).to_arrow_reader(_CHUNK_SIZE)
+                _CHUNK_SIZE,
+            )
             for batch in reader:
                 kinds = batch.column("kind").to_pylist()
                 if not kinds:
@@ -2384,7 +2401,7 @@ async def persist_qc_checks(
             if ticket[column] is None:
                 raise RuntimeError(
                     f"persist-qc-checks requires work_ticket {work_ticket_idx} to carry a "
-                    f"{column}; the column is NULL (the definition was deleted mid-flight)"
+                    f"{column}; the column is NULL (the definition was removed by hand mid-flight)"
                 )
             producer[column] = ticket[column]
         return await upsert_qc_checks(
@@ -2507,35 +2524,6 @@ async def delete_pool_reads_data(
     if not results:
         return {}
     return json.loads(results[0].body.to_pybytes())
-
-
-async def delete_mask_data(
-    *,
-    mask_idx: int,
-    signing_key: bytes,
-    data_plane_url: str,
-) -> int:
-    """Delete a mask's DuckLake read_mask rows via the data plane's DoAction.
-
-    Signs a `delete_mask` action token carrying only `mask_idx` and returns the
-    data plane's rows-deleted count. The delete is a logical `DELETE FROM
-    read_mask WHERE mask_idx = ?` inside one DuckLake transaction — no parquet is
-    reclaimed from disk (mirrors `delete_reference`).
-
-    Idempotent: a mask whose rows never registered (or were already deleted)
-    deletes zero rows and still succeeds. Raises pyarrow.flight.FlightError on
-    transport / data-plane failure."""
-    results = await run_signed_flight_call(
-        lambda: sign_action(
-            action="delete_mask",
-            payload={"mask_idx": mask_idx},
-            secret=signing_key,
-        ),
-        lambda token: _do_action("delete_mask", data_plane_url, token),
-    )
-    if not results:
-        return 0
-    return json.loads(results[0].body.to_pybytes()).get("rows_deleted", 0)
 
 
 # Fixed advisory-lock key that serializes every reference-exclusion sync (see
@@ -2868,7 +2856,7 @@ async def delete_alignment_sample_data(
 
     Signs an action token carrying that pair and nothing else — the data plane's
     payload rejects any extra field. What the pair selects, and why it rather than
-    the block or the whole alignment, is on the Rust `delete_alignment_sample`.
+    the block, is on the Rust `delete_alignment_sample`.
     Idempotent: a fresh sample (no rows yet) deletes 0 and still succeeds. Raises
     pyarrow.flight.FlightError on transport / data-plane failure."""
     results = await run_signed_flight_call(
@@ -2878,36 +2866,6 @@ async def delete_alignment_sample_data(
             secret=signing_key,
         ),
         lambda token: _do_action("delete_alignment_sample", data_plane_url, token),
-    )
-    if not results:
-        return 0
-    return json.loads(results[0].body.to_pybytes()).get("rows_deleted", 0)
-
-
-async def delete_alignment_data(
-    *,
-    alignment_idx: int,
-    signing_key: bytes,
-    data_plane_url: str,
-) -> int:
-    """Delete an alignment's DuckLake `alignment` rows via the data plane's
-    `delete_alignment` DoAction, returning the rows-deleted count. The alignment
-    twin of `delete_mask_data` — the whole-alignment purge the
-    disallow-without-delete resubmission rule needs.
-
-    Signs a `delete_alignment` action token carrying only `alignment_idx`. The
-    delete is a logical `DELETE FROM alignment WHERE alignment_idx = ?` inside one
-    DuckLake transaction — no parquet is reclaimed from disk (mirrors
-    `delete_mask`). Idempotent: an alignment whose rows never registered (or were
-    already deleted) deletes zero rows and still succeeds. Raises
-    pyarrow.flight.FlightError on transport / data-plane failure."""
-    results = await run_signed_flight_call(
-        lambda: sign_action(
-            action="delete_alignment",
-            payload={"alignment_idx": alignment_idx},
-            secret=signing_key,
-        ),
-        lambda token: _do_action("delete_alignment", data_plane_url, token),
     )
     if not results:
         return 0
@@ -3133,8 +3091,7 @@ async def _complete_mask_sample_gate(
     short-circuit (it reads 'completed' as "already finalized"), silently dropping
     the block's per-sample finalize over a now-double-written read_mask footprint. So
     refuse loudly when a covering block is still masking this footprint — the block
-    path owns that gate; the operator must delete the conflicting block-mask (or the
-    per-sample duplicate) rather than let two masking runs race the same footprint.
+    path owns that gate.
 
     The check (`has_incomplete_covering_block`) and the write
     (`upsert_mask_sample_completed`) are made atomic w.r.t. the concurrent block
@@ -3156,8 +3113,7 @@ async def _complete_mask_sample_gate(
             f"refusing to finalize the mask_sample gate for (mask={mask_idx}, "
             f"prep_sample={prep_sample_idx}): a covering block is still masking the "
             "same footprint under this mask_idx (cross-path double-mask). The block "
-            "path owns this gate — delete the conflicting block-mask (or the "
-            "per-sample duplicate) before masking the same config twice."
+            "path owns this gate."
         )
     await upsert_mask_sample_completed(conn, mask_idx=mask_idx, prep_sample_idx=prep_sample_idx)
 
@@ -3348,6 +3304,19 @@ async def finalize_alignment_sample_gate(
     return {"alignment_idx": alignment_idx, "prep_sample_idx": prep_sample_idx}
 
 
+async def _refuse_abandoned_block(pool_or_conn: asyncpg.Pool | asyncpg.Connection, block_idx: int):
+    """Raise when abandon-plan has given up on this block. Its ticket's /run is
+    refused too (routes/work_ticket.py); this is the check at the steps that write."""
+    state = await pool_or_conn.fetchval(
+        "SELECT state FROM qiita.block WHERE block_idx = $1", block_idx
+    )
+    if state == BLOCK_ABANDONED:
+        raise RuntimeError(
+            f"block {block_idx} was abandoned ({URL_ALIGNMENT_DEFINITION_ABANDON_PLAN});"
+            " its prep_samples are re-planned under new blocks, so it must not write"
+        )
+
+
 async def delete_alignment_block(
     pool: asyncpg.Pool,
     *,
@@ -3374,7 +3343,12 @@ async def delete_alignment_block(
     is no reconcile count-assertion for alignment (rows are not 1:1 with reads), but
     the delete-then-register discipline keeps a retried block from accumulating
     duplicate alignment rows. Read-only on Postgres — the delete lands in DuckLake.
-    Returns the rows-deleted count for the workflow log."""
+    Returns the rows-deleted count for the workflow log.
+
+    Refuses an 'abandoned' block: abandon-plan purged its footprint and cleared its
+    prep_samples' gates, so a re-plan may already have registered rows over the same
+    ranges, and this delete would remove them."""
+    await _refuse_abandoned_block(pool, block_idx)
     members = [
         {
             "prep_sample_idx": prep_sample_idx,
@@ -3411,8 +3385,7 @@ async def delete_alignment_sample(
     Takes no `pool`: the caller supplies both identifiers, so unlike the block
     twin there is no `block_member` lookup to do. Like it, this touches only
     DuckLake — the Postgres `alignment_sample` gate row is the terminal step's to
-    flip, and clearing a gate is `DELETE /alignment-definition/{idx}` (which
-    CASCADEs it), not a mid-workflow replace.
+    flip, not a mid-workflow replace's.
 
     Returns the rows-deleted count for the workflow log."""
     rows_deleted = await delete_alignment_sample_data(
@@ -3457,6 +3430,7 @@ async def reconcile_alignment_block(
     finalized."""
     finalized: list[int] = []
     async with pool.acquire() as conn, conn.transaction():
+        await _refuse_abandoned_block(conn, block_idx)
         # This block's work is done; count it as completed BEFORE the per-sample
         # gate check below (same txn — the UPDATE is visible to our own SELECTs).
         # We proceed regardless of the guarded bool: a re-run where it is already
@@ -3477,10 +3451,16 @@ async def reconcile_alignment_block(
                     f"prep_sample={prep_sample_idx}); it must be materialized PENDING "
                     "at plan time before any block runs"
                 )
-            if state == "completed":
+            if state == ALIGNMENT_SAMPLE_COMPLETED:
                 # Already finalized (idempotent re-run, or a concurrent block
                 # finalizer won this sample's race) — nothing to do.
                 continue
+            if state == ALIGNMENT_SAMPLE_INVALIDATED:
+                # The pair was withdrawn; the withdrawal stands until someone
+                # restores it.
+                raise AlignmentSampleInvalidated(
+                    alignment_idx=alignment_idx, prep_sample_idx=prep_sample_idx
+                )
             if await has_incomplete_covering_alignment_block(
                 conn, alignment_idx=alignment_idx, prep_sample_idx=prep_sample_idx
             ):

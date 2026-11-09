@@ -298,8 +298,8 @@ class WorkTicket(BaseModel):
     shard_id: int | None = None
     # The mask this ticket minted or filtered against (qiita.mask_definition),
     # None for every ticket that carries no mask. Mirrors qiita.work_ticket.
-    # mask_idx, whose FK is ON DELETE SET NULL — a purged mask detaches its
-    # tickets, so a None here can also mean "the mask this ticket used is gone".
+    # mask_idx, whose FK is ON DELETE SET NULL — a ticket whose mask_definition
+    # row has been deleted reads None too.
     # Surfaced so `qiita ticket status` on a read-mask ticket names the mask it
     # produced, which is one of the ways a client resolves a mask_idx without a
     # DB shell (the mask-definition reads are the other).
@@ -545,7 +545,7 @@ class AlignPlanRequest(BaseModel):
     `only_missing` drops samples already carrying a completion gate for their
     resolved alignment, so an interrupted plan re-runs only the gap; off by default
     so a deliberate re-plan still tiles pool-wide (and is refused, 409, if any
-    sample is already gated — DELETE the alignment first or pass only_missing)."""
+    prep_sample is already gated; the 409 names the way out)."""
 
     reference_idx: Annotated[int, Field(gt=0)]
     mask_idx: Annotated[int, Field(gt=0)]

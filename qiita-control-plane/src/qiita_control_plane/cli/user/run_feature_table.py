@@ -30,6 +30,7 @@ from qiita_common.api_paths import (
     PATH_FEATURE_TABLE_SAMPLES,
     PATH_FEATURE_TABLE_VALUES,
 )
+from qiita_common.duckdb_relation import registered
 from qiita_common.models.run_feature_table import FeatureTableRequest
 from qiita_common.taxonomy import QUOTED_RANK_COLUMNS
 
@@ -39,7 +40,6 @@ from .feature_table import (
     IDENTIFIER_MAP_NOTE,
     SequencesClearance,
     _bundle_targets,
-    _registered,
     _tool_versions,
     _write_bundle,
 )
@@ -102,13 +102,13 @@ def _build(args: argparse.Namespace, token: str, con) -> tuple[list[Path], dict[
     source = SOURCES[columns["method"]]
     values = _arrow(args, token, PATH_FEATURE_TABLE_VALUES, request)
     features = _arrow(args, token, PATH_FEATURE_TABLE_FEATURES, request)
-    with _registered(con, "run_values", values):
+    with registered(con, "run_values", values):
         con.execute(
             f"CREATE TEMP TABLE {ft.LABELLED_RELATION} AS"
             " SELECT feature AS feature_id, sample AS sample_id, value"
             " FROM run_values ORDER BY sample_id, feature_id"
         )
-    with _registered(con, "run_features", features):
+    with registered(con, "run_features", features):
         con.execute(f"CREATE TEMP TABLE {FEATURE_RELATION} AS SELECT * FROM run_features")
     unnamed = con.execute(
         f"SELECT count(DISTINCT feature_id) FROM {ft.LABELLED_RELATION}"

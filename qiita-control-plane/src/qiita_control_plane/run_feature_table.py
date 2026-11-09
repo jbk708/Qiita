@@ -486,7 +486,7 @@ def _staged(
             duck.execute(ft.map_table_sql("genome_members"))
             duck.execute(ft.taxonomy_table_sql("genome_taxonomy"))
             duck.execute(ft.taxonomy_sidecar_sql())
-        return duck.execute(query).to_arrow_table()
+        return duck.sql(query).to_arrow_table()
 
 
 def build_values(
@@ -591,7 +591,7 @@ def build_features(
                 _keep_greengenes2(duck, greengenes2_path)
                 ranks = rank_columns_sql(alias="t")
                 join = f" JOIN {greengenes2.GREENGENES2_RELATION} t USING (feature)"
-            table = duck.execute(
+            table = duck.sql(
                 f"SELECT f.feature, f.sequence, f.length, {ranks}"
                 f" FROM {FEATURE_RELATION} f{join} ORDER BY f.feature"
             ).to_arrow_table()

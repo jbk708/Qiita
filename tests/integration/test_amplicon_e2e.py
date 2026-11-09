@@ -73,12 +73,7 @@ _READS_PER_SAMPLE = 500
 # The committed amplicon pre-flight the control-plane tests use; the e2e pool
 # stores a cut-down copy so the runner can check barcode_map against it.
 _AMPLICON_PREFLIGHT_GZ = (
-    _REPO_ROOT
-    / "qiita-control-plane"
-    / "tests"
-    / "cli"
-    / "data"
-    / "good_amplicon_v1.sqlite.gz"
+    _REPO_ROOT / "qiita-control-plane" / "tests" / "cli" / "data" / "good_amplicon_v1.sqlite.gz"
 )
 
 
@@ -90,9 +85,7 @@ def _pool_preflight(tmp_path: Path) -> bytes:
     db = tmp_path / "amplicon_e2e_preflight.db"
     db.write_bytes(gzip.decompress(_AMPLICON_PREFLIGHT_GZ.read_bytes()))
     conn = sqlite3.connect(db)
-    conn.execute(
-        "DELETE FROM amplicon_sample WHERE prepped_sample_idx > ?", (len(_BARCODES),)
-    )
+    conn.execute("DELETE FROM amplicon_sample WHERE prepped_sample_idx > ?", (len(_BARCODES),))
     for k, barcode in enumerate(_BARCODES, start=1):
         conn.execute(
             "UPDATE amplicon_sample SET barcode = ? WHERE prepped_sample_idx = ?",
@@ -100,9 +93,7 @@ def _pool_preflight(tmp_path: Path) -> bytes:
         )
     conn.execute("UPDATE amplicon_run SET barcodes_are_rc = 1")
     conn.execute("UPDATE input_sample SET biosample_accession = 'BIO_' || sample_name")
-    conn.execute(
-        "UPDATE project SET bioproject_accession = 'PRJNA' || external_project_id"
-    )
+    conn.execute("UPDATE project SET bioproject_accession = 'PRJNA' || external_project_id")
     conn.commit()
     conn.close()
     return db.read_bytes()
@@ -125,9 +116,7 @@ def _read_fasta_sequences(path: Path) -> list[str]:
     with open_miint_conn() as conn:
         return [
             row[0]
-            for row in conn.execute(
-                "SELECT sequence1 FROM read_fastx(?)", [str(path)]
-            ).fetchall()
+            for row in conn.execute("SELECT sequence1 FROM read_fastx(?)", [str(path)]).fetchall()
         ]
 
 
@@ -221,12 +210,8 @@ async def synced_amplicon_actions(postgres_pool, tmp_path):
     )
     yield
     for action_id in ("golay-demux", "amplicon"):
-        await postgres_pool.execute(
-            "DELETE FROM qiita.work_ticket WHERE action_id = $1", action_id
-        )
-        await postgres_pool.execute(
-            "DELETE FROM qiita.action WHERE action_id = $1", action_id
-        )
+        await postgres_pool.execute("DELETE FROM qiita.work_ticket WHERE action_id = $1", action_id)
+        await postgres_pool.execute("DELETE FROM qiita.action WHERE action_id = $1", action_id)
 
 
 @pytest.fixture
@@ -245,9 +230,7 @@ async def seeded_pool(postgres_pool, human_admin_session, tmp_path):
         (
             biosample_idx,
             prep_sample_idx,
-        ) = await seed_biosample_with_sequenced_prep_sample(
-            postgres_pool, owner_idx=owner
-        )
+        ) = await seed_biosample_with_sequenced_prep_sample(postgres_pool, owner_idx=owner)
         run_idx, pool_idx, ss_idx = await seed_sequenced_sample_subtype(
             postgres_pool,
             prep_sample_idx=prep_sample_idx,
@@ -280,12 +263,8 @@ async def seeded_pool(postgres_pool, human_admin_session, tmp_path):
         biosample_idxs=bio_idxs,
         prep_sample_idxs=prep_idxs,
     )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx
-    )
-    await postgres_pool.execute(
-        "DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx
-    )
+    await postgres_pool.execute("DELETE FROM qiita.sequenced_pool WHERE idx = $1", pool_idx)
+    await postgres_pool.execute("DELETE FROM qiita.sequencing_run WHERE idx = $1", run_idx)
 
 
 @pytest.fixture
@@ -400,9 +379,7 @@ def co_cp_bridge(
         return real_make_cp_client(transport=ASGITransport(app=cp_app))
 
     for module in ("jobs.golay_demux", "data_plane_client"):
-        monkeypatch.setattr(
-            f"qiita_compute_orchestrator.{module}.make_cp_client", _bridged
-        )
+        monkeypatch.setattr(f"qiita_compute_orchestrator.{module}.make_cp_client", _bridged)
 
     yield {"data_plane_url": dp_url, "cp_app": cp_app}
 
@@ -506,7 +483,8 @@ async def test_golay_demux_then_amplicon(
     # Every read matched a barcode (the fixture is 4 clean codewords x 500), so
     # the pool carries one sequence_range per sample and 2000 reads total.
     ranges = await postgres_pool.fetch(
-        "SELECT prep_sample_idx FROM qiita.sequence_range WHERE prep_sample_idx = ANY($1::bigint[])",
+        "SELECT prep_sample_idx FROM qiita.sequence_range"
+        " WHERE prep_sample_idx = ANY($1::bigint[])",
         prep_idxs,
     )
     assert {r["prep_sample_idx"] for r in ranges} == set(prep_idxs)

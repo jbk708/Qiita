@@ -18,6 +18,6 @@ from qiita_common.taxonomic_profile_constants import genome_source_id_sql
 )
 def test_a_genome_name_reduces_to_its_source_id(name, source_id):
     sql = genome_source_id_sql("name")
-    assert duckdb.sql(f"SELECT {sql} FROM (SELECT ? AS name)", params=[name]).fetchone()[0] == (
+    assert duckdb.sql(f"SELECT {sql} FROM (SELECT ? AS name)", params=[name]).fetchall()[0][0] == (
         source_id
     )

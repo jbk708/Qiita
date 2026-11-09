@@ -18,7 +18,7 @@ def test_compute_upload_staging_path_matches_rust_layout():
     """Locked layout: ``{root}/uploads/{idx}/upload.parquet``.
 
     Mirrors the Rust unit test ``staging_path_for_layout`` in
-    ``qiita-data-plane/src/flight_service.rs``. If you change one,
+    ``qiita-data-plane/src/flight_service/doput_tests.rs``. If you change one,
     change the other in the same commit; both sides will move together
     or not at all."""
     assert compute_upload_staging_path(Path("/scratch/staging"), 42) == Path(
@@ -528,9 +528,19 @@ _TRIPLES: list[tuple[str, str, str]] = [
     ),
     # /alignment-definition
     (
-        "URL_ALIGNMENT_DEFINITION_BY_IDX",
+        "URL_ALIGNMENT_DEFINITION_STATUS",
         "PATH_ALIGNMENT_DEFINITION_PREFIX",
-        "PATH_ALIGNMENT_DEFINITION_BY_IDX",
+        "PATH_ALIGNMENT_DEFINITION_STATUS",
+    ),
+    (
+        "URL_ALIGNMENT_DEFINITION_SAMPLE_STATUS",
+        "PATH_ALIGNMENT_DEFINITION_PREFIX",
+        "PATH_ALIGNMENT_DEFINITION_SAMPLE_STATUS",
+    ),
+    (
+        "URL_ALIGNMENT_DEFINITION_ABANDON_PLAN",
+        "PATH_ALIGNMENT_DEFINITION_PREFIX",
+        "PATH_ALIGNMENT_DEFINITION_ABANDON_PLAN",
     ),
     # /alignment (Flight DoGet ticket for the alignment sink)
     ("URL_ALIGNMENT_DOGET", "PATH_ALIGNMENT_PREFIX", "PATH_ALIGNMENT_DOGET"),

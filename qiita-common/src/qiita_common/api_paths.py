@@ -409,7 +409,7 @@ def compute_upload_staging_path(staging_root: Path, upload_idx: int) -> Path:
     """Canonical filesystem path for a staged DoPut upload.
 
     Mirrors the Rust ``staging_path_for(root, idx)`` in
-    ``qiita-data-plane/src/flight_service.rs``: a single source of truth
+    ``qiita-data-plane/src/flight_service/doput.rs``: a single source of truth
     so the data plane (writes here on DoPut) and the control-plane
     runner (reads here on workflow start) agree byte-for-byte. The
     layout — ``{root}/uploads/{idx}/upload.parquet`` — is locked by
@@ -489,7 +489,7 @@ URL_QC_CHECK_BY_PREP_SAMPLE = f"{URL_QC_CHECK_PREFIX}{PATH_QC_CHECK_BY_PREP_SAMP
 
 PATH_MASK_DEFINITION_PREFIX = "/mask-definition"
 PATH_MASK_DEFINITION_ROOT = ""  # POST (mint) / GET (list) against the prefix itself
-PATH_MASK_DEFINITION_BY_IDX = "/{mask_idx}"  # GET one mask; DELETE (lake rows + Postgres row)
+PATH_MASK_DEFINITION_BY_IDX = "/{mask_idx}"  # GET one mask
 PATH_MASK_DEFINITION_PREP_SAMPLE = "/{mask_idx}/prep-sample"  # GET the per-sample roster
 # PATCH the CONFIG's lifecycle (active <-> deprecated). Mirrors
 # PATH_REFERENCE_STATUS; a deprecated config cannot be minted against.
@@ -519,16 +519,27 @@ URL_MASK_DEFINITION_SYNDNA_READ_COUNT = (
 # =============================================================================
 # The alignment_idx that keys the data plane's DuckLake `alignment` rows is minted
 # at plan time by the align-plan route (not a public POST here). This surface is
-# the destructive DELETE: full purge of an alignment (its DuckLake rows + the
-# Postgres alignment_definition row, cascading the alignment_sample gate) — the
-# disallow-without-delete escape hatch, system_admin-only.
+# the alignment lifecycle, system_admin-only. Mirrors /mask-definition's
+# status and sample-status routes.
 
 PATH_ALIGNMENT_DEFINITION_PREFIX = "/alignment-definition"
-PATH_ALIGNMENT_DEFINITION_BY_IDX = "/{alignment_idx}"  # DELETE an alignment (lake + Postgres)
+# PATCH the CONFIG's lifecycle (active <-> deprecated).
+PATH_ALIGNMENT_DEFINITION_STATUS = "/{alignment_idx}/status"
+# PATCH specific RUNS of the config (completed <-> invalidated).
+PATH_ALIGNMENT_DEFINITION_SAMPLE_STATUS = "/{alignment_idx}/sample-status"
+# POST: give up on the align plan's unfinished blocks and clear the pending gates
+# they covered, so the prep_samples can be re-planned with only_missing=true.
+PATH_ALIGNMENT_DEFINITION_ABANDON_PLAN = "/{alignment_idx}/abandon-plan"
 
 URL_ALIGNMENT_DEFINITION_PREFIX = f"{API_PREFIX}{PATH_ALIGNMENT_DEFINITION_PREFIX}"
-URL_ALIGNMENT_DEFINITION_BY_IDX = (
-    f"{URL_ALIGNMENT_DEFINITION_PREFIX}{PATH_ALIGNMENT_DEFINITION_BY_IDX}"
+URL_ALIGNMENT_DEFINITION_STATUS = (
+    f"{URL_ALIGNMENT_DEFINITION_PREFIX}{PATH_ALIGNMENT_DEFINITION_STATUS}"
+)
+URL_ALIGNMENT_DEFINITION_SAMPLE_STATUS = (
+    f"{URL_ALIGNMENT_DEFINITION_PREFIX}{PATH_ALIGNMENT_DEFINITION_SAMPLE_STATUS}"
+)
+URL_ALIGNMENT_DEFINITION_ABANDON_PLAN = (
+    f"{URL_ALIGNMENT_DEFINITION_PREFIX}{PATH_ALIGNMENT_DEFINITION_ABANDON_PLAN}"
 )
 
 # =============================================================================

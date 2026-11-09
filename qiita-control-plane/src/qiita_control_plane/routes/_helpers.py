@@ -15,6 +15,7 @@ from qiita_common.models import (
     GLOBAL_FIELD_IDX_ATTR,
     NOT_SETTABLE_ON_LINKED_FIELD,
     STUDY_FIELD_IDX_ATTR,
+    AlignmentDefinitionStatus,
     IdxsListResponse,
     MetadataEntry,
     MetadataFieldWriteResult,
@@ -73,8 +74,9 @@ from ..repositories._sample_helpers import (
     widen_study_field_to_text,
     write_sample_metadata,
 )
-from ..repositories.alignment_definition import alignment_definition_exists
+from ..repositories.alignment_definition import fetch_alignment_definition_by_idx
 from ..repositories.block import list_incomplete_alignment_samples
+from ..repositories.study_access import CallerMetadataTiers
 
 REFERENCE_NOT_FOUND_DETAIL = "Reference not found"
 
@@ -117,9 +119,8 @@ async def require_reference_exists(pool: asyncpg.Pool, reference_idx: int) -> No
 
 
 # The one wording for "no such alignment", shared by every route that keys on an
-# alignment_idx — the three cohort routes below and the alignment delete. Two spellings
-# of one condition is a difference a client can accidentally depend on, and the delete
-# route had its own until they were converged.
+# alignment_idx. Two spellings of one condition is a difference a client can
+# accidentally depend on.
 ALIGNMENT_NOT_FOUND_DETAIL = "alignment not found"
 
 
@@ -142,6 +143,19 @@ ALIGNMENT_NOT_FOUND_DETAIL = "alignment not found"
 GENOME_MAP_HARD_CAP = 250_000
 
 
+def refuse_deprecated_alignment(alignment: asyncpg.Record) -> None:
+    """409 when `alignment` (an `alignment_definition` row) is deprecated: a
+    deprecated config is void for every consumer that names a cohort of it."""
+    if alignment["status"] == AlignmentDefinitionStatus.DEPRECATED.value:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"alignment {alignment['alignment_idx']} is deprecated:"
+                f" {alignment['deprecation_reason']}"
+            ),
+        )
+
+
 async def authorize_completed_alignment_cohort(
     pool: asyncpg.Pool,
     *,
@@ -153,11 +167,13 @@ async def authorize_completed_alignment_cohort(
     """The gate every route that names a cohort of one alignment runs, and the single
     copy of the order it runs in. Returns the authorized cohort.
 
-    **The order is a disclosure decision, not a style.** Three checks:
+    **The order is a disclosure decision, not a style.** Four checks:
 
     1. **The alignment exists** → 404, before anything discloses cohort state.
     2. **Access** → 403, all-or-nothing. A partially-served cohort would answer for some
        of a caller's samples and silently omit the rest.
+    2a. **The alignment is active** → 409. A deprecated config is void for every
+       consumer; after access so its status is told only to a caller who may read it.
     3. **Completeness** → 422, only once access has passed. Reversed, the 422's sample
        list would tell a caller which samples are in an alignment they have no right to
        read at all. It also subsumes an unknown identifier: a prep_sample that is not
@@ -172,12 +188,15 @@ async def authorize_completed_alignment_cohort(
     above is what must not drift between them: three routes hand-writing a
     security-relevant sequence is three chances for one to be reordered alone.
     """
-    if not await alignment_definition_exists(pool, alignment_idx):
+    alignment = await fetch_alignment_definition_by_idx(pool, alignment_idx)
+    if alignment is None:
         raise HTTPException(status_code=404, detail=ALIGNMENT_NOT_FOUND_DETAIL)
 
     cohort = await authorize_prep_sample_cohort(
         pool, caller=caller, prep_sample_idx=prep_sample_idx, min_tier=COHORT_MIN_TIER
     )
+
+    refuse_deprecated_alignment(alignment)
 
     incomplete = await list_incomplete_alignment_samples(pool, alignment_idx, cohort)
     if incomplete:
@@ -331,17 +350,18 @@ async def read_global_and_local_entries(
     spec: EntityMetadataSpec,
     entity_idx: int,
     study_idx: int,
+    tiers: CallerMetadataTiers,
 ) -> tuple[dict[str, MetadataEntry], dict[str, MetadataEntry]]:
-    """Read an entity's globally-linked and study-local metadata and shape both
-    into MetadataEntry dicts.
+    """Read an entity's globally-linked and study-local metadata visible at
+    `tiers` and shape both into MetadataEntry dicts.
 
     Spec-driven. The caller owns the connection/snapshot and the
     link/existence/retired gating. Returns (global_metadata keyed by
     internal_name, local_metadata keyed by display_name).
     """
-    global_rows = await fetch_global_metadata(conn, spec=spec, entity_idx=entity_idx)
+    global_rows = await fetch_global_metadata(conn, spec=spec, entity_idx=entity_idx, tiers=tiers)
     local_rows = await fetch_local_metadata(
-        conn, spec=spec, entity_idx=entity_idx, study_idx=study_idx
+        conn, spec=spec, entity_idx=entity_idx, study_idx=study_idx, tiers=tiers
     )
     global_metadata = metadata_entries_from_rows(global_rows)
     local_metadata = metadata_entries_from_rows(local_rows)
@@ -450,15 +470,17 @@ async def read_study_scoped_entity(
     metadata_idx_column: str,
     study_idx: int,
     noun: str,
+    tiers: CallerMetadataTiers,
     not_found_detail: str | None = None,
 ) -> tuple[asyncpg.Record, dict[str, MetadataEntry], dict[str, MetadataEntry]]:
     """Fetch a study-scoped entity for reading and return its metadata.
 
     Gates via resolve_linked_study_entity with a read's 404-on-retired, then
-    reads the entity's global and study-local metadata. not_found_detail words
-    both of those 404s at once -- on a read, unlinked and retired are one
-    answer -- for a caller that named the entity by something other than its
-    idx. Returns the (non-None) row plus the two MetadataEntry dicts.
+    reads the entity's global and study-local metadata visible at `tiers`.
+    not_found_detail is the detail of both 404s, since a read answers unlinked
+    and retired alike, for a caller that named the entity by something other
+    than its idx. Returns the (non-None) row plus the two
+    MetadataEntry dicts.
     """
     retired_detail = (
         f"{noun} {entity_idx} not found" if not_found_detail is None else not_found_detail
@@ -481,7 +503,7 @@ async def read_study_scoped_entity(
         unlinked_detail=unlinked_detail,
     )
     global_metadata, local_metadata = await read_global_and_local_entries(
-        conn, spec=spec, entity_idx=metadata_entity_idx, study_idx=study_idx
+        conn, spec=spec, entity_idx=metadata_entity_idx, study_idx=study_idx, tiers=tiers
     )
     return row, global_metadata, local_metadata
 
@@ -558,13 +580,15 @@ async def resolve_study_entity_by_unique_field(
     display_name: str,
     value: str,
     noun: str,
+    tiers: CallerMetadataTiers,
 ) -> int:
     """Resolve the study's own name for a sample to that sample's idx.
 
     display_name names one of the study's fields and value is what that field
     carries on the wanted sample. The field must declare unique_in_study; one
     that does not is refused (422), as is a name the study does not use. A
-    well-formed pair matching no sample is 404.
+    well-formed pair matching no sample is 404, and so is one whose matching
+    value is hidden from `tiers`, in the same words.
 
     Resolution ignores retirement, so a retired sample or a retired study link
     still resolves; the caller applies its own gate afterwards and decides what
@@ -602,6 +626,7 @@ async def resolve_study_entity_by_unique_field(
         study_field_idx=field_row.idx,
         data_type=field_row.data_type,
         value=parsed_value,
+        tiers=tiers,
     )
     if entity_idx is None:
         raise HTTPException(
@@ -1292,6 +1317,19 @@ def etag_for_updated_at(updated_at: datetime) -> str:
     return f'"{updated_at.isoformat()}"'
 
 
+def representation_etag(updated_at: datetime, metadata_last_change: datetime | None) -> str:
+    """The ETag of a sample read: the later of its record's own updated_at
+    and `metadata_last_change`, the latest updated_at among the metadata
+    values the read returns (`_sample_helpers.fetch_visible_metadata_last_change`).
+
+    What moves it, and what does not, is in docs/architecture/data-model.md,
+    "Metadata visibility tiers".
+    """
+    if metadata_last_change is None:
+        return etag_for_updated_at(updated_at)
+    return etag_for_updated_at(max(updated_at, metadata_last_change))
+
+
 def require_if_match(if_match: str | None) -> str:
     """Raise 428 when the caller did not send an If-Match header.
 
@@ -1308,17 +1346,20 @@ def require_etag_match(
     if_match: str,
     label: str,
     row_idx: int,
+    metadata_last_change: datetime | None = None,
 ) -> None:
     """Run the post-FOR-UPDATE-preflight 404 / 412 checks for a PATCH route.
 
     Called after `fetch_<entity>(conn, idx, for_update=True)` to fold
     "row absent (404)" and "ETag stale (412)" into one site so every
     PATCH endpoint emits the same wording. `label` is the entity noun
-    embedded in the 404 detail (e.g. "study", "biosample").
+    embedded in the 404 detail (e.g. "study", "biosample"). The row's ETag is
+    `representation_etag` over its updated_at and `metadata_last_change`,
+    which is None when the GET returns no metadata.
     """
     if row is None:
         raise HTTPException(status_code=404, detail=f"{label} {row_idx} not found")
-    if if_match != etag_for_updated_at(row["updated_at"]):
+    if if_match != representation_etag(row["updated_at"], metadata_last_change):
         raise HTTPException(status_code=412, detail="If-Match did not match")
 
 
