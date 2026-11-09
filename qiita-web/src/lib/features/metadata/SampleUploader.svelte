@@ -5,9 +5,15 @@
   import Select from '$lib/ui/Select.svelte';
   import DropZone from '$lib/ui/DropZone.svelte';
   import { metameq } from '$lib/pyodide/pyodide.svelte';
-  import type { MetameqValidationResult } from '$lib/pyodide/types';
+  import type { MetameqValidationResult, TypeResolution } from '$lib/pyodide/types';
   import MetadataReview from '$lib/features/metadata/MetadataReview.svelte';
   import type { Review } from '$lib/features/metadata/review';
+  import TypeResolutionModal from '$lib/features/metadata/TypeResolutionModal.svelte';
+  import {
+    validateWithResolution,
+    contextSummary,
+    type ResolutionPrompt
+  } from '$lib/features/metadata/typeResolution';
 
   let { studyIdx, onUploaded }: { studyIdx: number; onUploaded?: () => void } = $props();
 
@@ -87,18 +93,46 @@
     return new File([tsv], 'metadata.tsv', { type: 'text/tab-separated-values' });
   }
 
+  // Host/sample-type prompt (shown only when metameq can't tell the types).
+  let typeModalOpen = $state(false);
+  let typePrompt = $state<ResolutionPrompt | null>(null);
+  let typeResolver: ((r: TypeResolution | null) => void) | null = null;
+  function promptForResolution(p: ResolutionPrompt): Promise<TypeResolution | null> {
+    typePrompt = p;
+    typeModalOpen = true;
+    return new Promise((resolve) => (typeResolver = resolve));
+  }
+  function onTypeResolve(r: TypeResolution) {
+    typeResolver?.(r);
+    typeResolver = null;
+  }
+  function onTypeCancel() {
+    typeResolver?.(null);
+    typeResolver = null;
+  }
+  // A close via Esc / ✕ / backdrop skips the callbacks; treat a pending close as cancel.
+  $effect(() => {
+    if (!typeModalOpen && typeResolver) onTypeCancel();
+  });
+
   async function validate() {
     if (!rows.length) return;
     validating = true;
     valErr = '';
     try {
-      valResult = await metameq.validate(gridToFile());
+      const file = gridToFile();
+      valResult = await validateWithResolution(
+        (resolution) => metameq.validate(file, resolution),
+        promptForResolution
+      );
     } catch (e) {
       valErr = String(e);
     } finally {
       validating = false;
     }
   }
+
+  const typeContext = $derived(contextSummary(valResult?.resolvedContext ?? null));
 
   const review = $derived<Review | null>(
     (valResult as (MetameqValidationResult & { review?: Review }) | null)?.review ?? null
@@ -220,9 +254,18 @@
     {/if}
     {#if valErr}
       <p class="border-b border-red-100 bg-red-50 px-4 py-2 text-sm text-red-700">{valErr}</p>
+    {:else if valResult?.needsTypeResolution}
+      <p class="flex flex-wrap items-center gap-2 border-b border-amber-100 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+        Not checked — metameq needs a host and sample type for each sample.
+        <button class="font-medium text-teal-700 hover:underline" onclick={validate}>Choose types…</button>
+      </p>
     {:else if valResult && !valResult.processed}
       <p class="border-b border-amber-100 bg-amber-50 px-4 py-2 text-sm text-amber-800">
         The checker couldn't process the sheet{valResult.errors?.[0]?.message ? `: ${valResult.errors[0].message.split('\n')[0]}` : '.'}
+      </p>
+    {:else if valResult?.processed && typeContext}
+      <p class="border-b border-gray-100 bg-gray-50 px-4 py-1.5 text-xs text-gray-600">
+        Validated as {typeContext}.
       </p>
     {/if}
     <MetadataReview
@@ -238,3 +281,14 @@
     />
   {/if}
 </div>
+
+{#if typePrompt}
+  <TypeResolutionModal
+    bind:open={typeModalOpen}
+    taxonomy={typePrompt.taxonomy}
+    columns={typePrompt.columns}
+    context={typePrompt.context}
+    onresolve={onTypeResolve}
+    oncancel={onTypeCancel}
+  />
+{/if}

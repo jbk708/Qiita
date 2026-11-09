@@ -77,8 +77,9 @@ const writeFileToPyodide = (filename, data) => {
   }
 };
 
-// Run validation
-const runValidation = async (fileData, fileName, configYaml) => {
+// Run validation. `resolution` (optional) is the type-resolution modal's answer,
+// a JSON string shaped {"host": {"column"|"value": ...}, "sample": {...}}.
+const runValidation = async (fileData, fileName, configYaml, resolution) => {
   await ensure('validation');
 
   let fileExt = '.' + (fileName.split('.').pop()?.toLowerCase() || 'csv');
@@ -91,9 +92,14 @@ const runValidation = async (fileData, fileName, configYaml) => {
     writeFileToPyodide(dataFilename, fileData);
     writeFileToPyodide(configFilename, configYaml);
 
+    // Pass the resolution (if any) as a parsed dict, without string-splicing it
+    // into the Python source.
+    pyodide.globals.set('_resolution_json', resolution ?? 'null');
+
     // Run validation
     const resultProxy = await pyodide.runPythonAsync(
-      `_r = run_metameq_validation('/tmp/${dataFilename}', '/tmp/${configFilename}', '${fileExt}')\n` +
+      `import json as _json\n` +
+        `_r = run_metameq_validation('/tmp/${dataFilename}', '/tmp/${configFilename}', '${fileExt}', _json.loads(_resolution_json))\n` +
         `_r["review"] = review(_r, '/tmp/${dataFilename}', '/tmp/${configFilename}', '${fileExt}')\n` +
         `_r`
     );
@@ -190,7 +196,7 @@ self.onmessage = async (event) => {
         break;
 
       case 'validate':
-        const result = await runValidation(data.fileData, data.fileName, data.configYaml);
+        const result = await runValidation(data.fileData, data.fileName, data.configYaml, data.resolution);
         sendMessage('validation-result', { id, result });
         break;
 

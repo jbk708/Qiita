@@ -1,19 +1,37 @@
 """
 METAMEQ validation runner for Pyodide environment.
 Direct API calls — skips file I/O round-trip used by write_validator_metadata.
+
+metameq validation is host-type- and sample-type-driven: every row needs a
+`hosttype_shorthand` and a `sampletype_shorthand`, which metameq infers from a
+`host_common_name` and a `sample_type` column (the config's
+`hosttype_column_options` / `sampletype_column_options`). Arbitrary metadata often
+has neither, so before validating we RESOLVE each axis:
+
+  1. an explicit `resolution` from the caller (the type-resolution modal): a named
+     column to read, or one value to apply to every row;
+  2. failing that, inference — a known/synonym column name, else a column whose
+     values are mostly valid host/sample types (value sniff);
+  3. failing that, we return `needsTypeResolution` with the data's columns and the
+     config's type taxonomy, so the caller can prompt, rather than erroring out.
+
+Whatever resolves each axis is written into the config's standard column
+(`host_common_name` / `sample_type`) and persisted to `data_path`, so the review
+pass (metadata_review.py), which re-reads the file, sees the same thing.
 """
 
-import sys
 import io
+import sys
 import traceback
+
 import pandas as pd
 from metameq import (
+    HOSTTYPE_SHORTHAND_KEY,
+    QC_NOTE_KEY,
+    SAMPLE_NAME_KEY,
+    SAMPLETYPE_SHORTHAND_KEY,
     extract_config_dict,
     get_qc_failures,
-    SAMPLE_NAME_KEY,
-    QC_NOTE_KEY,
-    HOSTTYPE_SHORTHAND_KEY,
-    SAMPLETYPE_SHORTHAND_KEY,
 )
 from metameq.src.metadata_extender import _extend_metadata_from_full_flat_config
 
@@ -21,8 +39,8 @@ from metameq.src.metadata_extender import _extend_metadata_from_full_flat_config
 # cerberus anyof errors because they produce nested dict error messages that
 # pandas can't sort. Patch converts all error messages to strings first.
 # Must patch in both modules since metadata_extender imports it directly.
-import metameq.src.metadata_validator as _mv
-import metameq.src.metadata_extender as _me
+import metameq.src.metadata_extender as _me  # noqa: E402
+import metameq.src.metadata_validator as _mv  # noqa: E402
 
 if not hasattr(_mv, "_orig_format_validation_msgs_as_df"):
     _mv._orig_format_validation_msgs_as_df = _mv.format_validation_msgs_as_df
@@ -37,6 +55,31 @@ if not hasattr(_mv, "_orig_format_validation_msgs_as_df"):
     _mv.format_validation_msgs_as_df = _safe_format_validation_msgs_as_df
     _me.format_validation_msgs_as_df = _safe_format_validation_msgs_as_df
 
+# Monkey-patch: metameq casts every field's whole column to its declared type
+# before cerberus validates (metadata_validator.validate_metadata_df), and
+# cast_field_to_type RAISES on the first uncastable cell — so one bad value (e.g.
+# "metagenome" in the required-integer taxon_id field) aborts the entire validate
+# AND the extension it runs inside, surfacing as a stack trace instead of a finding.
+# The cast is validation in disguise: cerberus runs next and reports the same value
+# as a normal type error ("must be of integer type"). So degrade the cast to return
+# the raw value on failure, letting cerberus do the reporting. One bad cell becomes
+# one finding, never a crash; castable cells are unaffected.
+import metameq.src.util as _util  # noqa: E402
+
+if not hasattr(_mv, "_orig_cast_field_to_type"):
+    _mv._orig_cast_field_to_type = _mv.cast_field_to_type
+
+    def _safe_cast_field_to_type(raw_field_val, allowed_pandas_types):
+        try:
+            return _mv._orig_cast_field_to_type(raw_field_val, allowed_pandas_types)
+        except ValueError:
+            return raw_field_val
+
+    # validate_metadata_df resolves the name in its own module namespace; patch there
+    # (and at the source) so every call site degrades.
+    _mv.cast_field_to_type = _safe_cast_field_to_type
+    _util.cast_field_to_type = _safe_cast_field_to_type
+
 
 # Map QC note strings to the internal column key they relate to
 _QC_NOTE_TO_INTERNAL_KEY = {
@@ -44,19 +87,161 @@ _QC_NOTE_TO_INTERNAL_KEY = {
     "invalid sample_type": SAMPLETYPE_SHORTHAND_KEY,
 }
 
+# Column names (besides the config's own options) that commonly hold the host or
+# sample type, matched case-insensitively before falling back to a value sniff.
+# Includes the taxon/organism columns MIxS-style studies carry instead of a host
+# common name (the value is then a scientific name, which the review step maps to
+# metameq's common-name host type, e.g. "Mus musculus" -> "mouse").
+_HOST_COL_SYNONYMS = (
+    "host_common_name",
+    "host_type",
+    "hosttype",
+    "common_name",
+    "host_taxon_id",
+    "host_scientific_name",
+    "host_organism",
+    "host_species",
+)
+_SAMPLE_COL_SYNONYMS = ("sample_type", "sampletype", "sample_substance")
 
-def run_metameq_validation(data_path: str, config_path: str, file_ext: str):
+# Values that mean "blank/unknown", excluded from the value sniff's denominator.
+_MISSINGISH = {
+    "",
+    "na",
+    "n/a",
+    "nan",
+    "none",
+    "null",
+    "unknown",
+    "not provided",
+    "not applicable",
+    "tbd",
+    "?",
+    "-",
+    "--",
+}
+
+# A column is taken as holding a type if at least this fraction of its non-blank
+# values are valid host/sample types. High enough that an incidental match (a free
+# text column with one "human" in it) does not hijack the axis.
+_SNIFF_THRESHOLD = 0.6
+
+
+def _type_taxonomy(config: dict) -> dict:
+    """The config's host/sample type vocabulary, for the resolution modal: the
+    valid host types, the valid sample types under each, the reverse map (which
+    hosts define a sample type), and the columns metameq reads each from."""
+    hosts = config.get("host_type_specific_metadata") or {}
+    sample_types_by_host = {
+        host: sorted((cfg.get("sample_type_specific_metadata") or {}).keys())
+        for host, cfg in hosts.items()
+    }
+    host_of_sample_type: dict[str, list[str]] = {}
+    for host, sample_types in sample_types_by_host.items():
+        for st in sample_types:
+            host_of_sample_type.setdefault(st, []).append(host)
+    return {
+        "hostTypes": sorted(hosts.keys()),
+        "sampleTypesByHost": sample_types_by_host,
+        "hostOfSampleType": host_of_sample_type,
+        "hostColumn": (
+            config.get("hosttype_column_options") or [HOSTTYPE_SHORTHAND_KEY]
+        )[0],
+        "sampleColumn": (
+            config.get("sampletype_column_options") or [SAMPLETYPE_SHORTHAND_KEY]
+        )[0],
+    }
+
+
+def _infer_type_column(
+    raw_df: pd.DataFrame, config: dict, axis: str, taxonomy: dict
+) -> str | None:
+    """The column in `raw_df` that holds the host (axis="host") or sample
+    (axis="sample") type, or None if none can be identified.
+
+    Checks, in order: the config's column options, a short synonym list (both by
+    name, case-insensitively), then a value sniff — the column whose non-blank
+    values are most-and-mostly valid types for this axis."""
+    if axis == "host":
+        options = config.get("hosttype_column_options") or []
+        synonyms = _HOST_COL_SYNONYMS
+        valid = {h.lower() for h in taxonomy["hostTypes"]}
+    else:
+        options = config.get("sampletype_column_options") or []
+        synonyms = _SAMPLE_COL_SYNONYMS
+        valid = {s.lower() for s in taxonomy["hostOfSampleType"]}
+
+    by_lower = {str(c).strip().lower(): c for c in raw_df.columns}
+    for candidate in list(options) + list(synonyms):
+        hit = by_lower.get(str(candidate).strip().lower())
+        if hit is not None:
+            return hit
+
+    best_col, best_frac = None, 0.0
+    for col in raw_df.columns:
+        values = [
+            v
+            for v in (str(x).strip().lower() for x in raw_df[col].tolist())
+            if v not in _MISSINGISH
+        ]
+        if not values:
+            continue
+        frac = sum(1 for v in values if v in valid) / len(values)
+        if frac >= _SNIFF_THRESHOLD and frac > best_frac:
+            best_col, best_frac = col, frac
+    return best_col
+
+
+def _resolved_series(
+    raw_df: pd.DataFrame,
+    axis: str,
+    axis_resolution: dict | None,
+    taxonomy: dict,
+    config: dict,
+) -> tuple[pd.Series | None, dict | None]:
+    """The host/sample-type values for every row and how they were resolved, or
+    (None, None) when the axis cannot be resolved without prompting.
+
+    `axis_resolution` (from the modal) wins: `{"value": v}` applies one type to all
+    rows, `{"column": c}` reads an existing column. Otherwise inference runs."""
+    axis_resolution = axis_resolution or {}
+    value = axis_resolution.get("value")
+    if value:
+        return pd.Series([value] * len(raw_df), index=raw_df.index), {
+            "mode": "value",
+            "value": value,
+        }
+    column = axis_resolution.get("column")
+    if column:
+        if column not in raw_df.columns:
+            raise ValueError(
+                f"resolution named {axis} column {column!r}, not in the metadata"
+            )
+        return raw_df[column], {"mode": "column", "column": column}
+
+    internal_key = (
+        HOSTTYPE_SHORTHAND_KEY if axis == "host" else SAMPLETYPE_SHORTHAND_KEY
+    )
+    if internal_key in raw_df.columns:
+        return raw_df[internal_key], {"mode": "present", "column": internal_key}
+
+    inferred = _infer_type_column(raw_df, config, axis, taxonomy)
+    if inferred is not None:
+        return raw_df[inferred], {"mode": "inferred", "column": inferred}
+    return None, None
+
+
+def run_metameq_validation(
+    data_path: str, config_path: str, file_ext: str, resolution: dict | None = None
+):
     """
     Run METAMEQ validation on the provided data file.
 
-    Direct API approach — no temp-file round-trip:
-    1. Load metadata with pd.read_csv / pd.read_excel
-    2. Capture original columns before extension
-    3. Load config via extract_config_dict (public API)
-    4. Extend metadata via _extend_metadata_from_full_flat_config
-    5. Convert QC failures to validation messages
-    6. Combine cerberus errors + QC messages, sort
-    7. Drop internal columns, return result with originalColumns
+    `resolution` (optional) is the type-resolution modal's answer, shaped
+    ``{"host": {"column"|"value": ...}, "sample": {"column"|"value": ...}}``. When an
+    axis cannot be resolved from it or by inference, the result carries
+    ``needsTypeResolution`` with the data's columns and the config taxonomy instead
+    of a hard "missing required columns" error.
     """
     old_stdout, old_stderr = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
@@ -68,6 +253,10 @@ def run_metameq_validation(data_path: str, config_path: str, file_ext: str):
         "extendedMetadata": None,
         "validationErrors": None,
         "originalColumns": None,
+        "needsTypeResolution": False,
+        "unresolved": [],
+        "taxonomy": None,
+        "resolvedContext": None,
         "stdout": "",
         "stderr": "",
         "summary": {"totalRows": 0, "validRows": 0, "errorCount": 0},
@@ -86,20 +275,54 @@ def run_metameq_validation(data_path: str, config_path: str, file_ext: str):
             if len(real_headers) == len(raw_df.columns):
                 raw_df.columns = real_headers
 
-        # 2. Capture original columns before metameq extension
+        # 2. Capture original columns before resolution / metameq extension
         original_columns = list(raw_df.columns)
+        result["originalColumns"] = original_columns
 
-        # 3. Load config
+        # 3. Load config and its type taxonomy (also what the modal needs)
         config = extract_config_dict(config_path)
+        taxonomy = _type_taxonomy(config)
+        result["taxonomy"] = taxonomy
 
-        # 4. Extend metadata
+        # 4. Resolve the host and sample type for every row — from `resolution`,
+        #    else by inference. An axis that resolves to neither needs the modal.
+        host_series, host_ctx = _resolved_series(
+            raw_df, "host", (resolution or {}).get("host"), taxonomy, config
+        )
+        sample_series, sample_ctx = _resolved_series(
+            raw_df, "sample", (resolution or {}).get("sample"), taxonomy, config
+        )
+        result["resolvedContext"] = {"host": host_ctx, "sample": sample_ctx}
+
+        unresolved = [
+            axis
+            for axis, series in (("host", host_series), ("sample", sample_series))
+            if series is None
+        ]
+        if unresolved:
+            result["needsTypeResolution"] = True
+            result["unresolved"] = unresolved
+            return result
+
+        # 5. Write the resolved types into the config's standard columns and
+        #    persist, so the review pass (which re-reads data_path) agrees.
+        raw_df[taxonomy["hostColumn"]] = list(host_series)
+        raw_df[taxonomy["sampleColumn"]] = list(sample_series)
+        if file_ext in (".xlsx",):
+            raw_df.to_excel(data_path, index=False)
+        else:
+            raw_df.to_csv(
+                data_path, sep=("," if file_ext == ".csv" else "\t"), index=False
+            )
+
+        # 6. Extend metadata (metameq infers the shorthands from the standard columns)
         metadata_df, validation_msgs_df, col_name_mapping = (
             _extend_metadata_from_full_flat_config(raw_df, config, None, None, None)
         )
 
         result["processed"] = True
 
-        # 5. Convert QC failures to validation message records
+        # 7. Convert QC failures to validation message records
         qc_failures_df = get_qc_failures(metadata_df)
         qc_records = []
         for _, row in qc_failures_df.iterrows():
@@ -125,14 +348,14 @@ def run_metameq_validation(data_path: str, config_path: str, file_ext: str):
             columns=[SAMPLE_NAME_KEY, "field_name", "field_value", "error_message"],
         )
 
-        # 6. Combine cerberus errors + QC messages, sort
+        # 8. Combine cerberus errors + QC messages, sort
         combined_df = pd.concat([validation_msgs_df, qc_msgs_df], ignore_index=True)
         combined_df.sort_values(
             by=[SAMPLE_NAME_KEY, "field_name", "error_message"], inplace=True
         )
         combined_df.reset_index(drop=True, inplace=True)
 
-        # 7. Drop internal columns from metadata
+        # 9. Drop internal columns from metadata
         internal_cols = [HOSTTYPE_SHORTHAND_KEY, SAMPLETYPE_SHORTHAND_KEY, QC_NOTE_KEY]
         metadata_df = metadata_df.drop(columns=internal_cols)
 
@@ -141,7 +364,6 @@ def run_metameq_validation(data_path: str, config_path: str, file_ext: str):
         result["extendedMetadata"] = metadata_df.astype(object).to_dict(
             orient="records"
         )
-        result["originalColumns"] = original_columns
 
         if len(combined_df) > 0:
             combined_df = combined_df.where(combined_df.notna(), None)

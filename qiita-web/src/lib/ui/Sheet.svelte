@@ -39,9 +39,10 @@
     onedit?: (edits: CellEdit[]) => void;
     readOnly?: boolean;
     height?: string;
-    /** Hide jspreadsheet's own search box; the parent drives filtering via the exported
-     *  `search()` (e.g. an input in its own toolbar). Filtering still happens inside the
-     *  sheet, so the issue overlay stays aligned. */
+    /** Suppress jspreadsheet's own search box (its toolbar bar is never rendered); the
+     *  parent drives filtering via the exported `search()` (e.g. an input in its own
+     *  toolbar). Filtering still happens inside the sheet, so the issue overlay stays
+     *  aligned. */
     externalSearch?: boolean;
     /** Keep the first data column (and the row gutter) stuck to the left on horizontal
      *  scroll — the identity column, so a wide sheet stays readable. */
@@ -183,7 +184,11 @@
             // Every row is in the DOM, so a problem can always be scrolled to.
             lazyLoading: false,
             filters: true,
-            search: true,
+            // When the parent owns search (externalSearch), don't render jspreadsheet's
+            // own box at all: with `search` off its whole toolbar bar is never attached,
+            // yet the `search()` method (driven from the parent) still filters, because
+            // that path depends on `filters`, not this flag.
+            search: !externalSearch,
             columnSorting: true,
             columnDrag: false,
             autoIncrement: false,
@@ -377,7 +382,7 @@
 <div class="flex min-w-0 flex-col gap-2">
   <p class="text-xs text-gray-600">{rows.length} {rows.length === 1 ? 'row' : 'rows'} · {columns.length} columns</p>
   <div class="qiita-sheet-scroll min-w-0 overflow-auto rounded-md ring-1 ring-gray-200" style:max-height={height}>
-    <div bind:this={el} class="qiita-sheet {uid} min-w-0 text-xs" class:locked={readOnly} class:ext-search={externalSearch} class:pin-first={pinFirst}></div>
+    <div bind:this={el} class="qiita-sheet {uid} min-w-0 text-xs" class:locked={readOnly} class:pin-first={pinFirst}></div>
   </div>
 </div>
 
@@ -498,7 +503,8 @@
     height: 5px;
   }
 
-  /* search box, as DataTable's */
+  /* search box, as DataTable's (shown only when this Sheet owns its own search —
+     externalSearch suppresses it at the config level, so no hiding rule is needed). */
   .qiita-sheet :global(.jss_search) {
     width: 14rem;
     margin-left: 0.5rem;
@@ -506,13 +512,6 @@
     border: 1px solid rgb(209 213 219);
     padding: 0.25rem 0.625rem;
     font-size: 0.875rem;
-  }
-
-  /* When the parent owns search (externalSearch), hide jspreadsheet's whole search
-     container (the div wrapping the "Search:" label) so there's no second bar — and no
-     leftover empty strip above the grid that scrolling would reveal. */
-  .qiita-sheet.ext-search :global(div:has(> label:has(> .jss_search))) {
-    display: none;
   }
 
   /* Pin the row gutter and the first data column (td:nth-child(3): after the gutter and

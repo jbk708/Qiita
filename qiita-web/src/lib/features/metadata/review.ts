@@ -33,7 +33,12 @@ export type Review = {
 
 /** Rules whose suggestion is safe to apply without a judgement call (mirrors
  *  AUTO_FIX_RULES in metadata_review.py). */
-export const AUTO_FIX_RULES = new Set(['iso-date', 'spelling', 'host-from-sample-type']);
+export const AUTO_FIX_RULES = new Set([
+  'iso-date',
+  'spelling',
+  'host-from-sample-type',
+  'host-synonym'
+]);
 
 export const KIND_STYLE: Record<IssueKind, { cell: string; chip: string; label: string }> = {
   error: { cell: 'bg-red-50 text-red-800', chip: 'bg-red-50 text-red-700 ring-red-600/20', label: 'error' },

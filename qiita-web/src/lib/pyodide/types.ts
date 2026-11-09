@@ -35,6 +35,31 @@ export type PyodideLoadState =
   | 'ready'
   | 'error';
 
+// How one axis (host or sample type) is resolved: read an existing column, or
+// apply one value to every row. The type-resolution modal produces this.
+export type AxisResolution = { column: string } | { value: string };
+export interface TypeResolution {
+  host?: AxisResolution;
+  sample?: AxisResolution;
+}
+
+// How an axis was resolved on a run, for display. `mode` 'present'/'inferred' is
+// automatic; 'column'/'value' is the modal's answer.
+export interface ResolvedAxisContext {
+  mode: 'present' | 'inferred' | 'column' | 'value';
+  column?: string;
+  value?: string;
+}
+
+// The config's host/sample type vocabulary, for the resolution modal's dropdowns.
+export interface TypeTaxonomy {
+  hostTypes: string[];
+  sampleTypesByHost: Record<string, string[]>;
+  hostOfSampleType: Record<string, string[]>;
+  hostColumn: string;
+  sampleColumn: string;
+}
+
 // METAMEQ validation result types
 export interface MetameqValidationResult {
   success: boolean;
@@ -43,6 +68,12 @@ export interface MetameqValidationResult {
   extendedMetadata: Record<string, unknown>[] | null;
   validationErrors: Record<string, unknown>[] | null;  // Combined validation errors + QC failures
   originalColumns: string[] | null;  // Columns from input before metameq extension
+  // Host/sample type could not be resolved (from the modal or inference): the
+  // caller prompts with `taxonomy` + `originalColumns` and re-validates.
+  needsTypeResolution: boolean;
+  unresolved: ('host' | 'sample')[];
+  taxonomy: TypeTaxonomy | null;
+  resolvedContext: { host: ResolvedAxisContext | null; sample: ResolvedAxisContext | null } | null;
   stdout?: string;
   stderr?: string;
   summary: {

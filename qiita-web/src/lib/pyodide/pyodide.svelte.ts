@@ -3,7 +3,7 @@
 // main thread, one per page, booted on the first analysis; each analysis then
 // installs its own packages once (PACKAGE_SETS), so neither pays for the other.
 import { PYODIDE_CDN_URL, CONFIG_PRESETS, PACKAGE_SETS, type PackageSet } from './config';
-import type { MetameqValidationResult, PyodideLoadState } from './types';
+import type { MetameqValidationResult, PyodideLoadState, TypeResolution } from './types';
 
 type Pending = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -136,15 +136,26 @@ class MetameqValidator {
 
   /** Validate a metadata file against the metameq standards. Lazily boots the
    *  worker + Pyodide on first call. Never throws for *validation* findings —
-   *  those come back in the result; it throws only for infra failures. */
-  async validate(file: File): Promise<MetameqValidationResult> {
+   *  those come back in the result; it throws only for infra failures.
+   *
+   *  `resolution` answers the type-resolution modal: which column, or which single
+   *  value, supplies each row's host and sample type. Omit it on the first pass —
+   *  the result's `needsTypeResolution` says when the modal is needed. */
+  async validate(file: File, resolution?: TypeResolution | null): Promise<MetameqValidationResult> {
     await this.#ready('validation');
     const configYaml = await this.#config();
     const fileData = await file.arrayBuffer();
     const id = `v-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
-      this.#worker!.postMessage({ type: 'validate', id, fileData, fileName: file.name, configYaml });
+      this.#worker!.postMessage({
+        type: 'validate',
+        id,
+        fileData,
+        fileName: file.name,
+        configYaml,
+        resolution: resolution ? JSON.stringify(resolution) : null
+      });
     });
   }
 

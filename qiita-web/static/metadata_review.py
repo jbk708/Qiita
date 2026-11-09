@@ -48,14 +48,25 @@ MISSINGISH = {
 # Legacy placeholders for "does not apply to this row" (a control's collection date
 # reading "control sample"): the standard's term for that is "not applicable".
 NOT_APPLICABLE_PLACEHOLDERS = {"control sample", "control blank", "control", "blank"}
+# metameq's host types are common names ("mouse", "human"); sheets often carry the
+# scientific name instead, which metameq doesn't recognise. Map each to the host type
+# it means, so an unknown-host row offers the common name as a confident fix.
+HOST_SYNONYMS = {
+    "mus musculus": "mouse",
+    "homo sapiens": "human",
+    "rattus norvegicus": "rat",
+    "canis lupus familiaris": "dog",
+    "canis familiaris": "dog",
+}
 _US_DATE = re.compile(
     r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*$"
 )
 _NORM = re.compile(r"[\s_\-]+")
 # Suggestion rules safe to apply without a judgement call: a reformatted date, a
 # spelling of the allowed value, a host type that is the only one with the row's
-# sample type. Everything else is offered, not counted as fixable.
-AUTO_FIX_RULES = ("iso-date", "spelling", "host-from-sample-type")
+# sample type, a host type's common name for a scientific name. Everything else is
+# offered, not counted as fixable.
+AUTO_FIX_RULES = ("iso-date", "spelling", "host-from-sample-type", "host-synonym")
 
 
 def _norm(v: str) -> str:
@@ -169,6 +180,11 @@ def _suggestions(
             out.append({"value": val, "label": label, "rule": rule_name})
 
     if kind == "type":
+        # A scientific name metameq doesn't know, but we can map to its common name:
+        # offer that first, so it's the counted (fixable) suggestion.
+        alias = HOST_SYNONYMS.get(_norm(v))
+        if alias and alias in cfg.hosts:
+            add(alias, f"{alias} (common name for '{v}')", "host-synonym")
         st = row.get(cfg.sample_column)
         for host in cfg.hosts_of.get(st, []):
             unique = len(cfg.hosts_of[st]) == 1
