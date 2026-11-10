@@ -22,7 +22,7 @@ GREENGENES2_RELATION = "greengenes2_kept"
 def _rank(prefix: str) -> str:
     # The lineage's term for this rank, when it names one: `p__Bacteroidota`, never
     # a bare `p__`, which reads as "reported, and empty".
-    return f"NULLIF(list_filter(terms, t -> starts_with(t, '{prefix}'))[1], '{prefix}')"
+    return f"NULLIF(list_filter(terms, lambda t: starts_with(t, '{prefix}'))[1], '{prefix}')"
 
 
 def stage(con, *, path: str, features: str) -> None:
@@ -37,7 +37,7 @@ def stage(con, *, path: str, features: str) -> None:
         f"CREATE TEMP TABLE {GREENGENES2_RELATION} AS"
         f" SELECT feature, {ranks}"
         " FROM (SELECT g.md5 AS feature,"
-        "              list_transform(string_split(g.lineage, ';'), t -> trim(t)) AS terms"
+        "              list_transform(string_split(g.lineage, ';'), lambda t: trim(t)) AS terms"
         "         FROM read_parquet(?) g"
         f"        WHERE g.md5 IN (SELECT feature FROM {features}))",
         [path],
